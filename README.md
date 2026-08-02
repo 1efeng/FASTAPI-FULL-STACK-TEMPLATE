@@ -1,100 +1,100 @@
-# Full Stack FastAPI Template
+# 全栈 FastAPI 模板
 
 <a href="https://github.com/fastapi/full-stack-fastapi-template/actions?query=workflow%3A%22Test+Docker+Compose%22" target="_blank"><img src="https://github.com/fastapi/full-stack-fastapi-template/workflows/Test%20Docker%20Compose/badge.svg" alt="Test Docker Compose"></a>
 <a href="https://github.com/fastapi/full-stack-fastapi-template/actions?query=workflow%3A%22Test+Backend%22" target="_blank"><img src="https://github.com/fastapi/full-stack-fastapi-template/workflows/Test%20Backend/badge.svg" alt="Test Backend"></a>
 <a href="https://coverage-badge.samuelcolvin.workers.dev/redirect/fastapi/full-stack-fastapi-template" target="_blank"><img src="https://coverage-badge.samuelcolvin.workers.dev/fastapi/full-stack-fastapi-template.svg" alt="Coverage"></a>
 
-## Technology Stack and Features
+## 技术栈与特性
 
-- ⚡ [**FastAPI**](https://fastapi.tiangolo.com) for the Python backend API.
-  - 🧰 [SQLModel](https://sqlmodel.tiangolo.com) for the Python SQL database interactions (ORM).
-  - 🔍 [Pydantic](https://docs.pydantic.dev), used by FastAPI, for the data validation and settings management.
-  - 💾 [PostgreSQL](https://www.postgresql.org) as the SQL database.
-- 🚀 [React](https://react.dev) for the frontend.
-  - 🧩 Built into the backend image and served by FastAPI on the same domain as the API.
-  - 💃 Using TypeScript, hooks, [Vite](https://vitejs.dev), and other parts of a modern frontend stack.
-  - 🎨 [Tailwind CSS](https://tailwindcss.com) and [shadcn/ui](https://ui.shadcn.com) for the frontend components.
-  - 🤖 An automatically generated frontend client.
-  - 🧪 [Playwright](https://playwright.dev) for End-to-End testing.
-  - 🦇 Dark mode support.
-- 🐋 [Docker Compose](https://www.docker.com) for development and production.
-- 🔒 Secure password hashing by default.
-- 🔑 JWT (JSON Web Token) authentication.
-- 📫 Email based password recovery.
-- 📬 [Mailcatcher](https://mailcatcher.me) for local email testing during development.
-- ✅ Tests with [Pytest](https://pytest.org).
-- 📞 [Traefik](https://traefik.io) as a reverse proxy / load balancer.
-- 🚢 Deployment instructions using Docker Compose, including how to set up Traefik to handle automatic HTTPS certificates.
-- 🏭 CI (continuous integration) and CD (continuous deployment) based on GitHub Actions.
+- ⚡ [**FastAPI**](https://fastapi.tiangolo.com) 用于 Python 后端 API。
+  - 🧰 [SQLModel](https://sqlmodel.tiangolo.com) 用于 Python SQL 数据库交互(ORM)。
+  - 🔍 [Pydantic](https://docs.pydantic.dev),由 FastAPI 使用,用于数据校验和配置管理。
+  - 💾 [PostgreSQL](https://www.postgresql.org) 作为 SQL 数据库。
+- 🚀 [React](https://react.dev) 用于前端。
+  - 🧩 前端被打包进后端镜像,由 FastAPI 在 API 的同一域名下提供服务。
+  - 💃 使用 TypeScript、hooks、[Vite](https://vitejs.dev) 以及现代前端技术栈的其他组件。
+  - 🎨 [Tailwind CSS](https://tailwindcss.com) 和 [shadcn/ui](https://ui.shadcn.com) 用于前端组件。
+  - 🤖 一个自动生成的前端客户端。
+  - 🧪 [Playwright](https://playwright.dev) 用于端到端(E2E)测试。
+  - 🦇 支持暗色模式。
+- 🐋 [Docker Compose](https://www.docker.com) 用于开发和部署。
+- 🔒 默认使用安全的密码哈希。
+- 🔑 JWT(JSON Web Token)认证。
+- 📫 基于邮件的密码找回。
+- 📬 [Mailcatcher](https://mailcatcher.me) 用于开发环境下的本地邮件测试。
+- ✅ 使用 [Pytest](https://pytest.org) 编写测试。
+- 📞 [Traefik](https://traefik.io) 作为反向代理 / 负载均衡器。
+- 🚢 使用 Docker Compose 的部署说明,包括如何配置 Traefik 来自动获取 HTTPS 证书。
+- 🏭 基于 GitHub Actions 的 CI(持续集成)和 CD(持续部署)。
 
-### Dashboard Login
+### 仪表盘登录
 
 [![Dashboard login screenshot](img/login.png)](https://github.com/fastapi/full-stack-fastapi-template)
 
-### Dashboard - Admin
+### 仪表盘 - 管理
 
 [![Admin dashboard screenshot](img/dashboard.png)](https://github.com/fastapi/full-stack-fastapi-template)
 
-### Dashboard - Items
+### 仪表盘 - Items
 
 [![Items dashboard screenshot](img/dashboard-items.png)](https://github.com/fastapi/full-stack-fastapi-template)
 
-### Dashboard - Dark Mode
+### 仪表盘 - 暗色模式
 
 [![Dark mode dashboard screenshot](img/dashboard-dark.png)](https://github.com/fastapi/full-stack-fastapi-template)
 
-### Interactive API Documentation
+### 交互式 API 文档
 
 [![API docs](img/docs.png)](https://github.com/fastapi/full-stack-fastapi-template)
 
-## How To Use It
+## 如何使用
 
-You can **just fork or clone** this repository and use it as is.
+你可以**直接 fork 或克隆**这个仓库,然后按原样使用。
 
-✨ It just works. ✨
+✨ 开箱即用。✨
 
-### How to Use a Private Repository
+### 如何使用私有仓库
 
-If you want to have a private repository, GitHub won't allow you to simply fork it as it doesn't allow changing the visibility of forks.
+如果你想使用私有仓库,GitHub 不允许直接 fork(因为无法修改 fork 的可见性)。
 
-But you can do the following:
+但你可以这样做:
 
-- Create a new GitHub repo, for example `my-full-stack`.
-- Clone this repository manually, set the name with the name of the project you want to use, for example `my-full-stack`:
+- 创建一个新的 GitHub 仓库,例如 `my-full-stack`。
+- 手动克隆这个仓库,并将名称设置为你想要的项目名,例如 `my-full-stack`:
 
 ```bash
 git clone git@github.com:fastapi/full-stack-fastapi-template.git my-full-stack
 ```
 
-- Enter into the new directory:
+- 进入新目录:
 
 ```bash
 cd my-full-stack
 ```
 
-- Set the new origin to your new repository, copy it from the GitHub interface, for example:
+- 将 origin 设置为你的新仓库,从 GitHub 界面复制地址,例如:
 
 ```bash
 git remote set-url origin git@github.com:octocat/my-full-stack.git
 ```
 
-- Add this repo as another "remote" to allow you to get updates later:
+- 将这个仓库添加为另一个 "remote",以便以后获取更新:
 
 ```bash
 git remote add upstream git@github.com:fastapi/full-stack-fastapi-template.git
 ```
 
-- Push the code to your new repository:
+- 将代码推送到你的新仓库:
 
 ```bash
 git push -u origin master
 ```
 
-### Update From the Original Template
+### 从原始模板更新
 
-After cloning the repository, and after doing changes, you might want to get the latest changes from this original template.
+克隆仓库并做了修改之后,你可能想从原始模板获取最新更新。
 
-- Make sure you added the original repository as a remote, you can check it with:
+- 确保你已经添加了原始仓库作为 remote,可以用以下命令检查:
 
 ```bash
 git remote -v
@@ -105,130 +105,130 @@ upstream    git@github.com:fastapi/full-stack-fastapi-template.git (fetch)
 upstream    git@github.com:fastapi/full-stack-fastapi-template.git (push)
 ```
 
-- Pull the latest changes without merging:
+- 拉取最新修改但不合并:
 
 ```bash
 git pull --no-commit upstream master
 ```
 
-This will download the latest changes from this template without committing them, that way you can check everything is right before committing.
+这会从该模板下载最新修改,但不会提交,这样你可以在提交前检查一切是否正常。
 
-- If there are conflicts, solve them in your editor.
+- 如果有冲突,在编辑器中解决。
 
-- Once you are done, commit the changes:
+- 完成之后,提交修改:
 
 ```bash
 git merge --continue
 ```
 
-### Configure
+### 配置
 
-You can then update configs in the `.env` files to customize your configurations.
+然后你可以更新 `.env` 文件中的配置来自定义项目。
 
-Before deploying it, make sure you change at least the values for:
+在部署之前,至少要修改以下值:
 
 - `SECRET_KEY`
 - `FIRST_SUPERUSER_PASSWORD`
 - `POSTGRES_PASSWORD`
 
-You can (and should) pass these as environment variables from secrets.
+你可以(也应该)通过环境变量以机密(secret)的方式传入这些值。
 
-Read the [deployment.md](./deployment.md) docs for more details.
+更多细节请阅读 [deployment.md](./deployment.md) 文档。
 
-### Generate Secret Keys
+### 生成密钥
 
-Some environment variables in the `.env` file have a default value of `changethis`.
+`.env` 文件中的一些环境变量默认值是 `changethis`。
 
-You have to change them with a secret key, to generate secret keys you can run the following command:
+你必须把它们改成密钥,生成密钥可以运行以下命令:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Copy the content and use that as password / secret key. And run that again to generate another secure key.
+复制输出内容作为密码 / 密钥。再运行一次生成另一个安全密钥。
 
-## How To Use It - Alternative With Copier
+## 如何使用 - 使用 Copier 的另一种方式
 
-This repository also supports generating a new project using [Copier](https://copier.readthedocs.io).
+这个仓库还支持使用 [Copier](https://copier.readthedocs.io) 生成新项目。
 
-It will copy all the files, ask you configuration questions, and update the `.env` files with your answers.
+它会复制所有文件,询问你配置问题,并根据你的回答更新 `.env` 文件。
 
-### Install Copier
+### 安装 Copier
 
-You can install Copier with:
+你可以这样安装 Copier:
 
 ```bash
 pip install copier
 ```
 
-Or better, if you have [`pipx`](https://pipx.pypa.io/), you can run it with:
+或者更好,如果你有 [`pipx`](https://pipx.pypa.io/),可以直接用 `pipx` 运行:
 
 ```bash
 pipx install copier
 ```
 
-**Note**: If you have `pipx`, installing copier is optional, you could run it directly.
+**注意**:如果你有 `pipx`,安装 copier 是可选的,你可以直接运行它。
 
-### Generate a Project With Copier
+### 使用 Copier 生成项目
 
-Decide a name for your new project's directory, you will use it below. For example, `my-awesome-project`.
+为你的新项目目录起一个名字,你会在下面用到它。例如 `my-awesome-project`。
 
-Go to the directory that will be the parent of your project, and run the command with your project's name:
+进入作为项目父目录的目录,用你的项目名运行命令:
 
 ```bash
 copier copy https://github.com/fastapi/full-stack-fastapi-template my-awesome-project --trust
 ```
 
-If you have `pipx` and you didn't install `copier`, you can run it directly:
+如果你有 `pipx` 但没安装 `copier`,可以直接运行:
 
 ```bash
 pipx run copier copy https://github.com/fastapi/full-stack-fastapi-template my-awesome-project --trust
 ```
 
-**Note** the `--trust` option is necessary to be able to execute a [post-creation script](https://github.com/fastapi/full-stack-fastapi-template/blob/master/.copier/update_dotenv.py) that updates your `.env` files.
+**注意**:`--trust` 选项是必须的,用于执行一个[创建后脚本](https://github.com/fastapi/full-stack-fastapi-template/blob/master/.copier/update_dotenv.py),该脚本会更新你的 `.env` 文件。
 
-### Input Variables
+### 输入变量
 
-Copier will ask you for some data, you might want to have at hand before generating the project.
+Copier 会询问你一些信息,在生成项目之前你可能需要先准备好答案。
 
-But don't worry, you can just update any of that in the `.env` files afterwards.
+不过不用担心,之后你随时可以在 `.env` 文件中更新任何值。
 
-The input variables, with their default values (some auto generated) are:
+输入变量及其默认值(部分会自动生成)如下:
 
-- `project_name`: (default: `"FastAPI Project"`) The name of the project, shown to API users (in .env).
-- `stack_name`: (default: `"fastapi-project"`) The name of the stack used for Docker Compose labels and project name (no spaces, no periods) (in .env).
-- `secret_key`: (default: `"changethis"`) The secret key for the project, used for security, stored in .env, you can generate one with the method above.
-- `first_superuser`: (default: `"admin@example.com"`) The email of the first superuser (in .env).
-- `first_superuser_password`: (default: `"changethis"`) The password of the first superuser (in .env).
-- `smtp_host`: (default: "") The SMTP server host to send emails, you can set it later in .env.
-- `smtp_user`: (default: "") The SMTP server user to send emails, you can set it later in .env.
-- `smtp_password`: (default: "") The SMTP server password to send emails, you can set it later in .env.
-- `emails_from_email`: (default: `"info@example.com"`) The email account to send emails from, you can set it later in .env.
-- `postgres_password`: (default: `"changethis"`) The password for the PostgreSQL database, stored in .env, you can generate one with the method above.
-- `sentry_dsn`: (default: "") The DSN for Sentry, if you are using it, you can set it later in .env.
+- `project_name`:(默认:`"FastAPI Project"`)项目名称,展示给 API 用户(在 .env 中)。
+- `stack_name`:(默认:`"fastapi-project"`)用于 Docker Compose 标签和项目名的栈名称(不能有空格和句点)(在 .env 中)。
+- `secret_key`:(默认:`"changethis"`)项目密钥,用于安全,存储在 .env 中,你可以用上面的方法生成一个。
+- `first_superuser`:(默认:`"admin@example.com"`)第一个超级用户的邮箱(在 .env 中)。
+- `first_superuser_password`:(默认:`"changethis"`)第一个超级用户的密码(在 .env 中)。
+- `smtp_host`:(默认:"")用于发送邮件的 SMTP 服务器主机,稍后可以在 .env 中设置。
+- `smtp_user`:(默认:"")用于发送邮件的 SMTP 用户,稍后可以在 .env 中设置。
+- `smtp_password`:(默认:"")用于发送邮件的 SMTP 密码,稍后可以在 .env 中设置。
+- `emails_from_email`:(默认:`"info@example.com"`)发送邮件的邮箱账号,稍后可以在 .env 中设置。
+- `postgres_password`:(默认:`"changethis"`)PostgreSQL 数据库的密码,存储在 .env 中,你可以用上面的方法生成一个。
+- `sentry_dsn`:(默认:"")如果你使用 Sentry,这是它的 DSN,稍后可以在 .env 中设置。
 
-## Backend Development
+## 后端开发
 
-Backend docs: [backend/README.md](./backend/README.md).
+后端文档:[backend/README.md](./backend/README.md)。
 
-## Frontend Development
+## 前端开发
 
-Frontend docs: [frontend/README.md](./frontend/README.md).
+前端文档:[frontend/README.md](./frontend/README.md)。
 
-## Deployment
+## 部署
 
-Deployment docs: [deployment.md](./deployment.md).
+部署文档:[deployment.md](./deployment.md)。
 
-## Development
+## 开发
 
-General development docs: [development.md](./development.md).
+通用开发文档:[development.md](./development.md)。
 
-This includes using Docker Compose, custom local domains, `.env` configurations, etc.
+包括使用 Docker Compose、自定义本地域名、`.env` 配置等。
 
-## Release Notes
+## 发布说明
 
-Check the file [release-notes.md](./release-notes.md).
+查看 [release-notes.md](./release-notes.md) 文件。
 
-## License
+## 许可证
 
-The Full Stack FastAPI Template is licensed under the terms of the MIT license.
+全栈 FastAPI 模板根据 MIT 许可条款授权。

@@ -1,12 +1,13 @@
-from fastapi.testclient import TestClient
-from sqlmodel import Session, select
+from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models import User
+from app.modules.user.model import User
 
 
-def test_create_user(client: TestClient, db: Session) -> None:
-    r = client.post(
+async def test_create_user(client: AsyncClient, db: AsyncSession) -> None:
+    r = await client.post(
         f"{settings.API_V1_STR}/private/users/",
         json={
             "email": "pollo@listo.com",
@@ -19,7 +20,8 @@ def test_create_user(client: TestClient, db: Session) -> None:
 
     data = r.json()
 
-    user = db.exec(select(User).where(User.id == data["id"])).first()
+    result = await db.execute(select(User).where(User.id == data["id"]))
+    user = result.scalars().first()
 
     assert user
     assert user.email == "pollo@listo.com"

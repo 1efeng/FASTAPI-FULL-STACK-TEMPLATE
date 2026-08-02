@@ -19,10 +19,12 @@ fileConfig(config.config_file_name)
 # target_metadata = mymodel.Base.metadata
 # target_metadata = None
 
-from app.models import SQLModel  # noqa
-from app.core.config import settings # noqa
+# 导入所有表模型以注册到 Base.metadata
+import app.db.models  # noqa: F401
+from app.core.config import settings  # noqa
+from app.core.base_model import Base
 
-target_metadata = SQLModel.metadata
+target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -31,7 +33,8 @@ target_metadata = SQLModel.metadata
 
 
 def get_url():
-    return str(settings.SQLALCHEMY_DATABASE_URI)
+    # Alembic 使用同步驱动(psycopg),应用本身使用异步驱动(asyncpg)
+    return str(settings.SQLALCHEMY_DATABASE_URI_SYNC)
 
 
 def run_migrations_offline():
