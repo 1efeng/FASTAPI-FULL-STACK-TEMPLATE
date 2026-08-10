@@ -1,19 +1,68 @@
+# Hermetic failure-injection config for the LiteLLM fallback smoke tests.
+#
+# Every model here points at the local failure_injector stub, so no real
+# provider is ever contacted. Each logical model maps a stub failure mode and
+# declares a fallback; the smoke tests assert the router actually falls back,
+# and that a clean error is surfaced when everything is down.
+#
+# ``STUB_BASE_URL`` must point at the stub (see backend/scripts/litellm-failure-smoke.sh),
+# e.g. ``http://backend:9000`` when the stub runs inside the backend container.
+
 model_list:
-  - model_name: travel-fallback-smoke
+  - model_name: smoke-ok
     litellm_params:
-      model: openai/forced-primary-failure
+      model: openai/stub-ok
+      api_base: os.environ/STUB_BASE_URL
+      api_key: stub-key
+      timeout: 10
+
+  # Primary never responds -> the gateway times out and must fall back.
+  - model_name: smoke-timeout
+    litellm_params:
+      model: openai/stub-timeout
+      api_base: os.environ/STUB_BASE_URL
+      api_key: stub-key
+      timeout: 3
+
+  # Primary returns 429 (rate limit) -> the gateway must fall back, not retry-loop.
+  - model_name: smoke-429
+    litellm_params:
+      model: openai/stub-429
+      api_base: os.environ/STUB_BASE_URL
+      api_key: stub-key
+      timeout: 10
+
+  # Primary and fallback both fail -> the gateway must surface a clean 5xx.
+  - model_name: smoke-all-down
+    litellm_params:
+      model: openai/stub-500
+      api_base: os.environ/STUB_BASE_URL
+      api_key: stub-key
+      timeout: 3
+
+  # Guaranteed-unreachable fallback used by smoke-all-down (port 9 is closed).
+  - model_name: smoke-down
+    litellm_params:
+      model: openai/forced-unreachable
       api_base: http://127.0.0.1:9
-      api_key: forced-failure
-      timeout: 2
-  - model_name: travel-doubao
-    litellm_params:
-      model: openai/doubao-seed-2-0-lite-260428
-      api_base: os.environ/DOUBAO_BASE_URL
-      api_key: os.environ/DOUBAO_API_KEY
-      timeout: 45
+      api_key: stub-key
+      timeout: 3
+
 router_settings:
+  routing_strategy: simple-shuffle
   num_retries: 0
+  allowed_fails: 1
+  cooldown_time: 0
+  retry_after: 0
   fallbacks:
-    - travel-fallback-smoke: [travel-doubao]
+    - smoke-timeout: [smoke-ok]
+    - smoke-429: [smoke-ok]
+    - smoke-all-down: [smoke-down]
+
 litellm_settings:
   drop_params: true
+  request_timeout: 15
+  set_verbose: false
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
