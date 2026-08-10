@@ -38,7 +38,7 @@ LangGraph PostgreSQL Persistence
 LangSmith
 OpenTelemetry
 Conversation / Request Lifecycle
-Native SSE
+Agent Streaming Adapter
 Travel Chat
 ```
 
