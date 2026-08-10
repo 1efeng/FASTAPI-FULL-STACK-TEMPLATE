@@ -1,11 +1,15 @@
-from typing import Any
+from collections.abc import Awaitable
+from typing import Any, cast
 
-from fastapi import APIRouter, Depends
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from pydantic.networks import EmailStr
+from redis.asyncio import Redis
 from sqlalchemy import text
 
 from app.core.base_schema import Message
+from app.core.config import settings
 from app.core.deps import SessionDep, get_current_active_superuser
 from app.core.security import get_password_hash
 from app.modules.user.model import User
@@ -40,6 +44,41 @@ async def health_ready(db: SessionDep) -> bool:
     await db.execute(text("SELECT 1"))
     return True
 
+
+
+@router.get("/utils/health/infrastructure")
+async def infrastructure_health(db: SessionDep) -> dict[str, str]:
+    """Check the configured shared infrastructure dependencies."""
+    checks: dict[str, str] = {}
+    try:
+        await db.execute(text("SELECT 1"))
+        checks["postgres"] = "ok"
+    except Exception as exc:
+        checks["postgres"] = "error"
+        raise HTTPException(status_code=503, detail=checks) from exc
+
+    redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    try:
+        await cast(Awaitable[bool], redis_client.ping())
+        checks["redis"] = "ok"
+    except Exception as exc:
+        checks["redis"] = "error"
+        raise HTTPException(status_code=503, detail=checks) from exc
+    finally:
+        await redis_client.aclose()
+
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(
+                f"{settings.LITELLM_BASE_URL.rstrip('/')}/health/liveliness"
+            )
+            response.raise_for_status()
+        checks["litellm"] = "ok"
+    except Exception as exc:
+        checks["litellm"] = "error"
+        raise HTTPException(status_code=503, detail=checks) from exc
+
+    return checks
 
 @router.get("/utils/health-check/", include_in_schema=False)
 async def health_check(db: SessionDep) -> bool:

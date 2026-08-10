@@ -1,0 +1,9 @@
+{
+  "package_type": "FULL Codex handoff documentation overlay",
+  "runtime_base": "1efeng/FASTAPI-FULL-STACK-TEMPLATE",
+  "python_baseline": "3.14",
+  "file_count": 39,
+  "required_missing": [],
+  "dangerous_source_overwrites": [],
+  "note": "This package overlays project-control/docs only; it does not replace backend/frontend/uv.lock."
+}

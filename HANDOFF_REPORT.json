@@ -1,0 +1,16 @@
+{
+  "type": "Codex handoff overlay",
+  "known_current_project_facts": {
+    "runtime_base": "1efeng/FASTAPI-FULL-STACK-TEMPLATE",
+    "python": "3.14"
+  },
+  "do_not_overwrite": [
+    "backend/",
+    "frontend/",
+    "compose*.yml",
+    "pyproject.toml",
+    "uv.lock"
+  ],
+  "start_here": "CODEX_START_PROMPT.md",
+  "build_roadmap": "docs/ROADMAP_V7_BUILD.md"
+}

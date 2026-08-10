@@ -1,0 +1,154 @@
+# Implementation Notes — Travel Agent v7
+
+> 更新时间：2026-08-10。这里只记录当前工作树中由代码或检查结果证实的实现，不把目标架构写成已完成状态。
+
+## 当前真实基线
+
+- 分支：`travel_agent_v7`，基于提交 `6c5651b`；v7 文档目前仍是未提交工作树内容。
+- Application Runtime：`1efeng/FASTAPI-FULL-STACK-TEMPLATE`。
+- Python：`3.14.6`（`.python-version`、backend 约束与 Docker 镜像一致），不需要重建或降级。
+- Backend：FastAPI `0.139+`、async SQLAlchemy 2、PostgreSQL、Alembic、JWT Auth、User/Item 模块。
+- Frontend：React 19、Vite 8、TanStack Router、生成式 OpenAPI client；登录、账号、Admin 和 Items 示例页面仍存在。
+- Runtime：Docker Compose 中 backend、PostgreSQL、Redis 与 LiteLLM 正在运行且 healthy；Traefik、Mailcatcher、Adminer、Playwright 等模板服务仍保留。
+- 数据库：Alembic 当前 head 为 `b7198f0d2c4a`，运行数据库已在该 head。
+
+## 2026-08-10 Baseline Checks
+
+- `uv lock --check`：通过，125 packages。
+- `uv run ruff check backend/app backend/tests`：通过。
+- `uv run mypy backend/app`：通过，52 source files。
+- `uv run ty check backend/app`：通过。
+- `uv run --project backend pytest -q backend`：78 passed，4 skipped，1 条第三方 Python 3.17 弃用预告。`pytest-asyncio` 已由 0.26.0 升级到 1.4.0，以适配 Python 3.14 并消除旧 event-loop policy 弃用调用。
+- `docker compose build backend`：通过；其中 frontend `bun run build` 和 backend frozen dependency sync 均成功。
+- `docker compose ps`：backend、PostgreSQL healthy。
+- `GET /api/v1/utils/health/live`：`true`。
+- `GET /api/v1/utils/health/ready`：`true`。
+- `uv run alembic heads/current`：均为 `b7198f0d2c4a`。
+
+## Milestone 1 Item 定位
+
+`item` 保留为标准业务 Module 模板 / 参考实现，不属于 Travel Agent 核心业务。它用于给后续 `conversation`、`request_run`、`usage` 等模块提供统一实现范式：
+
+- Backend：`backend/app/modules/item/` 的 API、model、repository、schema、service，并在应用路由与模型 metadata 中注册。
+- Database：现有 Alembic 历史及 Item 表保留，用作 SQLAlchemy/Alembic 模式参考。
+- Tests：`backend/tests/api/routes/test_items.py`、`backend/tests/utils/item.py` 及相关 fixture/引用保留，用作 Module 测试参考。
+- Frontend：`frontend/src/routes/_layout/items.tsx`、`frontend/src/components/Items/`、Sidebar navigation、generated client/types 保留，用作全栈联调参考。
+
+新增 Travel Agent 模块可以参考 Item 的目录分层和测试组织，但不得复制其简单 CRUD 语义来替代 conversation ownership、request lifecycle、idempotency 或 usage attribution 等业务契约。
+
+
+## M0 逐项审计结果（2026-08-10）
+
+- M0-01～M0-07：已确认分支、工作树、根目录、backend/app、frontend、Compose 文件和 Alembic 状态。
+- M0-08～M0-12：Python 3.14.6；backend `pyproject.toml` 与 `uv.lock` 已核对；`uv lock --check`、`uv sync --locked --all-groups` 通过，82 packages 可安装。
+- M0-13～M0-20：Ruff、Mypy、ty 通过；backend pytest `66 passed`；PostgreSQL healthy；Alembic upgrade/current 为 `b7198f0d2c4a` head；FastAPI live/ready 为 `true`；`/docs` 返回 HTTP 200。
+- M0-21～M0-26：本机没有 Bun，使用 Docker 固定 Bun/Playwright 环境完成依赖安装与构建；前端 Playwright smoke `62 passed`，覆盖登录、注册、用户设置、Item、Admin。
+- M0-27～M0-33：Item 标准业务 Module 参考实现存在；Redis、LiteLLM、LangGraph PostgresSaver、LangSmith、OpenTelemetry 和 v6 代码均未接入当前 v7，v6 来源为 `/home/feng/vibecode/backend_v4`。
+- M0-34～M0-35：本文件和 `docs/施工路线图.md` 已同步。
+
+前端注册 smoke 曾断言旧错误文案；已将 `frontend/tests/sign-up.spec.ts` 对齐当前 backend 的 `User with this email already exists`，完整 62 项回归通过。
+## 尚未实现或尚未迁入
+
+- v6 Travel Agent Cognitive Core 仅迁入 RuntimeClock 语义并建立最小 Main Agent 组合入口；Travel Planning Skill、travel-researcher、Travel tools、CLI 仍未迁入。
+- Redis、LiteLLM 与 Deep Agents 已接入；LangGraph/PostgresSaver 尚未进入运行时，LangSmith 已有配置与模型 metadata 但尚未完成平台验证，OpenTelemetry infrastructure instrumentation 尚未接入。
+- Conversation、Message、RequestRun、business usage attribution 均不存在。
+- 同步 Travel Chat API 已实现；Native SSE、Idempotency、持久化 Request Lifecycle、显式取消与 durable-final lifecycle 尚未实现。
+- AI Eval、生产多实例与 Travel C 端体验均未建立。
+
+## 当前 Blockers
+
+- 当前最小清理任务无外部 blocker。
+- v6 Cognitive Core 来源已确认：`/home/feng/vibecode/backend_v4`，分支 `travel_agent_v6`；迁移时只读提取既定语义，不整文件复制旧 composition/config/provider runtime。
+- 前端本机没有 `bun`，但 Docker 构建阶段已使用固定 Bun 镜像成功完成 frontend build。
+
+## 约束
+
+- Framework Ownership 以 `AGENTS.md` 与 `docs/架构v7.md` 为准，不在实现快照中重新设计。
+- 未经代码或测试证据，不把规划项标记为完成。
+
+## Infrastructure Integration Foundation（2026-08-10）
+
+已完成配置与运行时接入骨架，尚未把这些能力接入业务请求链路：
+
+- Redis：backend 依赖 `redis[hiredis]`；Settings 有 `REDIS_URL` / namespace；Compose 有 Redis 8 服务和持久化 volume；容器 smoke 返回 `PONG`。
+- LiteLLM：Compose 增加独立 Proxy 服务、固定镜像配置入口和 `infra/litellm/config.yaml`；应用 Settings 有 `LITELLM_BASE_URL`、service key、logical model；Provider key 只留给 LiteLLM。
+- LangGraph：backend 锁定 `langgraph` 与 `langgraph-checkpoint-postgres`；Settings 有 `LANGGRAPH_DATABASE_URL` / schema；尚未创建业务 graph 或运行 `AsyncPostgresSaver` setup。
+- LangSmith：backend 锁定 `langsmith`；Settings 和 `.env.example` 已加入 tracing/project/endpoint；尚未在 Agent 入口启用 tracing。
+- LiteLLM 数据库通过 `LITELLM_DATABASE_URL` 独立配置，默认指向 `litellm` 数据库；该数据库由 LiteLLM Proxy 自己执行其 migration，已在本地启动验证。
+
+当前没有加入 OTel Collector；按架构决策，后续只按需增加基础设施 instrumentation，并将 LangSmith 作为主要 Trace 查看入口。
+
+LiteLLM 本地健康检查：GET http://localhost:4000/health/liveliness 返回 I'm alive!；Redis 返回 PONG。
+## M2-01 配置校验 + readiness smoke（2026-08-10）
+
+- 已读取并核对当前 `.env`，未输出任何密钥值。
+- Docker 环境变量已修正为服务名连接：`REDIS_URL=redis://redis:6379/0`、`LITELLM_BASE_URL=http://litellm:4000`。
+- 新增 `GET /api/v1/utils/health/infrastructure`，同时检查 PostgreSQL、Redis、LiteLLM。
+- Docker 实测返回：`{"postgres":"ok","redis":"ok","litellm":"ok"}`。
+- `uv lock --check`、Ruff、Mypy、ty、backend pytest `66 passed` 均通过。
+## M2-02 Redis 应用 lifespan + namespace + integration test（2026-08-10）
+
+- `backend/app/infra/redis.py` 维护每个进程一个异步 Redis client/pool。
+- FastAPI lifespan 在启动时初始化并执行 `PING`，关闭时释放连接。
+- `namespaced_key()` 统一应用 Redis key 前缀，避免环境和业务键冲突。
+- 已增加 namespace 单元测试与真实 Redis 生命周期集成测试；真实测试由 `RUN_REDIS_INTEGRATION=1` 显式启用。
+
+## M3 配置系统字段清单（2026-08-10）
+
+- Application：`APP_ENV` 运行环境、`APP_DEBUG` 调试开关、`REQUEST_DEADLINE_SECONDS` 请求截止时间。
+- Database：`DATABASE_URL` 应用数据库连接；`LANGGRAPH_DATABASE_URL` LangGraph checkpoint 独立配置，当前允许连接同一 PostgreSQL 实例。
+- Redis：`REDIS_URL` Redis 连接地址。
+- LiteLLM：`LITELLM_BASE_URL` Proxy 地址、`LITELLM_SERVICE_KEY` 服务凭证、`LLM_LOGICAL_MODEL` 逻辑模型名。
+- Agent Guard：递归、模型调用、工具调用上限，用于防止 Agent 失控。
+- Observability：LangSmith 负责 AI Trace；`OTEL_SERVICE_NAME` / `OTLP_ENDPOINT` 仅用于按需补充基础设施 span。
+- Travel Tools：Tavily、AMap、Weather Provider 配置保留占位；FX 不做，因此没有 FX Provider 配置。
+- 生产环境缺少 LiteLLM service key 或 LangGraph 数据库连接时 fail-fast；Provider API key 归 LiteLLM 管理，不进入 FastAPI 模型路由。
+
+## M5 LiteLLM Gateway 实现（2026-08-10）
+
+- LiteLLM 精确版本为 `1.96.0`，Compose 使用 OCI digest 固定镜像。
+- 容器 healthcheck 使用镜像已有的 Python 标准库，不依赖镜像内未安装的 wget。
+- 逻辑模型 `travel-agent-llm` 配置 DeepSeek primary、豆包 fallback、有限重试、call/stream timeout、cooldown、RPM、TPM 和最大并发。
+- LiteLLM 使用独立 PostgreSQL 配置入口和 Redis shared state。
+- 已生成并持久化 FastAPI 专用 Service Virtual Key；Application 只使用该 Key 和逻辑模型，不拥有 Provider Routing。
+- LiteLLM readiness、Service Key 模型可见性、primary、fallback、token usage、Call ID 和 cost metadata 已完成真实验证。
+- DeepSeek V4 Flash 自定义价格仅维护在 `infra/litellm/config.yaml` 的 deployment `model_info` 中，FastAPI 不维护价格。
+
+## M6 FastAPI → LiteLLM 模型边界（2026-08-10）
+
+- `backend/app/infra/llm.py` 提供进程级 OpenAI-compatible client 和请求级 `build_model()`。
+- builder 固定使用 `travel-agent-llm`、LiteLLM Service Virtual Key、Gateway `/v1` 地址、应用 deadline 与 `max_retries=0`。
+- `X-Client-Request-Id` 传递 request_id；LiteLLM request metadata 与 LangSmith Runnable metadata 同步携带 request_id、trace_id、agent_role、logical_model 和业务 metadata。
+- 强制 Chat Completions API（`use_responses_api=False`），避免 Gateway compatibility 边界被 SDK 自动切换。
+- 真实 `ChatOpenAI → LiteLLM → DeepSeek` completion 已通过并返回 token usage。
+
+## RuntimeClock 迁移（2026-08-10）
+
+- 来源：`/home/feng/vibecode/backend_v4/middleware/runtime_clock.py`。
+- 当前位置：`backend/app/agents/travel/middleware/runtime_clock.py`，归属 Travel Agent Cognitive Core 的 middleware 边界。
+- 同步/异步 model-call middleware 会在每次模型调用前动态注入日期、星期、时间、时区和年份。
+- 使用 `APP_TIMEZONE=Asia/Shanghai` 作为默认时区；拒绝 naive datetime，避免隐式时区推断。
+- UTC→Asia/Shanghai 跨日、America/Los_Angeles 跨年及 naive datetime 测试通过。
+
+## Deep Agents → LiteLLM 最小集成（2026-08-10）
+
+- 精确锁定 `deepagents==0.7.5`；`uv.lock` 当前解析 125 个包。
+- `backend/app/agents/travel/agent.py` 是 Main Agent 唯一组合入口，调用官方 `create_deep_agent()`。
+- Main Agent 显式注入 M6 `build_model()` 返回的 `ChatOpenAI`，不会使用 Deep Agents 默认 Provider；实际链路为 `Deep Agents → travel-agent-llm → LiteLLM → DeepSeek/fallback`。
+- 主提示词位于 `backend/app/agents/travel/prompts/main.md`；RuntimeClock 通过 middleware 显式挂载。
+- 本轮没有创建空的 Skills、Tools 或 Subagents 目录，也没有迁移 v6 业务能力。
+- 单元 contract 测试验证逻辑模型、Gateway URL、禁用 SDK retry、request/trace metadata 和 middleware；真实 Deep Agent completion 经 LiteLLM 返回成功。
+- 当前 backend 基线：Ruff、Mypy、ty 通过；pytest `78 passed, 4 skipped`。唯一 warning 来自 Deep Agents 间接依赖 `google-genai` 对 Python 3.17 的弃用预告，不是 Python 3.14 运行错误。
+
+## FastAPI → Agent Chat 接口（2026-08-10）
+
+- 新增受 Bearer Auth 保护的 `POST /api/v1/chat`，请求只接收非空 `message`，服务端生成 `request_id`。
+- 调用链为 `FastAPI → ChatService → Deep Agents → LiteLLM → Provider`，响应返回 `request_id` 与最终 `content`。
+- 已应用 `REQUEST_DEADLINE_SECONDS` 与 `AGENT_RECURSION_LIMIT`；模型超时、限流、不可用、Agent 递归上限及未知错误不会向客户端泄漏 Provider 异常。
+- 直接调用运行中 Docker FastAPI 验证：登录 200、Chat 200，真实模型返回“API打通成功”。
+- 当前 backend 基线更新为 Ruff、Mypy、ty 通过；pytest `78 passed, 4 skipped`，仍只有同一条第三方 Python 3.17 弃用预告。
+- 本接口当前不持久化 conversation/message/request_run，也不提供幂等或 SSE；这些仍属于后续独立里程碑。
+
+## 当前下一步
+
+- 同步 Agent Chat 已打通；下一项最小任务是 LangGraph `AsyncPostgresSaver`，为后续 conversation/thread 恢复建立官方持久化边界。

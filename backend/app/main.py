@@ -6,10 +6,12 @@ from fastapi.routing import APIRoute
 from starlette.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.lifecycle import lifespan
 from app.db import (
     models as _models,  # noqa: F401   # 显式注册所有模型,不依赖 router 链路传递加载
 )
 from app.modules.auth.api import router as auth_router
+from app.modules.chat.api import router as chat_router
 from app.modules.item.api import router as item_router
 from app.modules.user.api import router as user_router
 from app.modules.utils.api import private_router
@@ -25,7 +27,10 @@ def custom_generate_unique_id(route: APIRoute) -> str:
 if settings.SENTRY_DSN and settings.ENVIRONMENT != "local":
     sentry_sdk.init(dsn=str(settings.SENTRY_DSN), enable_tracing=True)
 
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title=settings.PROJECT_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     generate_unique_id_function=custom_generate_unique_id,
@@ -45,6 +50,7 @@ if settings.all_cors_origins:
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(user_router, prefix=settings.API_V1_STR)
 app.include_router(item_router, prefix=settings.API_V1_STR)
+app.include_router(chat_router, prefix=settings.API_V1_STR)
 app.include_router(utils_router, prefix=settings.API_V1_STR)
 
 # 仅本地环境暴露的开发路由

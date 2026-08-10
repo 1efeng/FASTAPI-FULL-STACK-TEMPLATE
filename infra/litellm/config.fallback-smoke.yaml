@@ -1,0 +1,19 @@
+model_list:
+  - model_name: travel-fallback-smoke
+    litellm_params:
+      model: openai/forced-primary-failure
+      api_base: http://127.0.0.1:9
+      api_key: forced-failure
+      timeout: 2
+  - model_name: travel-doubao
+    litellm_params:
+      model: openai/doubao-seed-2-0-lite-260428
+      api_base: os.environ/DOUBAO_BASE_URL
+      api_key: os.environ/DOUBAO_API_KEY
+      timeout: 45
+router_settings:
+  num_retries: 0
+  fallbacks:
+    - travel-fallback-smoke: [travel-doubao]
+litellm_settings:
+  drop_params: true

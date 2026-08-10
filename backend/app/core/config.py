@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8
     FRONTEND_HOST: str = "http://localhost:5173"
     ENVIRONMENT: Literal["local", "staging", "production"] = "local"
+    APP_ENV: Literal["local", "staging", "production"] = "local"
+    APP_DEBUG: bool = False
+    APP_TIMEZONE: str = "Asia/Shanghai"
+    REQUEST_DEADLINE_SECONDS: float = 60.0
 
     BACKEND_CORS_ORIGINS: Annotated[
         list[AnyUrl] | str, BeforeValidator(parse_cors)
@@ -57,6 +61,30 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = ""
+
+    DATABASE_URL: str | None = None
+    MODEL_CALL_LIMIT: int = 20
+    TOOL_CALL_LIMIT: int = 50
+    AGENT_RECURSION_LIMIT: int = 25
+    OTEL_SERVICE_NAME: str = "travel-agent-api"
+    OTLP_ENDPOINT: str | None = None
+    TAVILY_API_KEY: str | None = None
+    AMAP_API_KEY: str | None = None
+    WEATHER_API_KEY: str | None = None
+
+    # Shared runtime and AI infrastructure. These are configuration contracts;
+    # feature modules connect to them when their roadmap milestone is enabled.
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_KEY_PREFIX: str = "travel_agent:"
+    LITELLM_BASE_URL: str = "http://localhost:4000"
+    LITELLM_SERVICE_KEY: str = ""
+    LLM_LOGICAL_MODEL: str = "travel-agent-llm"
+    LANGGRAPH_DATABASE_URL: str | None = None
+    LANGGRAPH_DATABASE_SCHEMA: str = "langgraph"
+    LANGSMITH_TRACING: bool = False
+    LANGSMITH_API_KEY: str | None = None
+    LANGSMITH_PROJECT: str = "travel-agent-v7"
+    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -122,6 +150,14 @@ class Settings(BaseSettings):
                 raise ValueError(message)
 
     @model_validator(mode="after")
+    def _enforce_production_config(self) -> Self:
+        if self.APP_ENV == "production" or self.ENVIRONMENT == "production":
+            required = {"LITELLM_SERVICE_KEY": self.LITELLM_SERVICE_KEY, "LANGGRAPH_DATABASE_URL": self.LANGGRAPH_DATABASE_URL}
+            missing = [name for name, value in required.items() if not value]
+            if missing:
+                raise ValueError("Missing required production configuration: " + ", ".join(missing))
+        return self
+
     def _enforce_non_default_secrets(self) -> Self:
         self._check_default_secret("SECRET_KEY", self.SECRET_KEY)
         self._check_default_secret("POSTGRES_PASSWORD", self.POSTGRES_PASSWORD)
