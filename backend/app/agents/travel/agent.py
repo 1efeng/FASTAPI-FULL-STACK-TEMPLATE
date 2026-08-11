@@ -7,8 +7,10 @@ from typing import Any
 
 from deepagents import create_deep_agent
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Checkpointer
 
 from app.agents.travel.middleware import RuntimeClockMiddleware
+from app.infra.checkpoint import get_checkpointer
 from app.infra.llm import build_model
 
 _MAIN_PROMPT_PATH = Path(__file__).with_name("prompts") / "main.md"
@@ -24,8 +26,11 @@ def build_travel_agent(
     request_id: str,
     trace_id: str | None = None,
     metadata: Mapping[str, str | int | float | bool | None] | None = None,
+    checkpointer: Checkpointer | None = None,
 ) -> CompiledStateGraph[Any, Any, Any, Any]:
     """Build a request-scoped Deep Agent backed exclusively by LiteLLM."""
+    if checkpointer is None:
+        checkpointer = get_checkpointer()
     model = build_model(
         request_id=request_id,
         trace_id=trace_id,
@@ -36,5 +41,6 @@ def build_travel_agent(
         model=model,
         system_prompt=_main_system_prompt(),
         middleware=[RuntimeClockMiddleware()],
+        checkpointer=checkpointer,
         name="travel-agent",
     )

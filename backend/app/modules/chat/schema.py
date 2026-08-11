@@ -2,8 +2,11 @@ import uuid
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.modules.request_run.model import RequestRunStatus
+
 
 class AgentChatRequest(BaseModel):
+    conversation_id: uuid.UUID
     message: str = Field(max_length=20_000)
 
     @field_validator("message")
@@ -17,7 +20,10 @@ class AgentChatRequest(BaseModel):
 
 class AgentChatResponse(BaseModel):
     request_id: uuid.UUID
-    content: str
+    content: str | None = None
+    status: RequestRunStatus = RequestRunStatus.COMPLETED
+    error_code: str | None = None
+    replayed: bool = False
 
 
 class AgentChatError(BaseModel):

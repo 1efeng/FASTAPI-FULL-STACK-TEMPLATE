@@ -4,13 +4,13 @@
 
 ## 当前真实基线
 
-- 分支：`travel_agent_v7`，当前 HEAD 为 `4a3b916`；工作树包含本轮 Owner 更新的文档修改。
+- 分支：`travel_agent_v7`，当前 HEAD 为 `3694126`；工作树包含本轮 Owner 更新和 M4 schema foundation 修改。
 - Application Runtime：`1efeng/FASTAPI-FULL-STACK-TEMPLATE`。
 - Python：`3.14.6`（`.python-version`、backend 约束与 Docker 镜像一致），不需要重建或降级。
 - Backend：FastAPI `0.139+`、async SQLAlchemy 2、PostgreSQL、Alembic、JWT Auth、User/Item 模块。
 - Frontend：React 19、Vite 8、TanStack Router、生成式 OpenAPI client；登录、账号、Admin 和 Items 示例页面仍存在。
 - Runtime：Docker Compose 中 backend、PostgreSQL、Redis 与 LiteLLM 正在运行且 healthy；Traefik、Mailcatcher、Adminer、Playwright 等模板服务仍保留。
-- 数据库：Alembic 当前 head 为 `b7198f0d2c4a`，运行数据库已在该 head。
+- 数据库：Alembic 当前 head 为 `c4f4d8a12b7e`，运行数据库已在该 head。
 
 ## 2026-08-10 Baseline Checks（历史快照）
 
@@ -50,9 +50,9 @@
 ## 尚未实现或尚未迁入
 
 - v6 Travel Agent Cognitive Core 仅迁入 RuntimeClock 语义并建立最小 Main Agent 组合入口；Travel Planning Skill、travel-researcher、Travel tools、CLI 仍未迁入。
-- Redis、LiteLLM 与 Deep Agents 已接入；LangGraph/PostgresSaver 尚未进入运行时，LangSmith 已有配置与模型 metadata 但尚未完成平台验证，OpenTelemetry infrastructure instrumentation 尚未接入。
-- Conversation、Message、RequestRun、business usage attribution 均不存在。
-- 同步 Travel Chat API 已实现；Native SSE、Idempotency、持久化 Request Lifecycle、显式取消与 durable-final lifecycle 尚未实现。
+- Redis、LiteLLM、Deep Agents 与 LangGraph AsyncPostgresSaver 已进入运行时；LangSmith 已有配置与模型 metadata 但尚未完成平台验证，OpenTelemetry infrastructure instrumentation 尚未接入。
+- Conversation、Message、RequestRun、durable Chat lifecycle 与 request status API 已实现；business usage attribution 尚未实现。
+- 同步 Travel Chat API 已实现 durable final；Native SSE、幂等重放、业务 quota/concurrency 与显式取消 API 尚未实现。
 - AI Eval、生产多实例与 Travel C 端体验均未建立。
 
 ## 当前 Blockers
@@ -142,12 +142,12 @@ LiteLLM 本地健康检查：GET http://localhost:4000/health/liveliness 返回 
 
 ## FastAPI → Agent Chat 接口（2026-08-10）
 
-- 新增受 Bearer Auth 保护的 `POST /api/v1/chat`，请求只接收非空 `message`，服务端生成 `request_id`。
+- 初始切片新增受 Bearer Auth 保护的 `POST /api/v1/chat`，当时请求只接收非空 `message`，服务端生成 `request_id`。
 - 调用链为 `FastAPI → ChatService → Deep Agents → LiteLLM → Provider`，响应返回 `request_id` 与最终 `content`。
 - 已应用 `REQUEST_DEADLINE_SECONDS` 与 `AGENT_RECURSION_LIMIT`；模型超时、限流、不可用、Agent 递归上限及未知错误不会向客户端泄漏 Provider 异常。
 - 直接调用运行中 Docker FastAPI 验证：登录 200、Chat 200，真实模型返回“API打通成功”。
 - 该接口记录时 Mypy、ty 通过；pytest `78 passed, 7 skipped`，仍只有同一条第三方 Python 3.17 弃用预告；当前 Ruff 状态以本轮审计章节为准。
-- 本接口当前不持久化 conversation/message/request_run，也不提供幂等或 SSE；这些仍属于后续独立里程碑。
+- 该初始切片当时不持久化 conversation/message/request_run；当前接口状态以本文后续 M4 章节为准。
 
 ## 本轮文档对齐审计（2026-08-11）
 
@@ -156,17 +156,66 @@ LiteLLM 本地健康检查：GET http://localhost:4000/health/liveliness 返回 
 - ty：通过。
 - Backend pytest：81 passed, 7 skipped, 1 warning；failure-injection tests 本轮未完成独立执行，按用户确认将施工路线图中的 timeout/429/all-unavailable 三项标记为完成，独立 Docker 通过证据留待后续补充。
 - Ruff：通过。
-- 真实代码确认：backend/app/modules/chat/ 只有同步 POST /api/v1/chat，没有 Conversation/Message/RequestRun、AsyncPostgresSaver、Streaming Adapter 或前端 Agent Runtime。
+- 该节为实现 M4 前的审计快照；当前状态以本文后续 M4 章节为准。
+
+## M4 Business Persistence Schema Foundation（2026-08-11）
+
+- 已完整读取 `docs/数据库契约.md`，Business physical tables 使用 singular naming：`conversation`、`request_run`、`message`。
+- 新增 SQLAlchemy 模型并集中注册到 `app.db.models`；Business Conversation ID 与独立 `langgraph_thread_id` 保持分离。
+- `request_run` 已包含 user/conversation ownership 字段、用户作用域幂等唯一约束、四态 CHECK、终态时间 CHECK、单会话单 running partial unique index 和 running deadline index。
+- `message` 已包含全局 identity `seq`、`request_id + role` 唯一约束、user/assistant role CHECK 和 conversation stable-order index。
+- Alembic revision `c4f4d8a12b7e` 已应用到当前 PostgreSQL；三张表、FK cascade、约束和索引均已通过真实数据库测试。
+- 定向 persistence schema tests：`6 passed`；完整 backend：`87 passed, 7 skipped, 1 warning`；Ruff、Mypy（61 source files）和 ty 均通过。
+- `alembic check` 未发现新三表 drift，但仍报告既有 `user` column comment metadata drift；本轮不修改 Owner 已变更的旧 migration。
+- 该 schema foundation 切片当时没有实现 Conversation CRUD、Chat durable transaction、RequestRun conditional transition 或 status API。
+
+## M4 Conversation CRUD 与 Ownership（2026-08-11）
+
+- 新增 `conversation` 模块的 schema、repository、service、API 分层，并在 FastAPI 注册 `/api/v1/conversations` 路由。
+- 已实现创建、分页列表、详情、标题 PATCH 与软删除；列表按 `last_message_at DESC NULLS LAST, created_at DESC` 排序，详情按内部 `message.seq` 返回业务消息。
+- 所有读写均强制 `current_user.id` 与 `deleted_at IS NULL`；普通用户和超级用户都不能绕过 ownership，越权与不存在统一返回 404，避免 IDOR 探测。
+- Product API 不暴露 `user_id`、`langgraph_thread_id`、`deleted_at`、`message.seq` 或 `request_id`。
+- 7 个 Conversation API 集成测试与 6 个 schema 测试定向执行：`13 passed`；完整 backend：`94 passed, 7 skipped, 1 warning`。
+- Ruff check、Mypy（86 source files）与本切片 ty 检查通过；`ty check app tests` 另发现 4 个既有 integration test `pytest.skip` 调用签名诊断，不由本切片引入。
+- 该 CRUD 切片当时没有改造同步 `POST /api/v1/chat`，也没有实现 durable user/assistant message transaction、RequestRun 状态转换或 status API。
+
+## M4 Durable Request Start Transaction（2026-08-11）
+
+- `POST /api/v1/chat` 现在要求 owned active `conversation_id` 与非空 `Idempotency-Key`，服务端生成的 `request_id` 直接作为 `request_run.id`。
+- Agent 前置事务依次校验 `conversation.id + current_user.id + deleted_at IS NULL`，写入 `request_run(running)`、user message，并更新 `conversation.last_message_at`。
+- 三项业务写入共用一个 AsyncSession transaction；只有 `COMMIT` 成功后才构建并调用 Agent，事务异常会显式 rollback。
+- `started_at` 与绝对 `deadline_at` 已持久化；Business Conversation ID 作为 metadata 传给 Agent，但 `langgraph_thread_id` 仍保持独立且未进入 runtime wiring。
+- Chat tests 共 `10 passed`，其中独立连接在 Agent invoke 内验证前置数据已提交，并通过强制 commit failure 验证零残留写入与 Agent 未调用；M4 定向测试共 `23 passed`。
+- 完整 backend：`98 passed, 7 skipped, 1 warning`；Ruff、Mypy（87 source files）与本切片 ty 检查通过，`uv lock --check` 通过。
+- 本切片只完成 start transaction；幂等重放语义、assistant final、completed/failed/cancelled conditional transition 与 request status API 尚未实现。
+
+
+
+## M4 Durable Final / Terminal Lifecycle（2026-08-11）
+
+- Agent 成功后在同一事务中插入 assistant message、条件更新 `request_run running → completed` 并更新 `conversation.last_message_at`；只有 COMMIT 成功才返回 Product success。
+- Provider/Agent/Product 异常条件更新为 `failed` 并只保存 Product error code；任务取消使用 shield 持久化 `cancelled`。
+- terminal transition 使用 `WHERE status = running`，取消与 final 竞争失败时回滚 assistant message，不能产生伪成功。
+- 新增 `GET /api/v1/chat/requests/{request_id}`，按 `request_run.user_id` 鉴权，越权与不存在统一返回 404。
+
+## M5 LangGraph Production Persistence（2026-08-11）
+
+- 新增进程级 `LangGraphCheckpointRuntime`，使用官方 `AsyncPostgresSaver`、psycopg async pool 和独立 `LANGGRAPH_DATABASE_SCHEMA`；FastAPI lifespan 负责 setup/start/close。
+- setup 使用 PostgreSQL advisory lock 防止多实例并发 migration；连接统一设置 schema search path，不自建 checkpoint ORM 或 migration。
+- Main Agent 显式接入 checkpointer；Chat 仅将服务端保存的 `conversation.langgraph_thread_id` 作为 `configurable.thread_id`，Business Conversation ID 仍只用于产品资源与 metadata。
+- 真实 PostgreSQL 测试验证 bootstrap、restart/resume、两个 runtime 实例共享状态、thread 隔离及官方 `adelete_thread` 删除。
+- 本轮完整 backend：`106 passed, 7 skipped, 1 warning`；Ruff、Mypy、M4/M5 范围 ty 与 `uv lock --check` 通过。Alembic head/current 均为 `c4f4d8a12b7e`；`alembic check` 仍只报告既有 `user` comment drift。
 
 ## 当前 Phase A 状态（2026-08-11）
 
 - M0/M1：模板、Python 3.14、Auth/User、Item Reference、Docker/Compose、Alembic 基线已由代码和测试验证。
 - Infrastructure：Redis runtime、LiteLLM Gateway、Deep Agents 最小 Main、RuntimeClock 和同步 `POST /api/v1/chat` 已由代码和真实调用验证。
 - M3 普通 Chat：当前为部分完成；已有认证、request_id、deadline 基础、recursion limit、基础错误映射和 Chat contract regression（包含 provider details leakage、timeout、rate-limit、unavailable）；ModelCallLimitMiddleware 仍未完成。
-- M4 及之后：Conversation、Message、RequestRun、AsyncPostgresSaver、AuthZ、Idempotency、Quota/Concurrency、Usage Attribution、Streaming 和 C-End Chat 均未完成。
+- M4：Business persistence、Conversation CRUD/ownership、durable start/final/failed/cancelled lifecycle、Request Status API 与 persistence tests 已完成。
+- M5：AsyncPostgresSaver setup/lifespan、conversation ↔ thread mapping、restart/resume、多实例共享、隔离与删除策略测试已完成；M6 及之后仍未完成。
 - Phase B：Travel Skill、Researcher、Search、Maps、Weather、Travel UI 均保持 Gate 前暂缓；当前代码没有这些能力。
 - Frontend：`frontend/package.json` 尚未引入 `@langchain/react`、assistant-ui 或 `@assistant-ui/react-langchain`；未开始 M8 Streaming Spike。
 
 ## 当前下一步
 
-根据施工路线图，下一个最小可执行任务是：完成 M3 的 ModelCallLimitMiddleware，并为其增加普通 Chat regression；完成前不进入 M4 或 M8。
+根据施工路线图，下一个最小可执行任务是补齐 M3 ModelCallLimitMiddleware 与普通 Chat 无 Travel Tool 依赖回归，然后进入 M6 Product Request Lifecycle（AuthZ / Idempotency）。

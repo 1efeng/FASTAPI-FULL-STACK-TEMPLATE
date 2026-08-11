@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # feature modules connect to them when their roadmap milestone is enabled.
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_KEY_PREFIX: str = "travel_agent:"
+    CHAT_IP_RATE_LIMIT_PER_MINUTE: int = 60
+    CHAT_USER_RATE_LIMIT_PER_MINUTE: int = 20
+    CHAT_DAILY_QUOTA: int = 100
+    CHAT_CONCURRENT_LIMIT: int = 2
+    CHAT_REDIS_FAILURE_POLICY: Literal["fail_open", "fail_closed"] = "fail_closed"
     LITELLM_BASE_URL: str = "http://localhost:4000"
     LITELLM_SERVICE_KEY: str = ""
     LLM_LOGICAL_MODEL: str = "travel-agent-llm"

@@ -12,7 +12,9 @@ from app.db import (
 )
 from app.modules.auth.api import router as auth_router
 from app.modules.chat.api import router as chat_router
+from app.modules.conversation.api import router as conversation_router
 from app.modules.item.api import router as item_router
+from app.modules.request_run.api import router as request_run_router
 from app.modules.user.api import router as user_router
 from app.modules.utils.api import private_router
 from app.modules.utils.api import router as utils_router
@@ -26,7 +28,6 @@ def custom_generate_unique_id(route: APIRoute) -> str:
 
 if settings.SENTRY_DSN and settings.ENVIRONMENT != "local":
     sentry_sdk.init(dsn=str(settings.SENTRY_DSN), enable_tracing=True)
-
 
 
 app = FastAPI(
@@ -50,7 +51,9 @@ if settings.all_cors_origins:
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(user_router, prefix=settings.API_V1_STR)
 app.include_router(item_router, prefix=settings.API_V1_STR)
+app.include_router(conversation_router, prefix=settings.API_V1_STR)
 app.include_router(chat_router, prefix=settings.API_V1_STR)
+app.include_router(request_run_router, prefix=settings.API_V1_STR)
 app.include_router(utils_router, prefix=settings.API_V1_STR)
 
 # 仅本地环境暴露的开发路由

@@ -8,5 +8,7 @@ User.items 引用 'Item')会解析失败,报 InvalidRequestError。
 新增模型只需在下方加一行,各处入口无需改动。
 """
 
+from app.modules.conversation.model import Conversation, Message  # noqa: F401
 from app.modules.item.model import Item  # noqa: F401
+from app.modules.request_run.model import RequestRun  # noqa: F401
 from app.modules.user.model import User  # noqa: F401

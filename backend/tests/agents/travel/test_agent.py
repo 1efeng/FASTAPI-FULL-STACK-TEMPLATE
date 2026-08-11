@@ -2,6 +2,7 @@ from typing import Any
 
 import pytest
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import InMemorySaver
 
 from app.agents.travel import agent as agent_module
 from app.agents.travel.middleware import RuntimeClockMiddleware
@@ -17,11 +18,13 @@ def test_build_travel_agent_uses_litellm_model(monkeypatch: pytest.MonkeyPatch) 
         return compiled_agent
 
     monkeypatch.setattr(agent_module, "create_deep_agent", fake_create_deep_agent)
+    checkpointer = InMemorySaver()
 
     result = agent_module.build_travel_agent(
         request_id="request-123",
         trace_id="trace-456",
         metadata={"conversation_id": "conversation-789"},
+        checkpointer=checkpointer,
     )
 
     assert result is compiled_agent
@@ -41,3 +44,4 @@ def test_build_travel_agent_uses_litellm_model(monkeypatch: pytest.MonkeyPatch) 
     assert "Travel Agent" in captured["system_prompt"]
     assert len(captured["middleware"]) == 1
     assert isinstance(captured["middleware"][0], RuntimeClockMiddleware)
+    assert captured["checkpointer"] is checkpointer
