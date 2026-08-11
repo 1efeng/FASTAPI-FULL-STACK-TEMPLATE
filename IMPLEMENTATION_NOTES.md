@@ -4,7 +4,7 @@
 
 ## 当前真实基线
 
-- 分支：`travel_agent_v7`，当前 HEAD 为 `3694126`；工作树包含本轮 Owner 更新和 M4 schema foundation 修改。
+- 分支：`travel_agent_v7`，当前 HEAD 为 `a009e79`；工作树包含本轮缺陷基准、配置安全与代理配置修复。
 - Application Runtime：`1efeng/FASTAPI-FULL-STACK-TEMPLATE`。
 - Python：`3.14.6`（`.python-version`、backend 约束与 Docker 镜像一致），不需要重建或降级。
 - Backend：FastAPI `0.139+`、async SQLAlchemy 2、PostgreSQL、Alembic、JWT Auth、User/Item 模块。
@@ -230,3 +230,11 @@ LiteLLM 本地健康检查：GET http://localhost:4000/health/liveliness 返回 
 ## 当前下一步
 
 根据施工路线图，下一个 Milestone 是 M7 Business Usage Attribution。
+
+## 已验证配置与代理修复（2026-08-11）
+
+- 生产弱密钥检查已重新注册为 Pydantic model validator；`APP_ENV` 或旧 `ENVIRONMENT` 任一进入非 local 环境时，`changethis` 不再被接受。
+- `DATABASE_URL` 现在是 FastAPI 业务数据库连接 SOT，并按 Application/Alembic 分别转换为 `postgresql+asyncpg` 与 `postgresql+psycopg`。
+- Compose 对 backend/prestart 显式注入指向 `db` 服务的 `DATABASE_URL`；宿主机示例使用 `localhost`。
+- Compose backend 通过 `FORWARDED_ALLOW_IPS=*` 信任私有网络中的 Traefik 转发头；基础生产 Compose 不直接暴露 backend 端口，IP rate 使用还原后的客户端地址。
+- 配置专项测试 `4 passed`，完整 backend `117 passed, 14 skipped, 1 warning`；Ruff、Mypy、ty、`uv lock --check` 与 Compose 配置验证通过。backend/prestart 已按当前源码重建，容器 healthy，容器内 Alembic current/check 为 `c4f4d8a12b7e (head)`，ready API 返回 `true`。

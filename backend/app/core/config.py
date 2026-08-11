@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
@@ -64,7 +65,7 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = ""
 
-    DATABASE_URL: str | None = None
+    DATABASE_URL: PostgresDsn | None = None
     MODEL_CALL_LIMIT: int = 20
     TOOL_CALL_LIMIT: int = 50
     AGENT_RECURSION_LIMIT: int = 25
@@ -97,6 +98,9 @@ class Settings(BaseSettings):
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> PostgresDsn:
         """异步驱动 URL,供应用与 asyncpg 使用"""
+        if self.DATABASE_URL is not None:
+            url = make_url(str(self.DATABASE_URL)).set(drivername="postgresql+asyncpg")
+            return PostgresDsn(url.render_as_string(hide_password=False))
         return PostgresDsn.build(
             scheme="postgresql+asyncpg",
             username=self.POSTGRES_USER,
@@ -110,6 +114,9 @@ class Settings(BaseSettings):
     @property
     def SQLALCHEMY_DATABASE_URI_SYNC(self) -> PostgresDsn:
         """同步驱动 URL,供 Alembic 迁移使用"""
+        if self.DATABASE_URL is not None:
+            url = make_url(str(self.DATABASE_URL)).set(drivername="postgresql+psycopg")
+            return PostgresDsn(url.render_as_string(hide_password=False))
         return PostgresDsn.build(
             scheme="postgresql+psycopg",
             username=self.POSTGRES_USER,
@@ -151,7 +158,7 @@ class Settings(BaseSettings):
                 f'The value of {var_name} is "changethis", '
                 "for security, please change it, at least for deployments."
             )
-            if self.ENVIRONMENT == "local":
+            if self.APP_ENV == "local" and self.ENVIRONMENT == "local":
                 warnings.warn(message, stacklevel=1)
             else:
                 raise ValueError(message)
@@ -170,6 +177,7 @@ class Settings(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
     def _enforce_non_default_secrets(self) -> Self:
         self._check_default_secret("SECRET_KEY", self.SECRET_KEY)
         self._check_default_secret("POSTGRES_PASSWORD", self.POSTGRES_PASSWORD)
