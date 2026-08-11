@@ -14,11 +14,13 @@ if TYPE_CHECKING:
 class User(BaseModel):
     __tablename__ = "user"
 
-    email: Mapped[str] = mapped_column(String(255))
-    is_active: Mapped[bool] = mapped_column(default=True)
-    is_superuser: Mapped[bool] = mapped_column(default=False)
-    full_name: Mapped[str | None] = mapped_column(String(255), default=None)
-    hashed_password: Mapped[str] = mapped_column(String(128))
+    email: Mapped[str] = mapped_column(String(255), comment="邮箱")
+    is_active: Mapped[bool] = mapped_column(default=True, comment="是否激活")
+    is_superuser: Mapped[bool] = mapped_column(default=False, comment="是否超管")
+    full_name: Mapped[str | None] = mapped_column(
+        String(255), default=None, comment="姓名"
+    )
+    hashed_password: Mapped[str] = mapped_column(String(128), comment="密码哈希")
 
     __table_args__ = (Index("ix_user_email", func.lower(email), unique=True),)
 

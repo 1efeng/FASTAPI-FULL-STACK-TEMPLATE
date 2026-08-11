@@ -1,6 +1,7 @@
 from typing import Any
 
 import pytest
+from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -42,6 +43,11 @@ def test_build_travel_agent_uses_litellm_model(monkeypatch: pytest.MonkeyPatch) 
     assert model.metadata["conversation_id"] == "conversation-789"
     assert captured["name"] == "travel-agent"
     assert "Travel Agent" in captured["system_prompt"]
-    assert len(captured["middleware"]) == 1
-    assert isinstance(captured["middleware"][0], RuntimeClockMiddleware)
+    assert len(captured["middleware"]) == 2
+    model_call_limit = captured["middleware"][0]
+    assert isinstance(model_call_limit, ModelCallLimitMiddleware)
+    assert model_call_limit.run_limit == settings.MODEL_CALL_LIMIT
+    assert model_call_limit.thread_limit is None
+    assert model_call_limit.exit_behavior == "error"
+    assert isinstance(captured["middleware"][1], RuntimeClockMiddleware)
     assert captured["checkpointer"] is checkpointer

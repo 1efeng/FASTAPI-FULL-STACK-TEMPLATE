@@ -53,6 +53,11 @@ LiteLLM Proxy
 Deep Agents
 Minimal Main Agent
 RuntimeClock
+Business Conversation / Messages / RequestRun
+AsyncPostgresSaver runtime
+AuthZ / Idempotency
+Redis Rate / Quota / Concurrency
+Absolute Deadline / Explicit Cancellation
 POST /api/v1/chat
 FastAPI → ChatService → Deep Agents → LiteLLM → Provider
 ```
@@ -60,10 +65,7 @@ FastAPI → ChatService → Deep Agents → LiteLLM → Provider
 当前尚未完整存在：
 
 ```text
-Business Conversation / Messages / RequestRun
-AsyncPostgresSaver runtime wiring
-Idempotency
-Business Rate / Quota / Concurrency
+Business Usage Attribution
 Agent Streaming Adapter
 Travel Chat frontend
 完整 Travel Skill / Researcher / Tools

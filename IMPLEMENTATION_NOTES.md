@@ -166,7 +166,7 @@ LiteLLM 本地健康检查：GET http://localhost:4000/health/liveliness 返回 
 - `message` 已包含全局 identity `seq`、`request_id + role` 唯一约束、user/assistant role CHECK 和 conversation stable-order index。
 - Alembic revision `c4f4d8a12b7e` 已应用到当前 PostgreSQL；三张表、FK cascade、约束和索引均已通过真实数据库测试。
 - 定向 persistence schema tests：`6 passed`；完整 backend：`87 passed, 7 skipped, 1 warning`；Ruff、Mypy（61 source files）和 ty 均通过。
-- `alembic check` 未发现新三表 drift，但仍报告既有 `user` column comment metadata drift；本轮不修改 Owner 已变更的旧 migration。
+- `alembic check` 当时仍报告既有 `user` column comment metadata drift；后续通过将数据库已有 comments 补回 ORM 模型消除，未修改历史 migration。
 - 该 schema foundation 切片当时没有实现 Conversation CRUD、Chat durable transaction、RequestRun conditional transition 或 status API。
 
 ## M4 Conversation CRUD 与 Ownership（2026-08-11）
@@ -204,18 +204,29 @@ LiteLLM 本地健康检查：GET http://localhost:4000/health/liveliness 返回 
 - setup 使用 PostgreSQL advisory lock 防止多实例并发 migration；连接统一设置 schema search path，不自建 checkpoint ORM 或 migration。
 - Main Agent 显式接入 checkpointer；Chat 仅将服务端保存的 `conversation.langgraph_thread_id` 作为 `configurable.thread_id`，Business Conversation ID 仍只用于产品资源与 metadata。
 - 真实 PostgreSQL 测试验证 bootstrap、restart/resume、两个 runtime 实例共享状态、thread 隔离及官方 `adelete_thread` 删除。
-- 本轮完整 backend：`106 passed, 7 skipped, 1 warning`；Ruff、Mypy、M4/M5 范围 ty 与 `uv lock --check` 通过。Alembic head/current 均为 `c4f4d8a12b7e`；`alembic check` 仍只报告既有 `user` comment drift。
+- 本轮完整 backend：`106 passed, 7 skipped, 1 warning`；Ruff、Mypy、M4/M5 范围 ty 与 `uv lock --check` 通过。Alembic head/current 均为 `c4f4d8a12b7e`；补齐 User ORM comments 后 `alembic check` 无 drift。
 
 ## 当前 Phase A 状态（2026-08-11）
 
 - M0/M1：模板、Python 3.14、Auth/User、Item Reference、Docker/Compose、Alembic 基线已由代码和测试验证。
 - Infrastructure：Redis runtime、LiteLLM Gateway、Deep Agents 最小 Main、RuntimeClock 和同步 `POST /api/v1/chat` 已由代码和真实调用验证。
-- M3 普通 Chat：当前为部分完成；已有认证、request_id、deadline 基础、recursion limit、基础错误映射和 Chat contract regression（包含 provider details leakage、timeout、rate-limit、unavailable）；ModelCallLimitMiddleware 仍未完成。
+- M3 普通 Chat：已完成认证、request_id、deadline 基础、recursion limit、基础错误映射和 Chat contract regression（包含 provider details leakage、timeout、rate-limit、unavailable）；ModelCallLimitMiddleware 已接入并完成错误映射回归。
 - M4：Business persistence、Conversation CRUD/ownership、durable start/final/failed/cancelled lifecycle、Request Status API 与 persistence tests 已完成。
-- M5：AsyncPostgresSaver setup/lifespan、conversation ↔ thread mapping、restart/resume、多实例共享、隔离与删除策略测试已完成；M6 及之后仍未完成。
+- M5：AsyncPostgresSaver setup/lifespan、conversation ↔ thread mapping、restart/resume、多实例共享、隔离与删除策略测试已完成。
+- M6：AuthZ、数据库幂等、Redis rate/quota/concurrency、绝对 deadline、显式取消与断连策略已完成；M7 及之后仍未完成。
 - Phase B：Travel Skill、Researcher、Search、Maps、Weather、Travel UI 均保持 Gate 前暂缓；当前代码没有这些能力。
 - Frontend：`frontend/package.json` 尚未引入 `@langchain/react`、assistant-ui 或 `@assistant-ui/react-langchain`；未开始 M8 Streaming Spike。
 
+## M6 Product Request Lifecycle（2026-08-11）
+
+- AuthZ：Conversation、Message history 与 RequestRun 均按当前用户 ownership 查询；越权和不存在统一 404，覆盖 Chat、status 与 cancel IDOR。
+- Idempotency：PostgreSQL `UNIQUE (user_id, idempotency_key)` 是最终正确性来源；running replay 返回 202，completed replay 返回 durable final，同 key 不同 payload 返回 `DUPLICATE_REQUEST`；真实并发竞争只执行一次 Agent。
+- Redis Business Protection：Lua 原子实现 IP/user 每分钟 rate、用户 daily quota 与带 TTL 的 distributed concurrency lease；默认 `fail_closed`，可显式配置 `fail_open`。
+- Deadline / Cancel：Agent 使用数据库 `deadline_at` 计算 remaining time；新增 owned `POST /api/v1/chat/requests/{request_id}/cancel`，本进程事件与 Redis cancel key 共同传播取消。
+- Disconnect policy：当前 non-streaming HTTP 断线不自动取消 durable run，客户端通过 status 恢复、通过 cancel 主动停止；M8 再验证真实 stream disconnect propagation。
+- ModelCallLimitMiddleware 同时完成接入，`ModelCallLimitExceededError` 映射为 `MODEL_CALL_LIMIT_REACHED`，RuntimeClock 仍保留。
+- M6 专项 API/DB 测试通过；真实 Redis integration `7 passed`；最终 backend `113 passed, 14 skipped, 1 warning`。Ruff、Mypy（62 source files）、ty、`uv lock --check` 全部通过。唯一 warning 仍为 google-genai 对 Python 3.17 的第三方弃用预告。
+
 ## 当前下一步
 
-根据施工路线图，下一个最小可执行任务是补齐 M3 ModelCallLimitMiddleware 与普通 Chat 无 Travel Tool 依赖回归，然后进入 M6 Product Request Lifecycle（AuthZ / Idempotency）。
+根据施工路线图，下一个 Milestone 是 M7 Business Usage Attribution。

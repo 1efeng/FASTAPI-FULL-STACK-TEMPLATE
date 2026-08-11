@@ -1,17 +1,27 @@
 import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+from langchain.agents.middleware.model_call_limit import (
+    ModelCallLimitExceededError,
+)
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphRecursionError
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.travel import build_travel_agent
 from app.core.config import settings
+from app.modules.chat.runtime import (
+    ChatAdmissionLease,
+    ChatAdmissionRejected,
+    ChatRuntime,
+)
 from app.modules.chat.schema import AgentChatResponse
 from app.modules.conversation.model import Message, MessageRole
 from app.modules.conversation.repository import ConversationRepository
@@ -20,11 +30,18 @@ from app.modules.request_run.repository import RequestRunRepository
 
 ChatErrorCode = Literal[
     "CONVERSATION_NOT_FOUND",
+    "DUPLICATE_REQUEST",
+    "RATE_LIMITED",
+    "QUOTA_EXCEEDED",
+    "CONCURRENCY_LIMITED",
+    "REQUEST_CANCELLED",
     "REQUEST_DEADLINE_EXCEEDED",
     "AGENT_LOOP_LIMIT_REACHED",
+    "MODEL_CALL_LIMIT_REACHED",
     "MODEL_TIMEOUT",
     "MODEL_RATE_LIMITED",
     "MODEL_UNAVAILABLE",
+    "INTERNAL_ERROR",
 ]
 
 
@@ -34,6 +51,7 @@ class ChatExecutionError(Exception):
     message: str
     retryable: bool
     status_code: int
+    request_id: uuid.UUID | None = None
 
 
 def _message_text(message: BaseMessage) -> str:
@@ -49,15 +67,77 @@ def _message_text(message: BaseMessage) -> str:
     return "\n".join(parts).strip()
 
 
+def remaining_seconds(
+    deadline_at: datetime,
+    *,
+    now: datetime | None = None,
+) -> float:
+    current = now or datetime.now(UTC)
+    return max(0.0, (deadline_at - current).total_seconds())
+
+
 class RequestTerminalTransitionError(RuntimeError):
     pass
 
 
 class ChatService:
-    def __init__(self, db: AsyncSession):
+    def __init__(
+        self,
+        db: AsyncSession,
+        runtime: ChatRuntime | None = None,
+    ):
         self.db = db
+        self.runtime = runtime
         self.conversation_repo = ConversationRepository(db)
         self.request_run_repo = RequestRunRepository(db)
+
+    async def _replay_existing(
+        self,
+        request_run: RequestRun,
+        *,
+        conversation_id: uuid.UUID,
+        message: str,
+    ) -> AgentChatResponse:
+        user_message = await self.request_run_repo.get_message(
+            request_run.id,
+            MessageRole.USER,
+        )
+        if (
+            request_run.conversation_id != conversation_id
+            or user_message is None
+            or user_message.content != message
+        ):
+            raise ChatExecutionError(
+                code="DUPLICATE_REQUEST",
+                message="该幂等键已用于其他请求。",
+                retryable=False,
+                status_code=409,
+                request_id=request_run.id,
+            )
+
+        content: str | None = None
+        if request_run.status is RequestRunStatus.COMPLETED:
+            assistant_message = await self.request_run_repo.get_message(
+                request_run.id,
+                MessageRole.ASSISTANT,
+            )
+            if assistant_message is None:
+                raise ChatExecutionError(
+                    code="INTERNAL_ERROR",
+                    message="请求结果暂时不可用，请稍后重试。",
+                    retryable=True,
+                    status_code=500,
+                    request_id=request_run.id,
+                )
+            content = assistant_message.content
+
+        return AgentChatResponse(
+            request_id=request_run.id,
+            content=content,
+            status=request_run.status,
+            error_code=request_run.error_code,
+            replayed=True,
+        )
 
     async def _persist_request_start(
         self,
@@ -67,8 +147,9 @@ class ChatService:
         conversation_id: uuid.UUID,
         idempotency_key: str,
         message: str,
-    ) -> uuid.UUID:
+    ) -> tuple[uuid.UUID, datetime]:
         started_at = datetime.now(UTC)
+        deadline_at = started_at + timedelta(seconds=settings.REQUEST_DEADLINE_SECONDS)
         try:
             conversation = await self.conversation_repo.get_owned_active(
                 conversation_id, user_id
@@ -88,8 +169,7 @@ class ChatService:
                 idempotency_key=idempotency_key,
                 status=RequestRunStatus.RUNNING,
                 started_at=started_at,
-                deadline_at=started_at
-                + timedelta(seconds=settings.REQUEST_DEADLINE_SECONDS),
+                deadline_at=deadline_at,
             )
             user_message = Message(
                 conversation_id=conversation.id,
@@ -103,7 +183,7 @@ class ChatService:
             conversation.last_message_at = started_at
             await self.conversation_repo.update(conversation)
             await self.db.commit()
-            return conversation.langgraph_thread_id
+            return conversation.langgraph_thread_id, deadline_at
         except Exception:
             await self.db.rollback()
             raise
@@ -141,6 +221,21 @@ class ChatService:
             conversation.last_message_at = finished_at
             await self.conversation_repo.update(conversation)
             await self.db.commit()
+        except RequestTerminalTransitionError as exc:
+            await self.db.rollback()
+            request_run = await self.request_run_repo.get_by_id(request_id)
+            if (
+                request_run is not None
+                and request_run.status is RequestRunStatus.CANCELLED
+            ):
+                raise ChatExecutionError(
+                    code="REQUEST_CANCELLED",
+                    message="请求已取消。",
+                    retryable=False,
+                    status_code=409,
+                    request_id=request_id,
+                ) from exc
+            raise
         except Exception:
             await self.db.rollback()
             raise
@@ -169,13 +264,24 @@ class ChatService:
             await self.db.rollback()
             raise
 
+    @staticmethod
+    async def _wait_for_disconnect(
+        checker: Callable[[], Awaitable[bool]],
+    ) -> None:
+        while True:
+            if await checker():
+                return
+            await asyncio.sleep(0.25)
+
     async def _invoke_agent(
         self,
         *,
         request_id: uuid.UUID,
         conversation_id: uuid.UUID,
         langgraph_thread_id: uuid.UUID,
+        deadline_at: datetime,
         message: str,
+        disconnect_checker: Callable[[], Awaitable[bool]] | None,
     ) -> str:
         agent = build_travel_agent(
             request_id=str(request_id),
@@ -190,18 +296,58 @@ class ChatService:
             "configurable": {"thread_id": str(langgraph_thread_id)},
         }
 
+        invoke_task = asyncio.create_task(
+            agent.ainvoke(
+                {"messages": [{"role": "user", "content": message}]},
+                config=config,
+            )
+        )
+        watchers: list[asyncio.Task[None]] = []
+        if self.runtime is not None:
+            watchers.append(
+                asyncio.create_task(self.runtime.wait_for_cancel(request_id))
+            )
+        if disconnect_checker is not None:
+            watchers.append(
+                asyncio.create_task(self._wait_for_disconnect(disconnect_checker))
+            )
+
         try:
-            async with asyncio.timeout(settings.REQUEST_DEADLINE_SECONDS):
-                result = await agent.ainvoke(
-                    {"messages": [{"role": "user", "content": message}]},
-                    config=config,
-                )
+            timeout = remaining_seconds(deadline_at)
+            if timeout <= 0:
+                raise TimeoutError
+            async with asyncio.timeout(timeout):
+                if watchers:
+                    done, _ = await asyncio.wait(
+                        [invoke_task, *watchers],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if invoke_task not in done:
+                        invoke_task.cancel()
+                        await asyncio.gather(invoke_task, return_exceptions=True)
+                        raise ChatExecutionError(
+                            code="REQUEST_CANCELLED",
+                            message="请求已取消。",
+                            retryable=False,
+                            status_code=409,
+                            request_id=request_id,
+                        )
+                result = await invoke_task
         except TimeoutError as exc:
             raise ChatExecutionError(
                 code="REQUEST_DEADLINE_EXCEEDED",
                 message="请求处理超时，请稍后重试。",
                 retryable=True,
                 status_code=504,
+                request_id=request_id,
+            ) from exc
+        except ModelCallLimitExceededError as exc:
+            raise ChatExecutionError(
+                code="MODEL_CALL_LIMIT_REACHED",
+                message="模型调用次数超过安全上限，请简化问题后重试。",
+                retryable=False,
+                status_code=422,
+                request_id=request_id,
             ) from exc
         except GraphRecursionError as exc:
             raise ChatExecutionError(
@@ -209,6 +355,7 @@ class ChatService:
                 message="规划步骤超过安全上限，请简化问题后重试。",
                 retryable=False,
                 status_code=422,
+                request_id=request_id,
             ) from exc
         except APITimeoutError as exc:
             raise ChatExecutionError(
@@ -216,6 +363,7 @@ class ChatService:
                 message="模型响应超时，请稍后重试。",
                 retryable=True,
                 status_code=504,
+                request_id=request_id,
             ) from exc
         except RateLimitError as exc:
             raise ChatExecutionError(
@@ -223,6 +371,7 @@ class ChatService:
                 message="当前规划服务繁忙，请稍后重试。",
                 retryable=True,
                 status_code=429,
+                request_id=request_id,
             ) from exc
         except (APIConnectionError, APIStatusError) as exc:
             raise ChatExecutionError(
@@ -230,7 +379,14 @@ class ChatService:
                 message="当前规划服务暂时不可用，请稍后重试。",
                 retryable=True,
                 status_code=503,
+                request_id=request_id,
             ) from exc
+        finally:
+            if not invoke_task.done():
+                invoke_task.cancel()
+            for watcher in watchers:
+                watcher.cancel()
+            await asyncio.gather(invoke_task, *watchers, return_exceptions=True)
 
         messages = result.get("messages")
         if not messages or not isinstance(messages[-1], BaseMessage):
@@ -248,49 +404,123 @@ class ChatService:
         conversation_id: uuid.UUID,
         idempotency_key: str,
         message: str,
+        client_ip: str = "unknown",
+        disconnect_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> AgentChatResponse:
-        langgraph_thread_id = await self._persist_request_start(
-            request_id=request_id,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            idempotency_key=idempotency_key,
-            message=message,
+        existing = await self.request_run_repo.get_by_user_idempotency(
+            user_id,
+            idempotency_key,
         )
-
-        try:
-            content = await self._invoke_agent(
-                request_id=request_id,
+        if existing is not None:
+            return await self._replay_existing(
+                existing,
                 conversation_id=conversation_id,
-                langgraph_thread_id=langgraph_thread_id,
                 message=message,
             )
-            await self._persist_request_success(
-                request_id=request_id,
-                conversation_id=conversation_id,
-                content=content,
-            )
-        except asyncio.CancelledError:
-            await asyncio.shield(
-                self._persist_request_terminal(
-                    request_id=request_id,
-                    status=RequestRunStatus.CANCELLED,
-                    error_code=None,
-                )
-            )
-            raise
-        except ChatExecutionError as exc:
-            await self._persist_request_terminal(
-                request_id=request_id,
-                status=RequestRunStatus.FAILED,
-                error_code=exc.code,
-            )
-            raise
-        except Exception:
-            await self._persist_request_terminal(
-                request_id=request_id,
-                status=RequestRunStatus.FAILED,
-                error_code="INTERNAL_ERROR",
-            )
-            raise
 
-        return AgentChatResponse(request_id=request_id, content=content)
+        lease = ChatAdmissionLease()
+        if self.runtime is not None:
+            try:
+                lease = await self.runtime.admit(
+                    client_ip=client_ip,
+                    user_id=user_id,
+                )
+            except ChatAdmissionRejected as exc:
+                raise ChatExecutionError(
+                    code=exc.code,
+                    message=exc.message,
+                    retryable=exc.retryable,
+                    status_code=503 if exc.code == "INTERNAL_ERROR" else 429,
+                    request_id=request_id,
+                ) from exc
+
+        started = False
+        try:
+            try:
+                langgraph_thread_id, deadline_at = await self._persist_request_start(
+                    request_id=request_id,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    idempotency_key=idempotency_key,
+                    message=message,
+                )
+                started = True
+            except IntegrityError as exc:
+                existing = await self.request_run_repo.get_by_user_idempotency(
+                    user_id,
+                    idempotency_key,
+                )
+                if existing is not None:
+                    return await self._replay_existing(
+                        existing,
+                        conversation_id=conversation_id,
+                        message=message,
+                    )
+                running = await self.request_run_repo.get_running_for_conversation(
+                    conversation_id
+                )
+                if running is not None:
+                    raise ChatExecutionError(
+                        code="CONCURRENCY_LIMITED",
+                        message="该会话已有请求正在运行，请稍后重试。",
+                        retryable=True,
+                        status_code=429,
+                        request_id=request_id,
+                    ) from exc
+                raise
+
+            try:
+                content = await self._invoke_agent(
+                    request_id=request_id,
+                    conversation_id=conversation_id,
+                    langgraph_thread_id=langgraph_thread_id,
+                    deadline_at=deadline_at,
+                    message=message,
+                    disconnect_checker=disconnect_checker,
+                )
+                await self._persist_request_success(
+                    request_id=request_id,
+                    conversation_id=conversation_id,
+                    content=content,
+                )
+            except asyncio.CancelledError:
+                await asyncio.shield(
+                    self._persist_request_terminal(
+                        request_id=request_id,
+                        status=RequestRunStatus.CANCELLED,
+                        error_code=None,
+                    )
+                )
+                raise
+            except ChatExecutionError as exc:
+                terminal_status = (
+                    RequestRunStatus.CANCELLED
+                    if exc.code == "REQUEST_CANCELLED"
+                    else RequestRunStatus.FAILED
+                )
+                await self._persist_request_terminal(
+                    request_id=request_id,
+                    status=terminal_status,
+                    error_code=None
+                    if terminal_status is RequestRunStatus.CANCELLED
+                    else exc.code,
+                )
+                raise
+            except Exception:
+                await self._persist_request_terminal(
+                    request_id=request_id,
+                    status=RequestRunStatus.FAILED,
+                    error_code="INTERNAL_ERROR",
+                )
+                raise
+
+            return AgentChatResponse(
+                request_id=request_id,
+                content=content,
+                status=RequestRunStatus.COMPLETED,
+            )
+        finally:
+            if self.runtime is not None:
+                await self.runtime.release(lease)
+                if started:
+                    await self.runtime.finish_request(request_id)

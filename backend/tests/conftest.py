@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.infra.database import AsyncSessionLocal, engine
 from app.main import app
+from app.modules.chat.runtime import LocalChatRuntime, get_chat_runtime
 from app.modules.item.model import Item
 from app.modules.user.model import User
 from app.modules.user.schema import UserCreate
@@ -38,9 +39,14 @@ async def db() -> AsyncGenerator[AsyncSession]:
 
 @pytest.fixture(scope="function")
 async def client() -> AsyncGenerator[AsyncClient]:
+    runtime = LocalChatRuntime()
+    app.dependency_overrides[get_chat_runtime] = lambda: runtime
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
+    finally:
+        app.dependency_overrides.pop(get_chat_runtime, None)
 
 
 @pytest.fixture(scope="function")

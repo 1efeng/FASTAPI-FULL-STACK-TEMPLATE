@@ -5,8 +5,8 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.base_repository import BaseRepository
-from app.modules.request_run.model import RequestRun, RequestRunStatus
 from app.modules.conversation.model import Message, MessageRole
+from app.modules.request_run.model import RequestRun, RequestRunStatus
 
 
 class RequestRunRepository(BaseRepository[RequestRun]):

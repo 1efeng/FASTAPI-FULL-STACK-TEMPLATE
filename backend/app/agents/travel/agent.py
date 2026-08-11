@@ -3,13 +3,15 @@
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from deepagents import create_deep_agent
+from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Checkpointer
 
 from app.agents.travel.middleware import RuntimeClockMiddleware
+from app.core.config import settings
 from app.infra.checkpoint import get_checkpointer
 from app.infra.llm import build_model
 
@@ -40,7 +42,16 @@ def build_travel_agent(
     return create_deep_agent(
         model=model,
         system_prompt=_main_system_prompt(),
-        middleware=[RuntimeClockMiddleware()],
+        middleware=[
+            cast(
+                AgentMiddleware,
+                ModelCallLimitMiddleware(
+                    run_limit=settings.MODEL_CALL_LIMIT,
+                    exit_behavior="error",
+                ),
+            ),
+            RuntimeClockMiddleware(),
+        ],
         checkpointer=checkpointer,
         name="travel-agent",
     )

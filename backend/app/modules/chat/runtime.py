@@ -2,9 +2,10 @@ import asyncio
 import logging
 import math
 import uuid
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from redis.asyncio import Redis
@@ -14,6 +15,7 @@ from app.core.config import settings
 from app.infra.redis import get_redis, namespaced_key
 
 logger = logging.getLogger(__name__)
+
 
 AdmissionErrorCode = Literal[
     "RATE_LIMITED",
@@ -55,9 +57,7 @@ class LocalChatRuntime:
     def __init__(self) -> None:
         self._cancel_events: dict[uuid.UUID, asyncio.Event] = {}
 
-    async def admit(
-        self, *, client_ip: str, user_id: uuid.UUID
-    ) -> ChatAdmissionLease:
+    async def admit(self, *, client_ip: str, user_id: uuid.UUID) -> ChatAdmissionLease:
         del client_ip, user_id
         return ChatAdmissionLease()
 
@@ -132,7 +132,7 @@ class RedisChatRuntime(LocalChatRuntime):
         return local_now.strftime("%Y%m%d"), ttl
 
     async def _release_key(self, key: str) -> None:
-        await self.redis.eval(_RELEASE_CONCURRENCY_SCRIPT, 1, key)
+        await cast(Awaitable[Any], self.redis.eval(_RELEASE_CONCURRENCY_SCRIPT, 1, key))
 
     def _redis_failure(self, exc: RedisError) -> ChatAdmissionLease:
         logger.exception("Redis chat protection failed")
@@ -143,19 +143,20 @@ class RedisChatRuntime(LocalChatRuntime):
             message="请求保护服务暂时不可用，请稍后重试。",
         ) from exc
 
-    async def admit(
-        self, *, client_ip: str, user_id: uuid.UUID
-    ) -> ChatAdmissionLease:
+    async def admit(self, *, client_ip: str, user_id: uuid.UUID) -> ChatAdmissionLease:
         concurrency_key = namespaced_key("chat", "concurrency", user_id)
         lease_ttl = max(30, math.ceil(settings.REQUEST_DEADLINE_SECONDS) + 30)
         try:
             acquired = int(
-                await self.redis.eval(
-                    _ACQUIRE_CONCURRENCY_SCRIPT,
-                    1,
-                    concurrency_key,
-                    settings.CHAT_CONCURRENT_LIMIT,
-                    lease_ttl,
+                await cast(
+                    Awaitable[Any],
+                    self.redis.eval(
+                        _ACQUIRE_CONCURRENCY_SCRIPT,
+                        1,
+                        concurrency_key,
+                        settings.CHAT_CONCURRENT_LIMIT,
+                        lease_ttl,
+                    ),
                 )
             )
             if acquired == 0:
@@ -168,17 +169,20 @@ class RedisChatRuntime(LocalChatRuntime):
             minute_bucket = now.strftime("%Y%m%d%H%M")
             daily_bucket, daily_ttl = self._daily_bucket(now)
             decision = int(
-                await self.redis.eval(
-                    _RATE_AND_QUOTA_SCRIPT,
-                    3,
-                    namespaced_key("chat", "rate", "ip", client_ip, minute_bucket),
-                    namespaced_key("chat", "rate", "user", user_id, minute_bucket),
-                    namespaced_key("chat", "quota", user_id, daily_bucket),
-                    settings.CHAT_IP_RATE_LIMIT_PER_MINUTE,
-                    settings.CHAT_USER_RATE_LIMIT_PER_MINUTE,
-                    settings.CHAT_DAILY_QUOTA,
-                    120,
-                    daily_ttl,
+                await cast(
+                    Awaitable[Any],
+                    self.redis.eval(
+                        _RATE_AND_QUOTA_SCRIPT,
+                        3,
+                        namespaced_key("chat", "rate", "ip", client_ip, minute_bucket),
+                        namespaced_key("chat", "rate", "user", user_id, minute_bucket),
+                        namespaced_key("chat", "quota", user_id, daily_bucket),
+                        settings.CHAT_IP_RATE_LIMIT_PER_MINUTE,
+                        settings.CHAT_USER_RATE_LIMIT_PER_MINUTE,
+                        settings.CHAT_DAILY_QUOTA,
+                        120,
+                        daily_ttl,
+                    ),
                 )
             )
             if decision:
@@ -243,5 +247,5 @@ def get_chat_runtime() -> ChatRuntime:
     global _runtime
     redis = get_redis()
     if _runtime is None or _runtime.redis is not redis:
-        _runtime = RedisChatRuntime(cast(Redis, redis))
+        _runtime = RedisChatRuntime(redis)
     return _runtime

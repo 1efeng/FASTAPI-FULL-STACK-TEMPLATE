@@ -155,7 +155,8 @@ async def test_cancel_wins_over_assistant_final_race(
         },
     )
 
-    assert response.status_code == 500
+    assert response.status_code == 409
+    assert response.json()["code"] == "REQUEST_CANCELLED"
     request_id = uuid.UUID(response.json()["request_id"])
     request_run = await db.get(RequestRun, request_id)
     assert request_run is not None

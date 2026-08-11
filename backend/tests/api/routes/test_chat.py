@@ -6,6 +6,9 @@ from typing import Any
 import httpx
 import pytest
 from httpx import AsyncClient
+from langchain.agents.middleware.model_call_limit import (
+    ModelCallLimitExceededError,
+)
 from langchain_core.messages import AIMessage
 from openai import APIStatusError, APITimeoutError, RateLimitError
 from sqlalchemy import func, select
@@ -413,3 +416,52 @@ async def test_agent_chat_maps_provider_failures_without_leaking_details(
     assert roles == [MessageRole.USER]
     assert "provider-secret" not in response.text
     assert "litellm.test" not in response.text
+
+
+async def test_agent_chat_maps_model_call_limit_without_leaking_details(
+    client: AsyncClient,
+    normal_user_token_headers: dict[str, str],
+    normal_user_conversation_id: uuid.UUID,
+    monkeypatch: pytest.MonkeyPatch,
+    db: AsyncSession,
+) -> None:
+    monkeypatch.setattr(
+        service_module,
+        "build_travel_agent",
+        lambda **_: RaisingAgent(
+            ModelCallLimitExceededError(
+                thread_count=0,
+                run_count=settings.MODEL_CALL_LIMIT,
+                thread_limit=None,
+                run_limit=settings.MODEL_CALL_LIMIT,
+            )
+        ),
+    )
+
+    response = await client.post(
+        f"{settings.API_V1_STR}/chat",
+        headers={
+            **normal_user_token_headers,
+            "Idempotency-Key": "model-call-limit",
+        },
+        json={
+            "conversation_id": str(normal_user_conversation_id),
+            "message": "触发模型调用上限",
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == "MODEL_CALL_LIMIT_REACHED"
+    assert "Model call limits exceeded" not in response.text
+    request_id = uuid.UUID(body["request_id"])
+    request_run = await db.get(RequestRun, request_id)
+    assert request_run is not None
+    assert request_run.status is RequestRunStatus.FAILED
+    assert request_run.error_code == "MODEL_CALL_LIMIT_REACHED"
+    roles = (
+        (await db.execute(select(Message.role).where(Message.request_id == request_id)))
+        .scalars()
+        .all()
+    )
+    assert roles == [MessageRole.USER]
