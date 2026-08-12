@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+SUPERSEDED（by v8.2：LangSmith 不再作为当前 AI Trace/Eval 决策，Agent semantic trace 走 OpenTelemetry，AI trace 平台选型 M10 再决策；OTel / LiteLLM / Business Attribution 分层保留）
 
 ## Context
 

@@ -1,4 +1,4 @@
-# ADR-0008: Full-Stack Template 作为 v7 Application Runtime Base
+# ADR-0008: Full-Stack Template 作为 Application Runtime Base
 
 ## Status
 
@@ -34,13 +34,13 @@ https://github.com/1efeng/FASTAPI-FULL-STACK-TEMPLATE
 Redis
 LiteLLM
 Travel Cognitive Core
-LangGraph PostgreSQL Persistence
-LangSmith
 OpenTelemetry
 Conversation / Request Lifecycle
 Agent Streaming Adapter
 Travel Chat
 ```
+
+历史说明：早期 roadmap 中的 `LangGraph PostgreSQL Persistence`、`LangSmith` 已被 v8.2 SUPERSEDED（分别由 StreamResumeStore / OpenTelemetry + M10 决策取代）。
 
 当前项目 Python 基线已经是 3.14。
 具体框架 API 仍必须以 `uv.lock` 中实际版本为准。

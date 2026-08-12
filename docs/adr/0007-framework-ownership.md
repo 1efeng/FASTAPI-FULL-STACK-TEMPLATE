@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+SUPERSEDED（by v8.2：Deep Agents / LangGraph / LangChain 已从 v8 runtime 移除；LangSmith 不再作为当前 AI Trace/Eval 决策；"成熟框架优先、禁止平行自研"的原则本身保留）
 
 ## Context
 
