@@ -1,1 +1,0 @@
-"""AI cognitive-core packages."""

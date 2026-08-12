@@ -68,7 +68,6 @@ class Settings(BaseSettings):
     DATABASE_URL: PostgresDsn | None = None
     MODEL_CALL_LIMIT: int = 20
     TOOL_CALL_LIMIT: int = 50
-    AGENT_RECURSION_LIMIT: int = 25
     OTEL_SERVICE_NAME: str = "travel-agent-api"
     OTLP_ENDPOINT: str | None = None
     TAVILY_API_KEY: str | None = None
@@ -87,12 +86,6 @@ class Settings(BaseSettings):
     LITELLM_BASE_URL: str = "http://localhost:4000"
     LITELLM_SERVICE_KEY: str = ""
     LLM_LOGICAL_MODEL: str = "travel-agent-llm"
-    LANGGRAPH_DATABASE_URL: str | None = None
-    LANGGRAPH_DATABASE_SCHEMA: str = "langgraph"
-    LANGSMITH_TRACING: bool = False
-    LANGSMITH_API_KEY: str | None = None
-    LANGSMITH_PROJECT: str = "travel-agent-v7"
-    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -168,7 +161,6 @@ class Settings(BaseSettings):
         if self.APP_ENV == "production" or self.ENVIRONMENT == "production":
             required = {
                 "LITELLM_SERVICE_KEY": self.LITELLM_SERVICE_KEY,
-                "LANGGRAPH_DATABASE_URL": self.LANGGRAPH_DATABASE_URL,
             }
             missing = [name for name, value in required.items() if not value]
             if missing:

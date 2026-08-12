@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.agents.travel.middleware import runtime_clock_context
+from app.agent.context.runtime_clock import runtime_clock_context
 
 
 def test_runtime_clock_uses_configured_timezone() -> None:

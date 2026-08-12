@@ -85,7 +85,9 @@ async def test_agent_chat_rejects_blank_message(
     client: AsyncClient,
     normal_user_token_headers: dict[str, str],
     normal_user_conversation_id: uuid.UUID,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(api_module, "get_agent_executor", lambda: CallbackExecutor())
     response = await client.post(
         f"{settings.API_V1_STR}/chat",
         headers={
@@ -105,7 +107,9 @@ async def test_agent_chat_requires_idempotency_key(
     client: AsyncClient,
     normal_user_token_headers: dict[str, str],
     normal_user_conversation_id: uuid.UUID,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(api_module, "get_agent_executor", lambda: CallbackExecutor())
     response = await client.post(
         f"{settings.API_V1_STR}/chat",
         headers=normal_user_token_headers,

@@ -15,7 +15,6 @@ def _settings(**overrides: object) -> Settings:
         "FIRST_SUPERUSER_PASSWORD": "safe-superuser-password",
         "SECRET_KEY": "safe-secret-key",
         "LITELLM_SERVICE_KEY": "sk-test",
-        "LANGGRAPH_DATABASE_URL": "postgresql://postgres:password@localhost/app",
     }
     values.update(overrides)
     return Settings.model_validate(values)
