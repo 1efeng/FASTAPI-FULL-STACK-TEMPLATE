@@ -1,5 +1,8 @@
 # LiteLLM 网关契约
 
+> 更新时间：2026-08-13
+> 状态：v8 clean baseline
+
 > P0-1 唯一 LLM Gateway Contract。  
 > 生产选型：**LiteLLM Proxy**。  
 > 本项目不自研通用 LLM Gateway。

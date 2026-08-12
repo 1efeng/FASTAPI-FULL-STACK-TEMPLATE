@@ -589,47 +589,29 @@ async def stream_agent(prompt: str):
         yield chunk
 ```
 
-如果使用 LangGraph / Deep Agents，可以类似：
+Agent 实现（v8 clean baseline 暂无实现，Pydantic AI 下一里程碑接入）接入后保持同样的适配形状，只把 Agent 的流式输出归一化为稳定的 `text.delta` 事件：
 
 ```python
 async def stream_agent(prompt: str):
-    async for event in agent.astream_events(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ]
-        },
-        version="v2",
-    ):
-        if event["event"] != "on_chat_model_stream":
-            continue
-
-        chunk = event["data"]["chunk"]
-
-        content = getattr(
-            chunk,
-            "content",
-            "",
-        )
+    async for chunk in your_agent_stream(prompt):
+        content = getattr(chunk, "content", "")
 
         if isinstance(content, str) and content:
-            yield content
+            yield {"type": "text.delta", "data": {"delta": content}}
 ```
 
 以后要增加 Tool Event，也只改这一层：
 
 ```python
-if event["event"] == "on_tool_start":
-    await append_event(
-        run_id,
-        "tool.started",
-        {
-            "tool": event["name"],
-        },
-    )
+async for chunk in your_agent_stream(prompt):
+    if chunk.get("type") == "tool_started":
+        await append_event(
+            run_id,
+            "tool.started",
+            {
+                "tool": chunk.get("name"),
+            },
+        )
 ```
 
 Agent Framework 本身不需要知道 SSE 存在。

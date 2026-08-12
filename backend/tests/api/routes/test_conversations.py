@@ -56,9 +56,7 @@ async def test_create_conversation_hides_internal_ownership_fields(
     assert content["title"] == "Tokyo plan"
     assert content["last_message_at"] is None
     assert "id" in content
-    assert "user_id" not in content
-    assert "langgraph_thread_id" not in content
-    assert "deleted_at" not in content
+    assert set(content) == {"id", "title", "last_message_at", "created_at", "updated_at"}
 
 
 async def test_list_conversations_is_owned_active_and_stably_ordered(

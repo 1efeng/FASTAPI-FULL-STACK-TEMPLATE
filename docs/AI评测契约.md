@@ -1,7 +1,7 @@
 # AI 评测契约
 
 > P0 目标：建立 Release Gate，不自研 Eval Platform。  
-> 平台：优先 LangSmith Dataset / Evaluator / Experiment，必要时 AgentEvals/OpenEvals。
+> 平台：eval 平台选型 M10 再决策；决策前以 deterministic 评估 + 轻量语义评估为主。
 
 # 1. Release Rule
 
@@ -23,7 +23,7 @@
 pytest
 → exact deterministic contract
 
-LangSmith / AgentEvals
+AI eval（平台 M10 再决策，当前轻量语义评估）
 → semantic quality / trajectory
 ```
 
