@@ -8,10 +8,10 @@ from httpx import AsyncClient
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.executor import AgentExecutionResult
 from app.core.config import settings
 from app.infra.database import AsyncSessionLocal
 from app.modules.chat import api as api_module
-from app.modules.chat.executor import AgentExecutionResult
 from app.modules.chat.service import ChatService
 from app.modules.conversation.model import Message, MessageRole
 from app.modules.request_run.model import RequestRun, RequestRunStatus

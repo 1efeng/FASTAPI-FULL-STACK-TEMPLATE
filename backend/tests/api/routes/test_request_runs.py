@@ -3,9 +3,9 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
+from app.agent.executor import AgentExecutionResult
 from app.core.config import settings
 from app.modules.chat import api as api_module
-from app.modules.chat.executor import AgentExecutionResult
 
 
 class SuccessfulExecutor:

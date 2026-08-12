@@ -8,8 +8,8 @@ from typing import Literal
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.executor import AgentExecutionError, AgentExecutor
 from app.core.config import settings
-from app.modules.chat.executor import AgentExecutionError, AgentExecutor
 from app.modules.chat.runtime import (
     ChatAdmissionLease,
     ChatAdmissionRejected,

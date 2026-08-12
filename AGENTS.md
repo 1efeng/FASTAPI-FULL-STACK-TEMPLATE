@@ -91,7 +91,7 @@ FastAPI Product Runtime
   ├─ Deadline / Explicit Cancellation
   └─ Usage / Billing / Audit
   ↓
-AgentExecutor            ← app/modules/chat/executor.py（framework-neutral port）
+AgentExecutor            ← app/agent/executor.py（framework-neutral port）
   ↓
 Pydantic AI              ← 下一 milestone
   ↓
