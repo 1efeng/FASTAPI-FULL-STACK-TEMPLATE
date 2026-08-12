@@ -20,12 +20,6 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Uuid(), nullable=False, comment="所属用户ID"),
         sa.Column("title", sa.String(length=255), nullable=True, comment="会话标题"),
         sa.Column(
-            "langgraph_thread_id",
-            sa.Uuid(),
-            nullable=False,
-            comment="LangGraph runtime thread opaque mapping",
-        ),
-        sa.Column(
             "last_message_at",
             sa.DateTime(timezone=True),
             nullable=True,
@@ -59,10 +53,6 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_conversation"),
-        sa.UniqueConstraint(
-            "langgraph_thread_id",
-            name="uq_conversation_langgraph_thread_id",
-        ),
     )
     op.create_index(
         "ix_conversation_active_user_last_message",

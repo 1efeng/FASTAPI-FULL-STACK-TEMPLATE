@@ -38,10 +38,6 @@ class Conversation(BaseModel):
         default=None,
         comment="会话标题",
     )
-    langgraph_thread_id: Mapped[uuid.UUID] = mapped_column(
-        default=uuid.uuid4,
-        comment="LangGraph runtime thread opaque mapping",
-    )
     last_message_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         default=None,
@@ -51,13 +47,6 @@ class Conversation(BaseModel):
         DateTime(timezone=True),
         default=None,
         comment="软删除时间",
-    )
-
-    __table_args__ = (
-        UniqueConstraint(
-            "langgraph_thread_id",
-            name="uq_conversation_langgraph_thread_id",
-        ),
     )
 
 

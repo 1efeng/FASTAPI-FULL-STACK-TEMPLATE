@@ -66,7 +66,6 @@ async def test_business_persistence_round_trip(db: AsyncSession) -> None:
     await db.refresh(request_run)
     await db.refresh(user_message)
 
-    assert conversation.langgraph_thread_id != conversation.id
     assert request_run.id == user_message.request_id
     assert request_run.id == request_id
     assert request_run.status is RequestRunStatus.RUNNING
@@ -263,7 +262,6 @@ async def test_schema_has_contract_indexes_and_constraints(
         "ck_message_role",
         "ck_request_run_finished_at",
         "ck_request_run_status",
-        "uq_conversation_langgraph_thread_id",
         "uq_message_request_role",
         "uq_message_seq",
         "uq_request_run_user_idempotency",
