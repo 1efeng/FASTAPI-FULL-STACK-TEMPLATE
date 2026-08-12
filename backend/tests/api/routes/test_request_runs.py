@@ -1,17 +1,24 @@
 import uuid
-from typing import Any
 
 import pytest
 from httpx import AsyncClient
-from langchain_core.messages import AIMessage
 
 from app.core.config import settings
-from app.modules.chat import service as service_module
+from app.modules.chat import api as api_module
+from app.modules.chat.executor import AgentExecutionResult
 
 
-class SuccessfulAgent:
-    async def ainvoke(self, *_: Any, **__: Any) -> dict[str, list[AIMessage]]:
-        return {"messages": [AIMessage(content="done")]}
+class SuccessfulExecutor:
+    async def execute(
+        self,
+        *,
+        request_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        message: str,
+        deadline_at: object,
+    ) -> AgentExecutionResult:
+        del request_id, conversation_id, message, deadline_at
+        return AgentExecutionResult(content="done")
 
 
 async def _completed_request(
@@ -27,9 +34,9 @@ async def _completed_request(
     assert conversation_response.status_code == 200
     conversation_id = uuid.UUID(conversation_response.json()["id"])
     monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        lambda **_: SuccessfulAgent(),
+        api_module,
+        "get_agent_executor",
+        lambda: SuccessfulExecutor(),
     )
     chat_response = await client.post(
         f"{settings.API_V1_STR}/chat",

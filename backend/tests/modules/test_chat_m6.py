@@ -1,21 +1,21 @@
 import asyncio
 import uuid
 from datetime import timedelta
-from typing import Any
 
 import pytest
 from httpx import AsyncClient
-from langchain_core.messages import AIMessage
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.modules.chat import api as api_module
 from app.modules.chat import service as service_module
+from app.modules.chat.executor import AgentExecutionResult
 from app.modules.conversation.model import Message
 from app.modules.request_run.model import RequestRun, RequestRunStatus
 
 
-class CountingAgent:
+class CountingExecutor:
     def __init__(
         self,
         counter: list[int],
@@ -27,13 +27,21 @@ class CountingAgent:
         self.entered = entered
         self.release = release
 
-    async def ainvoke(self, *_: Any, **__: Any) -> dict[str, list[AIMessage]]:
+    async def execute(
+        self,
+        *,
+        request_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        message: str,
+        deadline_at: object,
+    ) -> AgentExecutionResult:
+        del request_id, conversation_id, message, deadline_at
         self.counter[0] += 1
         if self.entered is not None:
             self.entered.set()
         if self.release is not None:
             await self.release.wait()
-        return {"messages": [AIMessage(content="idempotent answer")]}
+        return AgentExecutionResult(content="idempotent answer")
 
 
 async def _create_conversation(
@@ -81,9 +89,9 @@ async def test_completed_idempotency_replay_has_no_duplicate_cost(
     )
     calls = [0]
     monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        lambda **_: CountingAgent(calls),
+        api_module,
+        "get_agent_executor",
+        lambda: CountingExecutor(calls),
     )
 
     first = await _post_chat(
@@ -143,9 +151,9 @@ async def test_running_idempotency_replay_returns_existing_request(
     release = asyncio.Event()
     calls = [0]
     monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        lambda **_: CountingAgent(calls, entered=entered, release=release),
+        api_module,
+        "get_agent_executor",
+        lambda: CountingExecutor(calls, entered=entered, release=release),
     )
 
     first_task = asyncio.create_task(
@@ -213,9 +221,9 @@ async def test_concurrent_idempotency_race_executes_agent_once(
         synchronized_lookup,
     )
     monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        lambda **_: CountingAgent(calls),
+        api_module,
+        "get_agent_executor",
+        lambda: CountingExecutor(calls),
     )
 
     first, second = await asyncio.gather(
@@ -253,9 +261,9 @@ async def test_reusing_idempotency_key_for_different_payload_is_rejected(
     )
     calls = [0]
     monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        lambda **_: CountingAgent(calls),
+        api_module,
+        "get_agent_executor",
+        lambda: CountingExecutor(calls),
     )
     first = await _post_chat(
         client,
@@ -295,9 +303,9 @@ async def test_explicit_cancel_is_owned_and_stops_agent(
     release = asyncio.Event()
     calls = [0]
     monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        lambda **_: CountingAgent(calls, entered=entered, release=release),
+        api_module,
+        "get_agent_executor",
+        lambda: CountingExecutor(calls, entered=entered, release=release),
     )
     chat_task = asyncio.create_task(
         _post_chat(
@@ -353,9 +361,9 @@ async def test_absolute_deadline_marks_request_failed(
     calls = [0]
     monkeypatch.setattr(settings, "REQUEST_DEADLINE_SECONDS", 0.05)
     monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        lambda **_: CountingAgent(calls, entered=entered, release=release),
+        api_module,
+        "get_agent_executor",
+        lambda: CountingExecutor(calls, entered=entered, release=release),
     )
 
     response = await _post_chat(

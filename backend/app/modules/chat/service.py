@@ -5,18 +5,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from langchain.agents.middleware.model_call_limit import (
-    ModelCallLimitExceededError,
-)
-from langchain_core.messages import BaseMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.errors import GraphRecursionError
-from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.travel import build_travel_agent
 from app.core.config import settings
+from app.modules.chat.executor import AgentExecutionError, AgentExecutor
 from app.modules.chat.runtime import (
     ChatAdmissionLease,
     ChatAdmissionRejected,
@@ -54,19 +47,6 @@ class ChatExecutionError(Exception):
     request_id: uuid.UUID | None = None
 
 
-def _message_text(message: BaseMessage) -> str:
-    if isinstance(message.content, str):
-        return message.content.strip()
-
-    parts: list[str] = []
-    for block in message.content:
-        if isinstance(block, str):
-            parts.append(block)
-        elif block.get("type") == "text" and isinstance(block.get("text"), str):
-            parts.append(block["text"])
-    return "\n".join(parts).strip()
-
-
 def remaining_seconds(
     deadline_at: datetime,
     *,
@@ -80,13 +60,39 @@ class RequestTerminalTransitionError(RuntimeError):
     pass
 
 
+# AgentExecutionError → Product error contract 映射。错误文案不泄露 provider 细节。
+_EXECUTOR_ERROR_MAP: dict[str, tuple[str, bool, int]] = {
+    "AGENT_LOOP_LIMIT_REACHED": (
+        "规划步骤超过安全上限，请简化问题后重试。",
+        False,
+        422,
+    ),
+    "MODEL_CALL_LIMIT_REACHED": (
+        "模型调用次数超过安全上限，请简化问题后重试。",
+        False,
+        422,
+    ),
+    "MODEL_TIMEOUT": ("模型响应超时，请稍后重试。", True, 504),
+    "MODEL_RATE_LIMITED": ("当前规划服务繁忙，请稍后重试。", True, 429),
+    "MODEL_UNAVAILABLE": ("当前规划服务暂时不可用，请稍后重试。", True, 503),
+}
+
+
 class ChatService:
+    """Product-owned chat orchestration.
+
+    Product Runtime 拥有 Request lifecycle（幂等 / 持久化 / deadline / cancel /
+    error contract）；Agent Framework 只能通过 AgentExecutor 被调用。
+    """
+
     def __init__(
         self,
         db: AsyncSession,
+        executor: AgentExecutor,
         runtime: ChatRuntime | None = None,
-    ):
+    ) -> None:
         self.db = db
+        self.executor = executor
         self.runtime = runtime
         self.conversation_repo = ConversationRepository(db)
         self.request_run_repo = RequestRunRepository(db)
@@ -147,7 +153,7 @@ class ChatService:
         conversation_id: uuid.UUID,
         idempotency_key: str,
         message: str,
-    ) -> tuple[uuid.UUID, datetime]:
+    ) -> datetime:
         started_at = datetime.now(UTC)
         deadline_at = started_at + timedelta(seconds=settings.REQUEST_DEADLINE_SECONDS)
         try:
@@ -183,7 +189,7 @@ class ChatService:
             conversation.last_message_at = started_at
             await self.conversation_repo.update(conversation)
             await self.db.commit()
-            return conversation.langgraph_thread_id, deadline_at
+            return deadline_at
         except Exception:
             await self.db.rollback()
             raise
@@ -273,33 +279,21 @@ class ChatService:
                 return
             await asyncio.sleep(0.25)
 
-    async def _invoke_agent(
+    async def _execute_agent(
         self,
         *,
         request_id: uuid.UUID,
         conversation_id: uuid.UUID,
-        langgraph_thread_id: uuid.UUID,
         deadline_at: datetime,
         message: str,
         disconnect_checker: Callable[[], Awaitable[bool]] | None,
     ) -> str:
-        agent = build_travel_agent(
-            request_id=str(request_id),
-            metadata={
-                "endpoint": "chat",
-                "conversation_id": str(conversation_id),
-            },
-        )
-
-        config: RunnableConfig = {
-            "recursion_limit": settings.AGENT_RECURSION_LIMIT,
-            "configurable": {"thread_id": str(langgraph_thread_id)},
-        }
-
-        invoke_task = asyncio.create_task(
-            agent.ainvoke(
-                {"messages": [{"role": "user", "content": message}]},
-                config=config,
+        execute_task = asyncio.create_task(
+            self.executor.execute(
+                request_id=request_id,
+                conversation_id=conversation_id,
+                message=message,
+                deadline_at=deadline_at,
             )
         )
         watchers: list[asyncio.Task[None]] = []
@@ -319,12 +313,12 @@ class ChatService:
             async with asyncio.timeout(timeout):
                 if watchers:
                     done, _ = await asyncio.wait(
-                        [invoke_task, *watchers],
+                        [execute_task, *watchers],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
-                    if invoke_task not in done:
-                        invoke_task.cancel()
-                        await asyncio.gather(invoke_task, return_exceptions=True)
+                    if execute_task not in done:
+                        execute_task.cancel()
+                        await asyncio.gather(execute_task, return_exceptions=True)
                         raise ChatExecutionError(
                             code="REQUEST_CANCELLED",
                             message="请求已取消。",
@@ -332,7 +326,7 @@ class ChatService:
                             status_code=409,
                             request_id=request_id,
                         )
-                result = await invoke_task
+                result = await execute_task
         except TimeoutError as exc:
             raise ChatExecutionError(
                 code="REQUEST_DEADLINE_EXCEEDED",
@@ -341,57 +335,23 @@ class ChatService:
                 status_code=504,
                 request_id=request_id,
             ) from exc
-        except ModelCallLimitExceededError as exc:
+        except AgentExecutionError as exc:
+            message_text, retryable, status_code = _EXECUTOR_ERROR_MAP[exc.code]
             raise ChatExecutionError(
-                code="MODEL_CALL_LIMIT_REACHED",
-                message="模型调用次数超过安全上限，请简化问题后重试。",
-                retryable=False,
-                status_code=422,
-                request_id=request_id,
-            ) from exc
-        except GraphRecursionError as exc:
-            raise ChatExecutionError(
-                code="AGENT_LOOP_LIMIT_REACHED",
-                message="规划步骤超过安全上限，请简化问题后重试。",
-                retryable=False,
-                status_code=422,
-                request_id=request_id,
-            ) from exc
-        except APITimeoutError as exc:
-            raise ChatExecutionError(
-                code="MODEL_TIMEOUT",
-                message="模型响应超时，请稍后重试。",
-                retryable=True,
-                status_code=504,
-                request_id=request_id,
-            ) from exc
-        except RateLimitError as exc:
-            raise ChatExecutionError(
-                code="MODEL_RATE_LIMITED",
-                message="当前规划服务繁忙，请稍后重试。",
-                retryable=True,
-                status_code=429,
-                request_id=request_id,
-            ) from exc
-        except (APIConnectionError, APIStatusError) as exc:
-            raise ChatExecutionError(
-                code="MODEL_UNAVAILABLE",
-                message="当前规划服务暂时不可用，请稍后重试。",
-                retryable=True,
-                status_code=503,
+                code=exc.code,
+                message=message_text,
+                retryable=retryable,
+                status_code=status_code,
                 request_id=request_id,
             ) from exc
         finally:
-            if not invoke_task.done():
-                invoke_task.cancel()
+            if not execute_task.done():
+                execute_task.cancel()
             for watcher in watchers:
                 watcher.cancel()
-            await asyncio.gather(invoke_task, *watchers, return_exceptions=True)
+            await asyncio.gather(execute_task, *watchers, return_exceptions=True)
 
-        messages = result.get("messages")
-        if not messages or not isinstance(messages[-1], BaseMessage):
-            raise RuntimeError("Agent returned no final message")
-        content = _message_text(messages[-1])
+        content = result.content
         if not content:
             raise RuntimeError("Agent returned an empty final message")
         return content
@@ -437,7 +397,7 @@ class ChatService:
         started = False
         try:
             try:
-                langgraph_thread_id, deadline_at = await self._persist_request_start(
+                deadline_at = await self._persist_request_start(
                     request_id=request_id,
                     user_id=user_id,
                     conversation_id=conversation_id,
@@ -470,10 +430,9 @@ class ChatService:
                 raise
 
             try:
-                content = await self._invoke_agent(
+                content = await self._execute_agent(
                     request_id=request_id,
                     conversation_id=conversation_id,
-                    langgraph_thread_id=langgraph_thread_id,
                     deadline_at=deadline_at,
                     message=message,
                     disconnect_checker=disconnect_checker,

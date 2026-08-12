@@ -2,39 +2,46 @@ import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
 
 import pytest
 from httpx import AsyncClient
-from langchain_core.messages import AIMessage
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.infra.database import AsyncSessionLocal
-from app.modules.chat import service as service_module
+from app.modules.chat import api as api_module
+from app.modules.chat.executor import AgentExecutionResult
 from app.modules.chat.service import ChatService
 from app.modules.conversation.model import Message, MessageRole
 from app.modules.request_run.model import RequestRun, RequestRunStatus
 from app.modules.user.service import UserService
 
 
-class CallbackAgent:
+class CallbackExecutor:
     def __init__(
         self,
         *,
-        callback: Callable[[], Awaitable[None]] | None = None,
+        callback: Callable[[uuid.UUID], Awaitable[None]] | None = None,
         error: BaseException | None = None,
     ) -> None:
         self.callback = callback
         self.error = error
 
-    async def ainvoke(self, *_: Any, **__: Any) -> dict[str, list[AIMessage]]:
+    async def execute(
+        self,
+        *,
+        request_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        message: str,
+        deadline_at: object,
+    ) -> AgentExecutionResult:
+        del conversation_id, message, deadline_at
         if self.callback is not None:
-            await self.callback()
+            await self.callback(request_id)
         if self.error is not None:
             raise self.error
-        return {"messages": [AIMessage(content="durable final")]}
+        return AgentExecutionResult(content="durable final")
 
 
 async def _create_conversation(
@@ -85,9 +92,9 @@ async def test_assistant_commit_failure_cannot_leave_false_completed(
 
     with monkeypatch.context() as scoped:
         scoped.setattr(
-            service_module,
-            "build_travel_agent",
-            lambda **_: CallbackAgent(),
+            api_module,
+            "get_agent_executor",
+            lambda: CallbackExecutor(),
         )
         scoped.setattr(AsyncSession, "commit", fail_second_commit)
         response = await client.post(
@@ -123,12 +130,13 @@ async def test_cancel_wins_over_assistant_final_race(
     )
     captured: dict[str, str] = {}
 
-    async def cancel_running_request() -> None:
+    async def cancel_running_request(request_id: uuid.UUID) -> None:
+        captured["request_id"] = str(request_id)
         async with AsyncSessionLocal() as session:
             await session.execute(
                 update(RequestRun)
                 .where(
-                    RequestRun.id == uuid.UUID(captured["request_id"]),
+                    RequestRun.id == request_id,
                     RequestRun.status == RequestRunStatus.RUNNING,
                 )
                 .values(
@@ -138,11 +146,11 @@ async def test_cancel_wins_over_assistant_final_race(
             )
             await session.commit()
 
-    def build_agent(**kwargs: Any) -> CallbackAgent:
-        captured["request_id"] = kwargs["request_id"]
-        return CallbackAgent(callback=cancel_running_request)
-
-    monkeypatch.setattr(service_module, "build_travel_agent", build_agent)
+    monkeypatch.setattr(
+        api_module,
+        "get_agent_executor",
+        lambda: CallbackExecutor(callback=cancel_running_request),
+    )
     response = await client.post(
         f"{settings.API_V1_STR}/chat",
         headers={
@@ -178,12 +186,12 @@ async def test_task_cancellation_marks_request_cancelled(
     assert user is not None
     request_id = uuid.uuid4()
     monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        lambda **_: CallbackAgent(error=asyncio.CancelledError()),
+        api_module,
+        "get_agent_executor",
+        lambda: CallbackExecutor(error=asyncio.CancelledError()),
     )
 
-    service = ChatService(db)
+    service = ChatService(db, executor=CallbackExecutor(error=asyncio.CancelledError()))
     with pytest.raises(asyncio.CancelledError):
         await service.chat(
             request_id=request_id,

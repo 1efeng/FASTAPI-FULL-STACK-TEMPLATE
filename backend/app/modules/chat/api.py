@@ -2,10 +2,11 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.core.deps import CurrentUser, SessionDep
+from app.modules.chat.executor import AgentRuntimeNotConfigured, get_agent_executor
 from app.modules.chat.runtime import ChatRuntime, get_chat_runtime
 from app.modules.chat.schema import AgentChatError, AgentChatRequest, AgentChatResponse
 from app.modules.chat.service import ChatExecutionError, ChatService
@@ -18,7 +19,14 @@ ChatRuntimeDep = Annotated[ChatRuntime, Depends(get_chat_runtime)]
 
 
 def get_chat_service(db: SessionDep, runtime: ChatRuntimeDep) -> ChatService:
-    return ChatService(db, runtime)
+    try:
+        executor = get_agent_executor()
+    except AgentRuntimeNotConfigured as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent runtime is not configured in the v8 clean baseline.",
+        ) from exc
+    return ChatService(db, executor=executor, runtime=runtime)
 
 
 ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
@@ -54,7 +62,7 @@ async def chat(
     service: ChatServiceDep,
     idempotency_key: IdempotencyKey,
 ) -> AgentChatResponse | JSONResponse:
-    """Run one authenticated, non-streaming Travel Agent request."""
+    """Run one authenticated, non-streaming chat request through AgentExecutor."""
     request_id = uuid.uuid4()
     try:
         result = await service.chat(

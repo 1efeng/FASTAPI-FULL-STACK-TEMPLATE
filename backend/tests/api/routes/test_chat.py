@@ -1,53 +1,59 @@
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import Any
 
-import httpx
 import pytest
 from httpx import AsyncClient
-from langchain.agents.middleware.model_call_limit import (
-    ModelCallLimitExceededError,
-)
-from langchain_core.messages import AIMessage
-from openai import APIStatusError, APITimeoutError, RateLimitError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.infra.database import AsyncSessionLocal
-from app.modules.chat import service as service_module
+from app.modules.chat import api as api_module
+from app.modules.chat.executor import AgentExecutionError, AgentExecutionResult
 from app.modules.conversation.model import Conversation, Message, MessageRole
 from app.modules.request_run.model import RequestRun, RequestRunStatus
 
 
-class FakeAgent:
-    def __init__(self, on_invoke: Callable[[], Awaitable[None]] | None = None) -> None:
-        self.input: dict[str, Any] | None = None
-        self.config: dict[str, Any] | None = None
-        self.on_invoke = on_invoke
-
-    async def ainvoke(
+class CallbackExecutor:
+    def __init__(
         self,
-        input: dict[str, Any],
-        config: dict[str, Any],
-    ) -> dict[str, list[AIMessage]]:
-        self.input = input
-        self.config = config
-        if self.on_invoke is not None:
-            await self.on_invoke()
-        return {"messages": [AIMessage(content="测试回复")]}
+        *,
+        on_execute: Callable[[uuid.UUID], Awaitable[None]] | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        self.on_execute = on_execute
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+
+    async def execute(
+        self,
+        *,
+        request_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        message: str,
+        deadline_at: object,
+    ) -> AgentExecutionResult:
+        self.calls.append(
+            {
+                "request_id": request_id,
+                "conversation_id": conversation_id,
+                "message": message,
+                "deadline_at": deadline_at,
+            }
+        )
+        if self.on_execute is not None:
+            await self.on_execute(request_id)
+        if self.error is not None:
+            raise self.error
+        return AgentExecutionResult(content="测试回复")
 
 
-class RaisingAgent:
-    def __init__(self, error: Exception) -> None:
+class RaisingExecutor:
+    def __init__(self, error: BaseException) -> None:
         self.error = error
 
-    async def ainvoke(
-        self,
-        _input: dict[str, Any],
-        **_: Any,
-    ) -> dict[str, list[AIMessage]]:
+    async def execute(self, *_: object, **__: object) -> AgentExecutionResult:
         raise self.error
 
 
@@ -119,10 +125,11 @@ async def test_agent_chat_invokes_agent(
     monkeypatch: pytest.MonkeyPatch,
     db: AsyncSession,
 ) -> None:
-    captured: dict[str, Any] = {}
+    captured_request_id: uuid.UUID | None = None
 
-    async def assert_request_is_durable_before_agent() -> None:
-        request_id = uuid.UUID(captured["request_id"])
+    async def assert_request_is_durable_before_agent(request_id: uuid.UUID) -> None:
+        nonlocal captured_request_id
+        captured_request_id = request_id
         async with AsyncSessionLocal() as session:
             request_run = await session.get(RequestRun, request_id)
             assert request_run is not None
@@ -145,17 +152,8 @@ async def test_agent_chat_invokes_agent(
             assert conversation is not None
             assert conversation.last_message_at == request_run.started_at
 
-    fake_agent = FakeAgent(on_invoke=assert_request_is_durable_before_agent)
-
-    def fake_build_travel_agent(**kwargs: Any) -> FakeAgent:
-        captured.update(kwargs)
-        return fake_agent
-
-    monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        fake_build_travel_agent,
-    )
+    executor = CallbackExecutor(on_execute=assert_request_is_durable_before_agent)
+    monkeypatch.setattr(api_module, "get_agent_executor", lambda: executor)
     response = await client.post(
         f"{settings.API_V1_STR}/chat",
         headers={
@@ -195,19 +193,12 @@ async def test_agent_chat_invokes_agent(
     ]
     assert messages[-1].content == "测试回复"
     assert conversation.last_message_at == request_run.finished_at
-    assert body["request_id"] == captured["request_id"]
+    assert body["request_id"] == str(captured_request_id)
     assert body["content"] == "测试回复"
-    assert captured["metadata"] == {
-        "endpoint": "chat",
-        "conversation_id": str(normal_user_conversation_id),
-    }
-    assert fake_agent.input == {
-        "messages": [{"role": "user", "content": "帮我规划上海两日游"}]
-    }
-    assert fake_agent.config == {
-        "recursion_limit": settings.AGENT_RECURSION_LIMIT,
-        "configurable": {"thread_id": str(conversation.langgraph_thread_id)},
-    }
+    assert len(executor.calls) == 1
+    assert executor.calls[0]["request_id"] == request_id
+    assert executor.calls[0]["conversation_id"] == normal_user_conversation_id
+    assert executor.calls[0]["message"] == "帮我规划上海两日游"
 
 
 async def test_agent_chat_rejects_other_users_conversation_before_agent(
@@ -217,14 +208,24 @@ async def test_agent_chat_rejects_other_users_conversation_before_agent(
     monkeypatch: pytest.MonkeyPatch,
     db: AsyncSession,
 ) -> None:
-    agent_built = False
+    executed = False
 
-    def fail_if_agent_is_built(**_: Any) -> FakeAgent:
-        nonlocal agent_built
-        agent_built = True
-        return FakeAgent()
+    def fail_if_agent_is_executed() -> CallbackExecutor:
+        executor = CallbackExecutor()
 
-    monkeypatch.setattr(service_module, "build_travel_agent", fail_if_agent_is_built)
+        async def mark_executed(*_: object, **__: object) -> AgentExecutionResult:
+            nonlocal executed
+            executed = True
+            return AgentExecutionResult(content="should not run")
+
+        executor.execute = mark_executed  # type: ignore[method-assign]
+        return executor
+
+    monkeypatch.setattr(
+        api_module,
+        "get_agent_executor",
+        fail_if_agent_is_executed,
+    )
     response = await client.post(
         f"{settings.API_V1_STR}/chat",
         headers={
@@ -247,7 +248,7 @@ async def test_agent_chat_rejects_other_users_conversation_before_agent(
     assert response.status_code == 404
     assert response.json()["code"] == "CONVERSATION_NOT_FOUND"
     assert request_count == 0
-    assert agent_built is False
+    assert executed is False
 
 
 async def test_agent_chat_rejects_deleted_conversation_before_agent(
@@ -262,14 +263,24 @@ async def test_agent_chat_rejects_deleted_conversation_before_agent(
     )
     assert delete_response.status_code == 200
 
-    agent_built = False
+    executed = False
 
-    def fail_if_agent_is_built(**_: Any) -> FakeAgent:
-        nonlocal agent_built
-        agent_built = True
-        return FakeAgent()
+    def fail_if_agent_is_executed() -> CallbackExecutor:
+        executor = CallbackExecutor()
 
-    monkeypatch.setattr(service_module, "build_travel_agent", fail_if_agent_is_built)
+        async def mark_executed(*_: object, **__: object) -> AgentExecutionResult:
+            nonlocal executed
+            executed = True
+            return AgentExecutionResult(content="should not run")
+
+        executor.execute = mark_executed  # type: ignore[method-assign]
+        return executor
+
+    monkeypatch.setattr(
+        api_module,
+        "get_agent_executor",
+        fail_if_agent_is_executed,
+    )
     response = await client.post(
         f"{settings.API_V1_STR}/chat",
         headers={
@@ -284,7 +295,7 @@ async def test_agent_chat_rejects_deleted_conversation_before_agent(
 
     assert response.status_code == 404
     assert response.json()["code"] == "CONVERSATION_NOT_FOUND"
-    assert agent_built is False
+    assert executed is False
 
 
 async def test_agent_does_not_run_when_start_transaction_rolls_back(
@@ -294,18 +305,28 @@ async def test_agent_does_not_run_when_start_transaction_rolls_back(
     monkeypatch: pytest.MonkeyPatch,
     db: AsyncSession,
 ) -> None:
-    agent_built = False
+    executed = False
 
-    def fail_if_agent_is_built(**_: Any) -> FakeAgent:
-        nonlocal agent_built
-        agent_built = True
-        return FakeAgent()
+    def fail_if_agent_is_executed() -> CallbackExecutor:
+        executor = CallbackExecutor()
+
+        async def mark_executed(*_: object, **__: object) -> AgentExecutionResult:
+            nonlocal executed
+            executed = True
+            return AgentExecutionResult(content="should not run")
+
+        executor.execute = mark_executed  # type: ignore[method-assign]
+        return executor
 
     async def fail_commit(_session: AsyncSession) -> None:
         raise RuntimeError("forced start transaction commit failure")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(service_module, "build_travel_agent", fail_if_agent_is_built)
+        scoped.setattr(
+            api_module,
+            "get_agent_executor",
+            fail_if_agent_is_executed,
+        )
         scoped.setattr(AsyncSession, "commit", fail_commit)
         response = await client.post(
             f"{settings.API_V1_STR}/chat",
@@ -339,58 +360,38 @@ async def test_agent_does_not_run_when_start_transaction_rolls_back(
     assert "forced start transaction commit failure" not in response.text
     assert run_count == 0
     assert message_count == 0
-    assert agent_built is False
-
-
-def _request() -> httpx.Request:
-    return httpx.Request("POST", "http://litellm.test/v1/chat/completions")
+    assert executed is False
 
 
 @pytest.mark.parametrize(
-    ("error_factory", "status_code", "error_code"),
+    ("executor_error_code", "status_code", "error_code"),
     [
-        (lambda: APITimeoutError(request=_request()), 504, "MODEL_TIMEOUT"),
-        (
-            lambda: RateLimitError(
-                "provider-secret-rate-limit",
-                response=httpx.Response(429, request=_request()),
-                body={"error": "provider-secret-rate-limit"},
-            ),
-            429,
-            "MODEL_RATE_LIMITED",
-        ),
-        (
-            lambda: APIStatusError(
-                "provider-secret-internal-detail",
-                response=httpx.Response(503, request=_request()),
-                body={"error": "provider-secret-internal-detail"},
-            ),
-            503,
-            "MODEL_UNAVAILABLE",
-        ),
+        ("MODEL_TIMEOUT", 504, "MODEL_TIMEOUT"),
+        ("MODEL_RATE_LIMITED", 429, "MODEL_RATE_LIMITED"),
+        ("MODEL_UNAVAILABLE", 503, "MODEL_UNAVAILABLE"),
     ],
 )
-async def test_agent_chat_maps_provider_failures_without_leaking_details(
+async def test_agent_chat_maps_executor_failures_without_leaking_details(
     client: AsyncClient,
     normal_user_token_headers: dict[str, str],
     normal_user_conversation_id: uuid.UUID,
     monkeypatch: pytest.MonkeyPatch,
-    error_factory: Any,
+    executor_error_code: str,
     status_code: int,
     error_code: str,
     db: AsyncSession,
 ) -> None:
     monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        lambda **_: RaisingAgent(error_factory()),
+        api_module,
+        "get_agent_executor",
+        lambda: RaisingExecutor(AgentExecutionError(code=executor_error_code)),  # type: ignore[arg-type]
     )
 
     response = await client.post(
         f"{settings.API_V1_STR}/chat",
         headers={
             **normal_user_token_headers,
-            "Idempotency-Key": "provider-failure",
+            "Idempotency-Key": "executor-failure",
         },
         json={
             "conversation_id": str(normal_user_conversation_id),
@@ -414,8 +415,6 @@ async def test_agent_chat_maps_provider_failures_without_leaking_details(
         .all()
     )
     assert roles == [MessageRole.USER]
-    assert "provider-secret" not in response.text
-    assert "litellm.test" not in response.text
 
 
 async def test_agent_chat_maps_model_call_limit_without_leaking_details(
@@ -426,15 +425,10 @@ async def test_agent_chat_maps_model_call_limit_without_leaking_details(
     db: AsyncSession,
 ) -> None:
     monkeypatch.setattr(
-        service_module,
-        "build_travel_agent",
-        lambda **_: RaisingAgent(
-            ModelCallLimitExceededError(
-                thread_count=0,
-                run_count=settings.MODEL_CALL_LIMIT,
-                thread_limit=None,
-                run_limit=settings.MODEL_CALL_LIMIT,
-            )
+        api_module,
+        "get_agent_executor",
+        lambda: RaisingExecutor(
+            AgentExecutionError(code="MODEL_CALL_LIMIT_REACHED", retryable=False)
         ),
     )
 
@@ -453,7 +447,6 @@ async def test_agent_chat_maps_model_call_limit_without_leaking_details(
     assert response.status_code == 422
     body = response.json()
     assert body["code"] == "MODEL_CALL_LIMIT_REACHED"
-    assert "Model call limits exceeded" not in response.text
     request_id = uuid.UUID(body["request_id"])
     request_run = await db.get(RequestRun, request_id)
     assert request_run is not None
