@@ -406,3 +406,49 @@ async def test_absolute_deadline_marks_request_failed(
         .all()
     )
     assert message_roles == [MessageRole.USER]
+
+
+async def test_execution_timeout_disabled_allows_slow_agent_to_finish(
+    client: AsyncClient,
+    normal_user_token_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Debug mode: with AGENT_EXECUTION_TIMEOUT_ENABLED=False the Product layer
+    does not cut an agent that outlives `REQUEST_DEADLINE_SECONDS`; the request
+    completes naturally instead of returning 504."""
+    conversation_id = await _create_conversation(
+        client,
+        normal_user_token_headers,
+        "No execution deadline",
+    )
+    calls = [0]
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    monkeypatch.setattr(settings, "AGENT_EXECUTION_TIMEOUT_ENABLED", False)
+    monkeypatch.setattr(settings, "REQUEST_DEADLINE_SECONDS", 0.05)
+    monkeypatch.setattr(
+        api_module,
+        "get_agent_executor",
+        lambda: CountingExecutor(
+            calls,
+            entered=entered,
+            release=release,
+        ),
+    )
+
+    request_task = asyncio.create_task(
+        _post_chat(
+            client,
+            normal_user_token_headers,
+            conversation_id=conversation_id,
+            key="no-execution-deadline",
+            message="slow but should finish",
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    release.set()
+    response = await asyncio.wait_for(request_task, timeout=5)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert calls == [1]

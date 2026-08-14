@@ -15,6 +15,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from app.agent.executor import AgentExecutionError, AgentExecutionRequest
 from app.agent.pydantic_executor import PydanticAIExecutor
+from app.core.config import settings
 
 
 def _request(*, deadline_at: datetime) -> AgentExecutionRequest:
@@ -121,3 +122,56 @@ async def test_each_model_step_receives_current_remaining_budget() -> None:
 
     assert result.content == "done"
     assert observed_timeouts == [20.0, 10.0]
+
+
+async def test_deadline_not_enforced_when_execution_timeout_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Debug mode: AGENT_EXECUTION_TIMEOUT_ENABLED=False lets a slow Agent run to
+    completion even when `deadline_at` is already in the past, so the SubAgent
+    chain can be diagnosed instead of being cut by the Product wall clock."""
+    monkeypatch.setattr(settings, "AGENT_EXECUTION_TIMEOUT_ENABLED", False)
+
+    async def slow_model(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del messages, info
+        await asyncio.sleep(0.01)
+        return ModelResponse(parts=[TextPart("slow but finished")])
+
+    executor = PydanticAIExecutor(Agent(FunctionModel(slow_model)))
+
+    result = await executor.execute(
+        _request(deadline_at=datetime.now(UTC) - timedelta(seconds=60))
+    )
+
+    assert result.content == "slow but finished"
+
+
+async def test_deadline_enforced_when_execution_timeout_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The switch must be an explicit opt-out: with the default (enabled) the
+    expired deadline still fails fast before any model call."""
+    monkeypatch.setattr(settings, "AGENT_EXECUTION_TIMEOUT_ENABLED", True)
+    called = False
+
+    def model_function(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del messages, info
+        nonlocal called
+        called = True
+        return ModelResponse(parts=[TextPart("too late")])
+
+    executor = PydanticAIExecutor(Agent(FunctionModel(model_function)))
+
+    with pytest.raises(AgentExecutionError) as captured:
+        await executor.execute(
+            _request(deadline_at=datetime.now(UTC) - timedelta(seconds=1))
+        )
+
+    assert captured.value.code == "MODEL_TIMEOUT"
+    assert called is False

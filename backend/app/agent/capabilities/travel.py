@@ -104,8 +104,12 @@ def build_travel_capabilities(
         agents=(
             SubAgent[object](
                 researcher,
-                max_calls=3,
-                timeout_seconds=300,
+                # Debug phase: prove the delegation chain closes before adding
+                # budgets back. max_calls=1 bounds the chain; timeout is unset so
+                # a slow Researcher surfaces the real bottleneck instead of a
+                # soft-fallback message (see docs/施工路线图.md Travel Domain
+                # 2026-08-15 debug note; restore max_calls/timeout after 验收).
+                max_calls=1,
                 on_failure=RESEARCHER_ON_FAILURE_MESSAGE,
             ),
         ),

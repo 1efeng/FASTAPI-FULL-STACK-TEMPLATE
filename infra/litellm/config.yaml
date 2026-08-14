@@ -33,7 +33,10 @@ model_list:
 
 router_settings:
   routing_strategy: usage-based-routing-v2
-  num_retries: 1
+  # Debug phase (SubAgent chain diagnosis): no gateway retry so a slow/failed
+  # delegation is attributable to a single layer instead of multiplied latency.
+  # Restore num_retries: 1 once the chain closes (AGENTS.md 施工顺序 §10).
+  num_retries: 0
   allowed_fails: 2
   cooldown_time: 60
   retry_after: 1

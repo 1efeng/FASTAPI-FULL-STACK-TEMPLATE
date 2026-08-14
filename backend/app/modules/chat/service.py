@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -90,6 +91,24 @@ _EXECUTOR_ERROR_MAP: dict[str, tuple[str, bool, int]] = {
     "MODEL_RATE_LIMITED": ("当前规划服务繁忙，请稍后重试。", True, 429),
     "MODEL_UNAVAILABLE": ("当前规划服务暂时不可用，请稍后重试。", True, 503),
 }
+
+
+@asynccontextmanager
+async def _execution_timeout(deadline_at: datetime) -> AsyncIterator[None]:
+    """Bound Agent execution to the Product deadline, or no-op when disabled.
+
+    ``AGENT_EXECUTION_TIMEOUT_ENABLED=False`` is a debug mode: the agent runs to
+    its natural end so a slow SubAgent chain is not masked by a wall clock.
+    ``deadline_at`` is still persisted to keep the RequestRun/API contract.
+    """
+    if not settings.AGENT_EXECUTION_TIMEOUT_ENABLED:
+        yield
+        return
+    timeout = remaining_deadline_seconds(deadline_at)
+    if timeout <= 0:
+        raise TimeoutError
+    async with asyncio.timeout(timeout):
+        yield
 
 
 class ChatService:
@@ -365,10 +384,7 @@ class ChatService:
             )
         result: AgentExecutionResult | None = None
         try:
-            timeout = remaining_deadline_seconds(deadline_at)
-            if timeout <= 0:
-                raise TimeoutError
-            async with asyncio.timeout(timeout):
+            async with _execution_timeout(deadline_at):
                 if watchers:
                     done, _ = await asyncio.wait(
                         [execute_task, *watchers],
@@ -688,10 +704,7 @@ class ChatService:
 
                 async def run_execution() -> None:
                     try:
-                        timeout = remaining_deadline_seconds(deadline_at)
-                        if timeout <= 0:
-                            raise _StreamingDeadlineExceeded
-                        async with asyncio.timeout(timeout):
+                        async with _execution_timeout(deadline_at):
                             async for chunk in stream_vercel_events(
                                 AgentExecutionRequest(
                                     request_id=request_id,

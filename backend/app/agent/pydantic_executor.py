@@ -83,6 +83,21 @@ def _litellm_openai_base_url() -> str:
     return base if base.endswith("/v1") else f"{base}/v1"
 
 
+def _execution_budget(deadline_at: datetime) -> float | None:
+    """Remaining Product execution budget, or ``None`` when the deadline is off.
+
+    ``AGENT_EXECUTION_TIMEOUT_ENABLED=False`` is a debug mode: the agent loop is
+    not bounded here (the Product layer also skips its own timeout wrapper), so a
+    slow SubAgent chain can be diagnosed instead of being cut at a wall clock.
+    """
+    if not settings.AGENT_EXECUTION_TIMEOUT_ENABLED:
+        return None
+    remaining = remaining_deadline_seconds(deadline_at)
+    if remaining <= 0:
+        raise TimeoutError
+    return remaining
+
+
 def _deadline_model_settings(
     deadline_at: datetime,
 ) -> Callable[[RunContext[object]], ModelSettings]:
@@ -313,15 +328,17 @@ class PydanticAIExecutor:
     ) -> AgentExecutionResult:
         message_history = _to_model_messages(request)
         try:
-            remaining = remaining_deadline_seconds(request.deadline_at)
-            if remaining <= 0:
-                raise TimeoutError
-            async with asyncio.timeout(remaining):
+            budget = _execution_budget(request.deadline_at)
+            async with asyncio.timeout(budget):
                 result = await self._agent.run(
                     request.message,
                     message_history=message_history,
                     run_id=str(request.request_id),
-                    model_settings=_deadline_model_settings(request.deadline_at),
+                    model_settings=(
+                        _deadline_model_settings(request.deadline_at)
+                        if budget is not None
+                        else None
+                    ),
                 )
         except AgentExecutionError:
             raise
