@@ -7,6 +7,8 @@ This module implements **active HTTP/UI stream resumption only**.
 It owns:
 
 - one active producer claim per `stream_id`
+- per-producer fencing token with a separate Redis lease key
+- atomic compare-and-renew / compare-and-release / fenced state transitions
 - cross-replica producer discovery via Redis Pub/Sub
 - producer-memory replay buffer
 - reconnect/replay of opaque string chunks
@@ -46,6 +48,24 @@ PydanticAI
 
 The Product layer must still gate terminal success until the durable assistant-message +
 RequestRun completion transaction commits.
+
+## Producer fencing
+
+Transport state and producer ownership are separate:
+
+```text
+state:{stream_id} → MISSING / ACTIVE / DONE / FAILED / INTERRUPTED
+lease:{stream_id} → per-producer opaque token
+```
+
+Claim and state transitions use Redis Lua operations. A stale producer that loses
+its lease cannot ACK a new subscriber, publish further chunks, delete the replacement
+owner's lease, or overwrite its terminal state. Terminal state retention also prevents
+the same `stream_id` from starting a second producer during the configured TTL.
+
+Heartbeat loss races the producer's pending `anext()`: fencing closes a blocked source
+and notifies its existing subscribers with transport `INTERRUPTED`. This remains active
+transport coordination, not process-crash execution recovery.
 
 ## Redis lifecycle
 

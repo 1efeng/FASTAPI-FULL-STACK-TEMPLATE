@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router"
+﻿import { createFileRoute } from "@tanstack/react-router"
 
 import ChangePassword from "@/components/UserSettings/ChangePassword"
 import DeleteAccount from "@/components/UserSettings/DeleteAccount"
@@ -25,9 +25,7 @@ export const Route = createFileRoute("/_layout/settings")({
 
 function UserSettings() {
   const { user: currentUser } = useAuth()
-  const finalTabs = currentUser?.is_superuser
-    ? tabsConfig.slice(0, 3)
-    : tabsConfig
+  const finalTabs = tabsConfig
 
   if (!currentUser) {
     return null
@@ -59,3 +57,6 @@ function UserSettings() {
     </div>
   )
 }
+
+
+

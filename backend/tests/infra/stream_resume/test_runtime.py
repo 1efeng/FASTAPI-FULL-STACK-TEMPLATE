@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
+from typing import cast
 
 import pytest
 
@@ -86,7 +88,7 @@ async def test_skip_characters_applies_to_replay_backlog() -> None:
 
     release.set()
     assert await collect(resumed) == " world"
-    await original.aclose()
+    await cast(AsyncGenerator[str], original).aclose()
     await replica.close()
     await owner.close()
 
@@ -118,6 +120,51 @@ async def test_concurrent_start_claims_only_one_producer() -> None:
     assert await collect(winner) == "done"
     await a.close()
     await b.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_state_prevents_same_stream_from_restarting() -> None:
+    bus = MemoryBus()
+    first_runtime = ResumableStreamRuntime(MemoryBackend(bus))
+    second_runtime = ResumableStreamRuntime(MemoryBackend(bus))
+    producer_calls = 0
+
+    async def producer():
+        nonlocal producer_calls
+        producer_calls += 1
+        yield "done"
+
+    first = await first_runtime.start("terminal-request", producer)
+    assert first is not None
+    assert await collect(first) == "done"
+    assert await first_runtime.status("terminal-request") is StreamState.DONE
+
+    second = await second_runtime.start("terminal-request", producer)
+    assert second is None
+    assert producer_calls == 1
+
+    await second_runtime.close()
+    await first_runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_active_state_and_producer_lease_are_separate_keys() -> None:
+    bus = MemoryBus()
+    runtime = ResumableStreamRuntime(MemoryBackend(bus))
+    release = asyncio.Event()
+
+    async def producer():
+        await release.wait()
+        yield "done"
+
+    stream = await runtime.start("separate-keys", producer)
+    assert stream is not None
+    assert bus.values[runtime._state_key("separate-keys")] == "ACTIVE"
+    assert bus.values[runtime._lease_key("separate-keys")] != "ACTIVE"
+
+    release.set()
+    assert await collect(stream) == "done"
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -158,3 +205,92 @@ async def test_close_marks_active_producer_interrupted() -> None:
 
     with pytest.raises(StreamProducerInterrupted):
         await ResumableStreamRuntime(MemoryBackend(bus)).resume("req-interrupted")
+
+
+@pytest.mark.asyncio
+async def test_fenced_producer_does_not_overwrite_new_owner_state() -> None:
+    """P0-1: a producer that lost its lease must not write terminal state.
+
+    Simulate: A claims, then its lease is stolen by B (SET NX on the lease key).
+    A must be fenced — its DONE write must not overwrite B's ACTIVE state.
+    """
+    bus = MemoryBus()
+    backend_a = MemoryBackend(bus)
+    backend_b = MemoryBackend(bus)
+    a = ResumableStreamRuntime(backend_a)
+    b = ResumableStreamRuntime(backend_b)
+    release = asyncio.Event()
+
+    async def producer_a():
+        yield "A1"
+        await release.wait()
+        yield "A2"
+
+    stream_a = await a.start("req-fence", producer_a)
+    assert stream_a is not None
+    assert await anext(stream_a) == "A1"
+
+    # Steal the lease out from under A: overwrite the lease key directly (this
+    # simulates TTL expiry + a new owner's SET NX winning, without going through
+    # claim_lease which correctly refuses because the key still exists).
+    async with bus.lock:
+        bus.values[a._lease_key("req-fence")] = "stolen-token"
+
+    # A's heartbeat will now fail compare-and-renew and fence A.
+    # Release A so it tries to write DONE; it must be fenced and skip the write.
+    release.set()
+    await asyncio.sleep(0.1)
+
+    # A's terminal write must NOT have overwritten the lease-holder's state.
+    # (B has not started a producer here, but the lease belongs to "stolen-token",
+    # so A's DONE/FAILED/INTERRUPTED write must be suppressed.)
+    assert await a.status("req-fence") is not StreamState.DONE
+
+    await a.close(close_backend=False)
+    await b.close(close_backend=False)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_failure_fences_producer() -> None:
+    """A heartbeat exception must fence the producer, not silently continue."""
+    bus = MemoryBus()
+
+    class FailingRenewBackend(MemoryBackend):
+        fail_renew = False
+
+        async def renew_lease(
+            self, lease_key, state_key, token, *, ttl_seconds
+        ):
+            if self.fail_renew:
+                raise RuntimeError("redis down")
+            return await super().renew_lease(
+                lease_key,
+                state_key,
+                token,
+                ttl_seconds=ttl_seconds,
+            )
+
+    backend = FailingRenewBackend(bus)
+    runtime = ResumableStreamRuntime(
+        backend, heartbeat_interval_seconds=0.01
+    )
+    release = asyncio.Event()
+
+    async def producer():
+        yield "X"
+        await release.wait()
+        yield "Y"
+
+    stream = await runtime.start("req-hb-fail", producer)
+    assert stream is not None
+    assert await anext(stream) == "X"
+
+    # Heartbeat fails → fenced → producer stops publishing; terminal state not DONE.
+    backend.fail_renew = True
+    await asyncio.sleep(0.02)
+    release.set()
+    with pytest.raises(StreamProducerInterrupted):
+        await anext(stream)
+    assert await runtime.status("req-hb-fail") is not StreamState.DONE
+
+    await runtime.close(close_backend=False)

@@ -1,6 +1,7 @@
 import asyncio
 import os
 import uuid
+from collections.abc import Awaitable
 from typing import Any, cast
 
 import pytest
@@ -21,7 +22,7 @@ pytestmark = pytest.mark.skipif(
 
 async def _runtime() -> tuple[RedisChatRuntime, Redis]:
     client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-    await client.ping()
+    await cast(Awaitable[bool], client.ping())
     return RedisChatRuntime(client), client
 
 

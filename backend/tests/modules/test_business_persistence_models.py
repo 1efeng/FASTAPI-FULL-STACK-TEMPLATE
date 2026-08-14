@@ -76,6 +76,8 @@ async def test_business_persistence_round_trip(db: AsyncSession) -> None:
         request_id=request_run.id,
         role=MessageRole.ASSISTANT,
         content="hi",
+        reasoning_summary="public summary",
+        reasoning_duration_ms=4200,
     )
     request_run.status = RequestRunStatus.COMPLETED
     request_run.finished_at = datetime.now(UTC)
@@ -98,6 +100,10 @@ async def test_business_persistence_round_trip(db: AsyncSession) -> None:
         MessageRole.ASSISTANT,
     ]
     assert messages[0].seq < messages[1].seq
+    assert messages[0].reasoning_summary is None
+    assert messages[1].reasoning_summary == "public summary"
+    assert messages[0].reasoning_duration_ms is None
+    assert messages[1].reasoning_duration_ms == 4200
 
 
 async def test_only_one_running_request_per_conversation(

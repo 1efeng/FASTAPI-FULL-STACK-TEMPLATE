@@ -85,9 +85,7 @@ test("Sign up with existing email", async ({ page }) => {
   await fillForm(page, fullName, email, password, password)
   await page.getByRole("button", { name: "Sign Up" }).click()
 
-  await page
-    .getByText("User with this email already exists")
-    .click()
+  await page.getByText("User with this email already exists").click()
 })
 
 test("Sign up with weak password", async ({ page }) => {

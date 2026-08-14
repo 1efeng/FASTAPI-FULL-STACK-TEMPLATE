@@ -11,10 +11,11 @@ async def test_namespaced_key() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.getenv("RUN_REDIS_INTEGRATION") != "1",
+    reason="set RUN_REDIS_INTEGRATION=1 to run against a real Redis service",
+)
 async def test_redis_client_lifecycle() -> None:
-    if os.getenv("RUN_REDIS_INTEGRATION") != "1":
-        pytest.skip("set RUN_REDIS_INTEGRATION=1 to run against a real Redis service")
-
     client = await init_redis()
     key = namespaced_key("integration", "lifecycle")
     try:

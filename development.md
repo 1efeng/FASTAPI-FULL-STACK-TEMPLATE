@@ -127,6 +127,28 @@ docker compose watch
 
 ## 预提交与代码检查
 
+### Gate A / LiteLLM 本地验收
+
+宿主机运行测试时使用映射端口 `localhost:4000`；Docker backend 容器内使用服务名 `litellm:4000`：
+
+```bash
+# 宿主机：只检查 gateway health 与 logical model
+LITELLM_BASE_URL=http://localhost:4000 \
+RUN_LITELLM_INTEGRATION=1 \
+uv run --package app pytest backend/tests/integration/test_litellm.py -q
+
+# 宿主机：发起一次真实 Product → PydanticAI → LiteLLM → model 请求
+LITELLM_BASE_URL=http://localhost:4000 \
+RUN_GATE_A_LIVE=1 \
+uv run --package app pytest backend/tests/integration/test_gate_a_live.py -q
+
+# 容器内 gateway smoke
+docker compose exec -T -e RUN_LITELLM_INTEGRATION=1 backend \
+  pytest tests/integration/test_litellm.py -q
+```
+
+真实模型验收会产生一次模型调用，因此默认测试套件会跳过它。
+
 我们使用一个叫 [prek](https://prek.j178.dev/)([Pre-commit](https://pre-commit.com/) 的现代替代品)的工具做代码检查和格式化。
 
 安装之后,它会在 git 提交之前自动运行。这样能确保代码在提交前就已经保持一致并被格式化。

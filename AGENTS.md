@@ -2,7 +2,8 @@
 
 > 更新时间：2026-08-13  
 > 当前架构 SOT：`docs/架构v8.md`（v8.2 / Accepted / Architecture SOT）  
-> 当前代码基线：`travel_agent_v8 @ e9d959e5c250cc8628beac8df642f65b5be71b14`
+> 已提交代码基线：`travel_agent_v8 @ 0026df0`
+> 当前工作区：在制 M8 spike；真实进度以 `docs/施工路线图.md` 为准
 
 ---
 
@@ -47,27 +48,34 @@ GET /api/v1/chat/requests/{request_id}
 POST /api/v1/chat/requests/{request_id}/cancel
 数据库幂等
 Redis rate / quota / concurrency / cancel coordination
-Absolute Deadline
-LiteLLM Proxy infra
-AgentExecutor thin port
-RuntimeClock
+Absolute Deadline（Product + PydanticAI non-streaming downstream budget）
+LiteLLM Proxy infra + application model wiring
+AgentExecutionRequest(history) + server-authoritative projection
+authoritative-history multi-turn / idempotency / untrusted-client contract tests
+PydanticAI dependency / non-streaming executor
+Gate A Generic non-streaming Chat（含 live LiteLLM/model）
+Business Usage Contract（framework-neutral per-call token evidence）
+Pydantic AI Harness 0.18.1 + Skills capability foundation
+travel-budget deferred Skill + deterministic calculate_budget Tool
+Skill → Tool dependency validation（missing dependency fail closed）
+RuntimeClock → PydanticAI per-run dynamic instructions
 StreamResumeStore port
-RedisStreamResumeStore implementation
-stream_resume unit tests + Redis integration test skeleton
-React 19 + Vite 8 + TanStack Router / Query + Tailwind 4 / shadcn baseline
+RedisStreamResumeStore atomic lease fencing implementation
+stream_resume memory/contract + real Redis integration tests
+VercelAIAdapter / POST initial stream / GET resume prototype
+React 19 + Vite 8 + AI SDK v7 + selected AI Elements / Chat UI prototype
+URL-addressed current conversation + durable history refresh restore
+conversation-scoped active request + resumeStream reconnect orchestration（browser contract test）
 ```
 
 当前尚未落地：
 
 ```text
-PydanticAI dependency / executor
-AgentExecutionRequest.history
-server-authoritative history projection
-ExecutionSupervisor
-PydanticAI VercelAIAdapter production wiring
-@ai-sdk/react / ai
-ProductChatTransport / useProductChat
-AI Elements selected primitives
+M7 Product usage ledger + LiteLLM cost/call-id/actual-deployment enrichment
+ExecutionSupervisor production wiring（当前只有未接线骨架）
+三态 terminal gate（success / failed / cancelled）
+PydanticAI first-party cancellation + streaming deadline
+Product Stop / reconnect / durable reconciliation E2E
 M8 full streaming E2E
 DBOS / Temporal
 ```
@@ -78,10 +86,17 @@ DBOS / Temporal
 ChatService 当前仍监听 HTTP disconnect 并取消 execute task
 → M8 必须改为 disconnect 只 detach subscriber
 
-AgentExecutor 当前仍是 thin execute(...) 参数
-→ M3 hardening 必须升级为 AgentExecutionRequest(history)
+ExecutionSupervisor 类已存在但没有接入执行链
+→ 当前 Agent execution 仍由 StreamResumeStore producer task 间接拥有
 
-StreamResumeStore 已落地但尚未接 Chat / PydanticAI
+Streaming 目前只有 success-path prototype
+→ failed/cancelled/deadline terminal authority 尚未闭环
+
+Chat UI Stop 当前仍调用 useChat.stop()
+→ 必须替换为 Product cancel endpoint 语义
+
+F5 active stream reconnect 已通过 mocked browser contract
+→ 真实 PydanticAI + Redis / cross-replica / 204 reconciliation E2E 仍属于 Step 8
 ```
 
 ---
@@ -259,15 +274,15 @@ HTTP disconnect == Product Stop
 |---|---|---|
 | M0 Engineering Baseline | ✅ | Template / Python 3.14 / tests / Playwright |
 | M1 Product / Infra Settings | ✅ | clean baseline |
-| M2 Redis + LiteLLM | ✅/🟡 | Redis coordination ✅；LiteLLM gateway infra ✅，application wiring 🚧（属 Step 3） |
-| M3 Generic Chat Agent Port | 🟡 | AgentExecutor 已有；history contract + PydanticAI 待接 |
+| M2 Redis + LiteLLM | ✅ | Redis coordination + gateway/application wiring + live smoke 已验收 |
+| M3 Generic Chat Agent Port | ✅ | history + PydanticAIExecutor + deadline/error mapping；Gate A 已过 |
 | M4 Business Persistence | ✅ | Conversation / Message / RequestRun |
 | M5 LangGraph Persistence | **SUPERSEDED** | 不再迁移 |
 | M6 Product Lifecycle | ✅ / M8 harden | disconnect 行为仍需修正 |
-| M7 Business Usage | 🚧 | usage / cost attribution |
-| M8-Infra Stream Resume | ✅ LANDED | `infra/stream_resume` 已落地 |
-| M8 AI Streaming | 🚧 | PydanticAI + AI SDK + supervisor + terminal gate |
-| M9 C-End Generic Chat | 🚧 | UI / reconnect / Stop / reconciliation |
+| M7 Business Usage | 🟡 | framework-neutral token contract ✅；ledger/cost attribution 🚧 |
+| M8-Infra Stream Resume | ✅ | lease fencing + real Redis integration 已验证 |
+| M8 AI Streaming | 🧪/🚧 | adapter/API prototype 已有；supervisor + 三态 terminal gate 未完成 |
+| M9 C-End Generic Chat | 🚧 | UI 壳已有；reconnect / Product Stop / reconciliation 未验收 |
 | M10 Observability / Security / Eval | 🚧 | |
 | M11 Production Gate | 🚧 | multi-replica / failure drills / HA |
 
@@ -275,19 +290,26 @@ HTTP disconnect == Product Stop
 
 # 9. 当前施工顺序
 
+施工顺序的唯一 SOT 是 `docs/施工路线图.md`（含每步目标/验收/进度），此处仅概览：
+
 ```text
-Step 1  StreamResumeStore boundary + real Redis hardening
-Step 2  AgentExecutor history contract
+Step 1  StreamResumeStore correctness hardening（lease fencing + real Redis）
+Step 2  AgentExecutor authoritative-history contract
 Step 3  PydanticAI Core
+Step 3.5 Harness Skills→Tools Foundation（已落首个原子闭环）
 Gate A  Generic non-streaming Chat
-Step 4  AI SDK + Pydantic VercelAdapter compatibility spike
-Step 5  ExecutionSupervisor
-Step 6  lifecycle-aware streaming + terminal gate
-Step 7  ProductChatTransport / reconnect
+Step 4  Business Usage Contract 定义（M7 前置）
+Step 5  AI SDK / VercelAIAdapter Spike（sdk_version + resume go/no-go）
+Step 6  ExecutionSupervisor（task topology）
+Step 7  Lifecycle-aware Streaming（三态 terminal gate）
+Step 8  Initial POST stream + GET reconnect（ProductChatTransport）
 Gate B  M8 Production Streaming
-Step 8  Harness capabilities
-Step 9  M7/M9/M10/M11
-Travel Domain only after Generic Chat production gate
+Step 9  M7 落地 + C-End Generic Chat
+Step 10 Advanced Harness capabilities
+Step 11 Observability / Security / Eval
+Step 12 Production HA / DBOS decision
+Travel Domain 大规模迁移 only after Gate B + Step 9
+当前下一施工位：Step 5 AI SDK / VercelAIAdapter compatibility Gate
 ```
 
 ---

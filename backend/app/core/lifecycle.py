@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.infra.redis import close_redis, init_redis
+from app.modules.chat.execution import get_execution_supervisor
 
 
 @asynccontextmanager
@@ -13,4 +14,5 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await get_execution_supervisor().shutdown()
         await close_redis()

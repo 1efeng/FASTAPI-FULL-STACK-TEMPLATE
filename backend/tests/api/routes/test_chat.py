@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import timedelta
 
 import pytest
@@ -7,7 +7,12 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.executor import AgentExecutionError, AgentExecutionResult
+from app.agent.executor import (
+    AgentExecutionError,
+    AgentExecutionErrorCode,
+    AgentExecutionRequest,
+    AgentExecutionResult,
+)
 from app.core.config import settings
 from app.infra.database import AsyncSessionLocal
 from app.modules.chat import api as api_module
@@ -24,26 +29,12 @@ class CallbackExecutor:
     ) -> None:
         self.on_execute = on_execute
         self.error = error
-        self.calls: list[dict[str, object]] = []
+        self.requests: list[AgentExecutionRequest] = []
 
-    async def execute(
-        self,
-        *,
-        request_id: uuid.UUID,
-        conversation_id: uuid.UUID,
-        message: str,
-        deadline_at: object,
-    ) -> AgentExecutionResult:
-        self.calls.append(
-            {
-                "request_id": request_id,
-                "conversation_id": conversation_id,
-                "message": message,
-                "deadline_at": deadline_at,
-            }
-        )
+    async def execute(self, request: AgentExecutionRequest) -> AgentExecutionResult:
+        self.requests.append(request)
         if self.on_execute is not None:
-            await self.on_execute(request_id)
+            await self.on_execute(request.request_id)
         if self.error is not None:
             raise self.error
         return AgentExecutionResult(content="测试回复")
@@ -55,6 +46,16 @@ class RaisingExecutor:
 
     async def execute(self, *_: object, **__: object) -> AgentExecutionResult:
         raise self.error
+
+
+class ReconnectStore:
+    def __init__(self, stream: AsyncIterator[str] | None) -> None:
+        self.stream = stream
+        self.resume_calls: list[str] = []
+
+    async def resume(self, stream_id: str) -> AsyncIterator[str] | None:
+        self.resume_calls.append(stream_id)
+        return self.stream
 
 
 @pytest.fixture
@@ -79,6 +80,91 @@ async def test_agent_chat_requires_authentication(client: AsyncClient) -> None:
     )
 
     assert response.status_code == 401
+
+
+async def test_stream_rejects_missing_conversation_before_opening_sse(
+    client: AsyncClient,
+    normal_user_token_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale localStorage conversation id must be a normal 404, not a stream reset."""
+    monkeypatch.setattr(api_module, "get_agent_executor", lambda: CallbackExecutor())
+    response = await client.post(
+        f"{settings.API_V1_STR}/chat/stream",
+        headers={
+            **normal_user_token_headers,
+            "Idempotency-Key": "stream-missing-conversation",
+        },
+        json={
+            "id": "ui-message-1",
+            "messages": [
+                {
+                    "id": "ui-message-1",
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "你好"}],
+                }
+            ],
+            "conversation_id": str(uuid.uuid4()),
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "会话不存在或已删除。"}
+
+
+async def test_reconnect_endpoint_is_authoritative_for_stream_availability(
+    client: AsyncClient,
+    normal_user_token_headers: dict[str, str],
+    normal_user_conversation_id: uuid.UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api_module, "get_agent_executor", lambda: CallbackExecutor())
+    chat_response = await client.post(
+        f"{settings.API_V1_STR}/chat",
+        headers={
+            **normal_user_token_headers,
+            "Idempotency-Key": "reconnect-authority",
+        },
+        json={
+            "conversation_id": str(normal_user_conversation_id),
+            "message": "你好",
+        },
+    )
+    assert chat_response.status_code == 200
+    request_id = chat_response.json()["request_id"]
+
+    missing_store = ReconnectStore(None)
+    monkeypatch.setattr(
+        api_module,
+        "get_stream_resume_store",
+        lambda: missing_store,
+    )
+    missing_response = await client.get(
+        f"{settings.API_V1_STR}/chat/requests/{request_id}/stream",
+        headers=normal_user_token_headers,
+    )
+
+    assert missing_response.status_code == 204
+    assert missing_store.resume_calls == [request_id]
+
+    async def active_stream() -> AsyncIterator[str]:
+        yield 'data: {"type":"finish"}\n\n'
+        yield "data: [DONE]\n\n"
+
+    active_store = ReconnectStore(active_stream())
+    monkeypatch.setattr(
+        api_module,
+        "get_stream_resume_store",
+        lambda: active_store,
+    )
+    active_response = await client.get(
+        f"{settings.API_V1_STR}/chat/requests/{request_id}/stream",
+        headers=normal_user_token_headers,
+    )
+
+    assert active_response.status_code == 200
+    assert active_response.headers["x-vercel-ai-ui-message-stream"] == "v1"
+    assert active_store.resume_calls == [request_id]
 
 
 async def test_agent_chat_rejects_blank_message(
@@ -199,10 +285,11 @@ async def test_agent_chat_invokes_agent(
     assert conversation.last_message_at == request_run.finished_at
     assert body["request_id"] == str(captured_request_id)
     assert body["content"] == "测试回复"
-    assert len(executor.calls) == 1
-    assert executor.calls[0]["request_id"] == request_id
-    assert executor.calls[0]["conversation_id"] == normal_user_conversation_id
-    assert executor.calls[0]["message"] == "帮我规划上海两日游"
+    assert len(executor.requests) == 1
+    req = executor.requests[0]
+    assert req.request_id == request_id
+    assert req.conversation_id == normal_user_conversation_id
+    assert req.message == "帮我规划上海两日游"
 
 
 async def test_agent_chat_rejects_other_users_conversation_before_agent(
@@ -215,15 +302,11 @@ async def test_agent_chat_rejects_other_users_conversation_before_agent(
     executed = False
 
     def fail_if_agent_is_executed() -> CallbackExecutor:
-        executor = CallbackExecutor()
-
-        async def mark_executed(*_: object, **__: object) -> AgentExecutionResult:
+        async def mark_executed(_: uuid.UUID) -> None:
             nonlocal executed
             executed = True
-            return AgentExecutionResult(content="should not run")
 
-        executor.execute = mark_executed  # type: ignore[method-assign]
-        return executor
+        return CallbackExecutor(on_execute=mark_executed)
 
     monkeypatch.setattr(
         api_module,
@@ -270,15 +353,11 @@ async def test_agent_chat_rejects_deleted_conversation_before_agent(
     executed = False
 
     def fail_if_agent_is_executed() -> CallbackExecutor:
-        executor = CallbackExecutor()
-
-        async def mark_executed(*_: object, **__: object) -> AgentExecutionResult:
+        async def mark_executed(_: uuid.UUID) -> None:
             nonlocal executed
             executed = True
-            return AgentExecutionResult(content="should not run")
 
-        executor.execute = mark_executed  # type: ignore[method-assign]
-        return executor
+        return CallbackExecutor(on_execute=mark_executed)
 
     monkeypatch.setattr(
         api_module,
@@ -312,15 +391,11 @@ async def test_agent_does_not_run_when_start_transaction_rolls_back(
     executed = False
 
     def fail_if_agent_is_executed() -> CallbackExecutor:
-        executor = CallbackExecutor()
-
-        async def mark_executed(*_: object, **__: object) -> AgentExecutionResult:
+        async def mark_executed(_: uuid.UUID) -> None:
             nonlocal executed
             executed = True
-            return AgentExecutionResult(content="should not run")
 
-        executor.execute = mark_executed  # type: ignore[method-assign]
-        return executor
+        return CallbackExecutor(on_execute=mark_executed)
 
     async def fail_commit(_session: AsyncSession) -> None:
         raise RuntimeError("forced start transaction commit failure")
@@ -380,7 +455,7 @@ async def test_agent_chat_maps_executor_failures_without_leaking_details(
     normal_user_token_headers: dict[str, str],
     normal_user_conversation_id: uuid.UUID,
     monkeypatch: pytest.MonkeyPatch,
-    executor_error_code: str,
+    executor_error_code: AgentExecutionErrorCode,
     status_code: int,
     error_code: str,
     db: AsyncSession,
@@ -388,7 +463,7 @@ async def test_agent_chat_maps_executor_failures_without_leaking_details(
     monkeypatch.setattr(
         api_module,
         "get_agent_executor",
-        lambda: RaisingExecutor(AgentExecutionError(code=executor_error_code)),  # type: ignore[arg-type]
+        lambda: RaisingExecutor(AgentExecutionError(code=executor_error_code)),
     )
 
     response = await client.post(

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.chat.execution import get_execution_supervisor
 from app.modules.chat.runtime import ChatRuntime
 from app.modules.request_run.model import RequestRun, RequestRunStatus
 from app.modules.request_run.repository import RequestRunRepository
@@ -45,6 +46,7 @@ class RequestRunService:
             await self.db.commit()
             if self.runtime is not None:
                 await self.runtime.signal_cancel(request_id)
+            get_execution_supervisor().request_cancel(request_id)
         else:
             await self.db.rollback()
 

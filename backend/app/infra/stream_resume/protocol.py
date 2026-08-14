@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 from enum import StrEnum
-from typing import Protocol, TypeAlias
+from typing import Protocol
 
-ChunkStream: TypeAlias = AsyncIterator[str]
-StreamFactory: TypeAlias = Callable[[], ChunkStream]
+type ChunkStream = AsyncIterator[str]
+type StreamFactory = Callable[[], ChunkStream]
 
 
 class StreamState(StrEnum):

@@ -5,14 +5,54 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ._backend import MessageHandler
+from ._backend import MessageHandler, ResumeBackend
 from .protocol import ChunkStream, StreamFactory, StreamState
 from .runtime import ResumableStreamRuntime
 
 logger = logging.getLogger(__name__)
 
+# Claim a lease only while transport state is missing or ACTIVE. A terminal state
+# fences all future starts for that stream_id until its retention TTL expires.
+_CLAIM_LEASE_SCRIPT = """
+local state = redis.call("GET", KEYS[2])
+if state and state ~= "ACTIVE" then
+    return 0
+end
+return redis.call("SET", KEYS[1], ARGV[1], "NX", "EX", ARGV[2]) and 1 or 0
+"""
 
-class _RedisBackend:
+# Lua compare-and-renew: only extend the lease if we still hold it. Returns 1 when
+# the token matches (lease renewed), 0 otherwise (lease lost / another producer).
+_RENEW_LEASE_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    redis.call("EXPIRE", KEYS[1], ARGV[2])
+    redis.call("EXPIRE", KEYS[2], ARGV[2])
+    return 1
+end
+return 0
+"""
+
+# State transitions are fenced atomically. A stale producer cannot pass an
+# ownership check and then overwrite state after another producer takes over.
+_SET_STATE_IF_OWNER_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    redis.call("SET", KEYS[2], ARGV[2], "EX", ARGV[3])
+    return 1
+end
+return 0
+"""
+
+# Lua compare-and-release: only clear the lease if we still hold it. Prevents a
+# stale producer from deleting the new owner's lease.
+_RELEASE_LEASE_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+end
+return 0
+"""
+
+
+class _RedisBackend(ResumeBackend):
     """Redis KV + Pub/Sub backend over an injected redis.asyncio.Redis client."""
 
     def __init__(self, redis_client: Any) -> None:
@@ -35,11 +75,6 @@ class _RedisBackend:
             await self._redis.ping()
             self._pubsub = self._redis.pubsub()
 
-    async def claim_active(self, key: str, *, ttl_seconds: int) -> bool:
-        await self.ensure_ready()
-        result = await self._redis.set(key, "ACTIVE", nx=True, ex=ttl_seconds)
-        return bool(result)
-
     async def get(self, key: str) -> str | None:
         await self.ensure_ready()
         value = await self._redis.get(key)
@@ -48,14 +83,6 @@ class _RedisBackend:
         if isinstance(value, bytes):
             return value.decode()
         return str(value)
-
-    async def set(self, key: str, value: str, *, ttl_seconds: int) -> None:
-        await self.ensure_ready()
-        await self._redis.set(key, value, ex=ttl_seconds)
-
-    async def expire(self, key: str, *, ttl_seconds: int) -> None:
-        await self.ensure_ready()
-        await self._redis.expire(key, ttl_seconds)
 
     async def publish(self, channel: str, message: str) -> int:
         await self.ensure_ready()
@@ -79,6 +106,70 @@ class _RedisBackend:
             self._handlers.pop(channel, None)
             await self._pubsub.unsubscribe(channel)
 
+    async def claim_lease(
+        self,
+        lease_key: str,
+        state_key: str,
+        token: str,
+        *,
+        ttl_seconds: int,
+    ) -> bool:
+        await self.ensure_ready()
+        result = await self._redis.eval(
+            _CLAIM_LEASE_SCRIPT,
+            2,
+            lease_key,
+            state_key,
+            token,
+            ttl_seconds,
+        )
+        return bool(result)
+
+    async def renew_lease(
+        self,
+        lease_key: str,
+        state_key: str,
+        token: str,
+        *,
+        ttl_seconds: int,
+    ) -> bool:
+        await self.ensure_ready()
+        result = await self._redis.eval(
+            _RENEW_LEASE_SCRIPT,
+            2,
+            lease_key,
+            state_key,
+            token,
+            ttl_seconds,
+        )
+        return bool(result)
+
+    async def release_lease(self, key: str, token: str) -> None:
+        await self.ensure_ready()
+        await self._redis.eval(_RELEASE_LEASE_SCRIPT, 1, key, token)
+
+    async def set_state_if_lease_owner(
+        self,
+        lease_key: str,
+        state_key: str,
+        token: str,
+        state: str,
+        *,
+        ttl_seconds: int,
+    ) -> bool:
+        await self.ensure_ready()
+        result = await self._redis.eval(
+            _SET_STATE_IF_OWNER_SCRIPT,
+            2,
+            lease_key,
+            state_key,
+            token,
+            state,
+            ttl_seconds,
+        )
+        return bool(result)
+
+
     async def _listen(self) -> None:
         assert self._pubsub is not None
         try:
@@ -87,6 +178,7 @@ class _RedisBackend:
                     continue
                 channel_raw = message["channel"]
                 data_raw = message["data"]
+
                 channel = (
                     channel_raw.decode()
                     if isinstance(channel_raw, bytes)

@@ -1,7 +1,8 @@
-"""Runtime clock semantic capability.
+"""Framework-neutral runtime clock semantic.
 
-纯函数：为一次模型调用生成权威时间上下文。v8 中不依赖任何 Agent Framework；
-Pydantic AI milestone 会把它接到 system prompt / capability。
+The pure function is adapted into dynamic PydanticAI instructions at the Agent
+composition root. Keeping framework imports out of this module makes the time
+semantic reusable and independently testable.
 """
 
 from datetime import datetime

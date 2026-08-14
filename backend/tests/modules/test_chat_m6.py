@@ -7,11 +7,11 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.executor import AgentExecutionResult
+from app.agent.executor import AgentExecutionRequest, AgentExecutionResult
 from app.core.config import settings
 from app.modules.chat import api as api_module
 from app.modules.chat import service as service_module
-from app.modules.conversation.model import Message
+from app.modules.conversation.model import Message, MessageRole
 from app.modules.request_run.model import RequestRun, RequestRunStatus
 
 
@@ -22,25 +22,25 @@ class CountingExecutor:
         *,
         entered: asyncio.Event | None = None,
         release: asyncio.Event | None = None,
+        cancelled: asyncio.Event | None = None,
     ) -> None:
         self.counter = counter
         self.entered = entered
         self.release = release
+        self.cancelled = cancelled
 
-    async def execute(
-        self,
-        *,
-        request_id: uuid.UUID,
-        conversation_id: uuid.UUID,
-        message: str,
-        deadline_at: object,
-    ) -> AgentExecutionResult:
-        del request_id, conversation_id, message, deadline_at
+    async def execute(self, request: AgentExecutionRequest) -> AgentExecutionResult:
+        del request
         self.counter[0] += 1
         if self.entered is not None:
             self.entered.set()
         if self.release is not None:
-            await self.release.wait()
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                if self.cancelled is not None:
+                    self.cancelled.set()
+                raise
         return AgentExecutionResult(content="idempotent answer")
 
 
@@ -301,11 +301,17 @@ async def test_explicit_cancel_is_owned_and_stops_agent(
     )
     entered = asyncio.Event()
     release = asyncio.Event()
+    cancelled = asyncio.Event()
     calls = [0]
     monkeypatch.setattr(
         api_module,
         "get_agent_executor",
-        lambda: CountingExecutor(calls, entered=entered, release=release),
+        lambda: CountingExecutor(
+            calls,
+            entered=entered,
+            release=release,
+            cancelled=cancelled,
+        ),
     )
     chat_task = asyncio.create_task(
         _post_chat(
@@ -329,12 +335,12 @@ async def test_explicit_cancel_is_owned_and_stops_agent(
     )
     assert hidden.status_code == 404
 
-    cancelled = await client.post(
+    cancel_response = await client.post(
         f"{settings.API_V1_STR}/chat/requests/{request_run.id}/cancel",
         headers=normal_user_token_headers,
     )
-    assert cancelled.status_code == 200
-    assert cancelled.json()["status"] == "cancelled"
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "cancelled"
 
     chat_response = await asyncio.wait_for(chat_task, timeout=2)
     assert chat_response.status_code == 409
@@ -358,12 +364,18 @@ async def test_absolute_deadline_marks_request_failed(
     )
     entered = asyncio.Event()
     release = asyncio.Event()
+    cancelled = asyncio.Event()
     calls = [0]
     monkeypatch.setattr(settings, "REQUEST_DEADLINE_SECONDS", 0.05)
     monkeypatch.setattr(
         api_module,
         "get_agent_executor",
-        lambda: CountingExecutor(calls, entered=entered, release=release),
+        lambda: CountingExecutor(
+            calls,
+            entered=entered,
+            release=release,
+            cancelled=cancelled,
+        ),
     )
 
     response = await _post_chat(
@@ -382,3 +394,15 @@ async def test_absolute_deadline_marks_request_failed(
     assert request_run.error_code == "REQUEST_DEADLINE_EXCEEDED"
     assert request_run.deadline_at - request_run.started_at == timedelta(seconds=0.05)
     assert calls == [1]
+    assert entered.is_set()
+    assert cancelled.is_set()
+    message_roles = (
+        (
+            await db.execute(
+                select(Message.role).where(Message.request_id == request_run.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert message_roles == [MessageRole.USER]

@@ -32,6 +32,8 @@ class MessagePublic(BaseModel):
     id: uuid.UUID
     role: str
     content: str
+    reasoning_summary: str | None
+    reasoning_duration_ms: int | None
     created_at: datetime
 
 

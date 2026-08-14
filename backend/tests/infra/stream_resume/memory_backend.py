@@ -24,23 +24,59 @@ class MemoryBackend:
         if self._closed:
             raise RuntimeError("closed")
 
-    async def claim_active(self, key: str, *, ttl_seconds: int) -> bool:
+    async def claim_lease(
+        self,
+        lease_key: str,
+        state_key: str,
+        token: str,
+        *,
+        ttl_seconds: int,
+    ) -> bool:
         del ttl_seconds
         async with self.bus.lock:
-            if key in self.bus.values:
+            state = self.bus.values.get(state_key)
+            if state is not None and state != "ACTIVE":
                 return False
-            self.bus.values[key] = "ACTIVE"
+            if lease_key in self.bus.values:
+                return False
+            self.bus.values[lease_key] = token
+            return True
+
+    async def renew_lease(
+        self,
+        lease_key: str,
+        state_key: str,
+        token: str,
+        *,
+        ttl_seconds: int,
+    ) -> bool:
+        del state_key, ttl_seconds
+        async with self.bus.lock:
+            return self.bus.values.get(lease_key) == token
+
+    async def release_lease(self, key: str, token: str) -> None:
+        async with self.bus.lock:
+            if self.bus.values.get(key) == token:
+                self.bus.values.pop(key, None)
+
+    async def set_state_if_lease_owner(
+        self,
+        lease_key: str,
+        state_key: str,
+        token: str,
+        state: str,
+        *,
+        ttl_seconds: int,
+    ) -> bool:
+        del ttl_seconds
+        async with self.bus.lock:
+            if self.bus.values.get(lease_key) != token:
+                return False
+            self.bus.values[state_key] = state
             return True
 
     async def get(self, key: str) -> str | None:
         return self.bus.values.get(key)
-
-    async def set(self, key: str, value: str, *, ttl_seconds: int) -> None:
-        del ttl_seconds
-        self.bus.values[key] = value
-
-    async def expire(self, key: str, *, ttl_seconds: int) -> None:
-        del key, ttl_seconds
 
     async def publish(self, channel: str, message: str) -> int:
         handlers = list(self.bus.handlers.get(channel, []))

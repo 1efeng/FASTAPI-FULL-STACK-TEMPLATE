@@ -1,0 +1,50 @@
+{
+  "versions": {
+    "pydantic-ai": "2.28.0",
+    "ai": "7.0.64",
+    "@ai-sdk/react": "4.0.67",
+    "sdk_version": 7
+  },
+  "events": [
+    {
+      "type": "start",
+      "messageId": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "type": "start-step"
+    },
+    {
+      "type": "text-start",
+      "id": "<text-part-id>"
+    },
+    {
+      "type": "text-delta",
+      "delta": "fixture ",
+      "id": "<text-part-id>"
+    },
+    {
+      "type": "text-delta",
+      "delta": "answer",
+      "id": "<text-part-id>"
+    },
+    {
+      "type": "text-end",
+      "id": "<text-part-id>"
+    },
+    {
+      "type": "message-metadata",
+      "messageMetadata": {
+        "pydantic_ai": {
+          "timestamp": "<timestamp>"
+        }
+      }
+    },
+    {
+      "type": "finish-step"
+    },
+    {
+      "type": "finish"
+    },
+    "[DONE]"
+  ]
+}

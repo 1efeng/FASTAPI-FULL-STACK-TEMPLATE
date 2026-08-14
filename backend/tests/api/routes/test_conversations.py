@@ -129,12 +129,16 @@ async def test_read_conversation_returns_only_ordered_business_messages(
                 request_id=request_run.id,
                 role=MessageRole.USER,
                 content="Plan Tokyo",
+                reasoning_summary=None,
+                reasoning_duration_ms=None,
             ),
             Message(
                 conversation_id=conversation.id,
                 request_id=request_run.id,
                 role=MessageRole.ASSISTANT,
                 content="Here is a draft.",
+                reasoning_summary="先比较交通时间，再安排每日区域。",
+                reasoning_duration_ms=4200,
             ),
         ]
     )
@@ -156,6 +160,13 @@ async def test_read_conversation_returns_only_ordered_business_messages(
         "Plan Tokyo",
         "Here is a draft.",
     ]
+    assert [message["reasoning_summary"] for message in content["messages"]] == [
+        None,
+        "先比较交通时间，再安排每日区域。",
+    ]
+    assert [
+        message["reasoning_duration_ms"] for message in content["messages"]
+    ] == [None, 4200]
     assert "seq" not in content["messages"][0]
     assert "request_id" not in content["messages"][0]
 

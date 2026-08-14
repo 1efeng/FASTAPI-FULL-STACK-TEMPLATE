@@ -3,21 +3,14 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from app.agent.executor import AgentExecutionResult
+from app.agent.executor import AgentExecutionRequest, AgentExecutionResult
 from app.core.config import settings
 from app.modules.chat import api as api_module
 
 
 class SuccessfulExecutor:
-    async def execute(
-        self,
-        *,
-        request_id: uuid.UUID,
-        conversation_id: uuid.UUID,
-        message: str,
-        deadline_at: object,
-    ) -> AgentExecutionResult:
-        del request_id, conversation_id, message, deadline_at
+    async def execute(self, request: AgentExecutionRequest) -> AgentExecutionResult:
+        del request
         return AgentExecutionResult(content="done")
 
 

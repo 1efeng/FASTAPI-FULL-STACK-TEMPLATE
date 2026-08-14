@@ -1,14 +1,10 @@
-import { Link } from "@tanstack/react-router"
+﻿import { Link } from "@tanstack/react-router"
+import { Compass } from "lucide-react"
 
-import { useTheme } from "@/components/theme-provider"
 import { cn } from "@/lib/utils"
-import icon from "/assets/images/fastapi-icon.svg"
-import iconLight from "/assets/images/fastapi-icon-light.svg"
-import logo from "/assets/images/fastapi-logo.svg"
-import logoLight from "/assets/images/fastapi-logo-light.svg"
 
 interface LogoProps {
-  variant?: "full" | "icon" | "responsive"
+  variant?: "full" | "icon" | "mark" | "responsive"
   className?: string
   asLink?: boolean
 }
@@ -18,43 +14,57 @@ export function Logo({
   className,
   asLink = true,
 }: LogoProps) {
-  const { resolvedTheme } = useTheme()
-  const isDark = resolvedTheme === "dark"
-
-  const fullLogo = isDark ? logoLight : logo
-  const iconLogo = isDark ? iconLight : icon
-
   const content =
     variant === "responsive" ? (
       <>
-        <img
-          src={fullLogo}
-          alt="FastAPI"
+        <span
           className={cn(
-            "h-6 w-auto group-data-[collapsible=icon]:hidden",
+            "flex items-center gap-2.5 group-data-[collapsible=icon]:hidden",
             className,
           )}
-        />
-        <img
-          src={iconLogo}
-          alt="FastAPI"
+        >
+          <span className="flex size-8 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Compass className="size-4.5" />
+          </span>
+          <span className="flex flex-col leading-none">
+            <span className="text-base font-semibold tracking-tight">行伴</span>
+            <span className="mt-1 text-[10px] text-muted-foreground">
+              AI TRAVEL COMPANION
+            </span>
+          </span>
+        </span>
+        <span
           className={cn(
-            "size-5 hidden group-data-[collapsible=icon]:block",
+            "hidden size-8 items-center justify-center rounded-xl bg-primary text-primary-foreground group-data-[collapsible=icon]:flex",
             className,
           )}
-        />
+        >
+          <Compass className="size-4.5" />
+        </span>
       </>
     ) : (
-      <img
-        src={variant === "full" ? fullLogo : iconLogo}
-        alt="FastAPI"
-        className={cn(variant === "full" ? "h-6 w-auto" : "size-5", className)}
-      />
+      <span
+        className={cn(
+          "flex items-center gap-2.5",
+          variant === "icon" &&
+            "size-8 justify-center rounded-xl bg-primary text-primary-foreground",
+          variant === "mark" &&
+            "size-11 justify-center rounded-full bg-[#4d6bfe] text-white shadow-sm",
+          className,
+        )}
+      >
+        <Compass className={cn("size-4.5", variant === "mark" && "size-5")} />
+        {variant === "full" && (
+          <span className="font-semibold text-[#4d6bfe] text-[20px] tracking-[-0.03em]">
+            行伴
+          </span>
+        )}
+      </span>
     )
 
   if (!asLink) {
     return content
   }
 
-  return <Link to="/">{content}</Link>
+  return <Link to="/chat">{content}</Link>
 }

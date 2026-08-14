@@ -11,3 +11,9 @@ backend/app/frontend/
 .agents/skills/sqlmodel
 .claude/skills/fastapi
 .claude/skills/sqlmodel
+
+# Generated / local tooling
+frontend/.tanstack/
+/tw-*.css
+/tw-*.mjs
+/pnpm-lock.yaml

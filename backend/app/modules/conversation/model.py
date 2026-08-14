@@ -79,11 +79,31 @@ class Message(BaseModel):
         comment="业务消息角色",
     )
     content: Mapped[str] = mapped_column(Text, comment="业务消息内容")
+    reasoning_summary: Mapped[str | None] = mapped_column(
+        Text,
+        default=None,
+        comment="可公开展示的模型 reasoning summary；仅 assistant 可写",
+    )
+    reasoning_duration_ms: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="公开 reasoning 流片段的累计活跃时长（毫秒）；仅 assistant 可写",
+    )
 
     __table_args__ = (
         CheckConstraint(
             "role IN ('user', 'assistant')",
             name="ck_message_role",
+        ),
+        CheckConstraint(
+            "role = 'assistant' OR reasoning_summary IS NULL",
+            name="ck_message_reasoning_summary_assistant_only",
+        ),
+        CheckConstraint(
+            "reasoning_duration_ms IS NULL OR "
+            "(role = 'assistant' AND reasoning_summary IS NOT NULL "
+            "AND reasoning_duration_ms >= 0)",
+            name="ck_message_reasoning_duration",
         ),
         UniqueConstraint("seq", name="uq_message_seq"),
         UniqueConstraint("request_id", "role", name="uq_message_request_role"),

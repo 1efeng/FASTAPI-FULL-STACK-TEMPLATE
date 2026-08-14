@@ -143,6 +143,10 @@ Application 从 LiteLLM metadata / response / logging payload 获取：
 
 业务库只做 attribution，不重新计算供应商价格。
 
+Step 4 的 PydanticAI `AgentExecutionResult.usage` 只提供成功路径的 framework-neutral token snapshot。PydanticAI 的 `usage.cost` 来自 `genai-prices` best-effort estimate，不是本节的 cost SOT，禁止直接写入 business ledger cost。
+
+当前 OpenAI-compatible adapter 暴露的 `provider_response_id` 也不保证是 LiteLLM call id；正式 `litellm_call_id / actual model or deployment / response cost / failed attempt usage` 必须由 LiteLLM logging/callback 或可验证的 gateway metadata enrichment。
+
 # 11. Metadata
 
 每次真实 LLM call 应尽可能关联：
@@ -159,6 +163,8 @@ usage
 cost
 status
 ```
+
+关联分两步：Application 在请求上下文提供 `request_id / trace_id / logical_model / Product attribution`；LiteLLM evidence 回填 `litellm_call_id / actual deployment / authoritative cost/status`。不得从响应 model/id 字符串猜测后者。
 
 # 12. Observability
 

@@ -1,16 +1,24 @@
 import logging
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
-from app.agent.executor import AgentRuntimeNotConfigured, get_agent_executor
+from app.agent.executor import (
+    AgentRuntimeNotConfigured,
+    dispatch_vercel_spike,
+    get_agent_executor,
+)
 from app.core.deps import CurrentUser, SessionDep
+from app.infra.stream_resume.fastapi import sse_response
+from app.infra.stream_resume.provider import get_stream_resume_store
 from app.modules.chat.runtime import ChatRuntime, get_chat_runtime
 from app.modules.chat.schema import AgentChatError, AgentChatRequest, AgentChatResponse
 from app.modules.chat.service import ChatExecutionError, ChatService
+from app.modules.conversation.model import Conversation
 from app.modules.request_run.model import RequestRunStatus
+from app.modules.request_run.repository import RequestRunRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
@@ -72,7 +80,6 @@ async def chat(
             idempotency_key=idempotency_key.strip(),
             message=payload.message,
             client_ip=request.client.host if request.client else "unknown",
-            disconnect_checker=None,
         )
         if result.status is RequestRunStatus.RUNNING:
             return JSONResponse(
@@ -109,3 +116,137 @@ async def chat(
             request_id=request_id,
         )
         return JSONResponse(status_code=500, content=error.model_dump(mode="json"))
+
+
+def _extract_user_text(body: dict[str, Any]) -> str:
+    """Extract the current user text from an AI SDK ChatRequest body."""
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(status_code=422, detail="messages must not be empty")
+    last = messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "user":
+        raise HTTPException(status_code=422, detail="last message must be user")
+    parts = last.get("parts")
+    if not isinstance(parts, list):
+        raise HTTPException(status_code=422, detail="message parts missing")
+    text = "".join(
+        part.get("text", "") for part in parts if isinstance(part, dict) and part.get("type") == "text"
+    ).strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="message text must not be empty")
+    return text
+
+
+def _parse_conversation_id(body: dict[str, Any]) -> uuid.UUID | None:
+    raw = body.get("conversation_id")
+    if raw is None or raw == "":
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid conversation_id") from exc
+
+
+@router.post("/chat/stream")
+async def chat_stream(
+    request: Request,
+    current_user: CurrentUser,
+    db: SessionDep,
+    runtime: ChatRuntimeDep,
+    idempotency_key: IdempotencyKey,
+) -> Response:
+    """Stream one authenticated chat turn through the Product lifecycle.
+
+    Extracts the current user text from the AI SDK ChatRequest body, runs the
+    Product lifecycle (admission → idempotency → Start TX → authoritative history),
+    streams PydanticAI text deltas through StreamResumeStore, and emits the
+    ``finish`` terminal only after the Product Success TX COMMITs.
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
+
+    message = _extract_user_text(body)
+    conversation_id = _parse_conversation_id(body)
+
+    request_id = uuid.uuid4()
+    service = ChatService(db, executor=get_agent_executor(), runtime=runtime)
+
+    if conversation_id is None:
+        # Create an owned active conversation for this turn.
+        conversation = Conversation(user_id=current_user.id, title=None)
+        db.add(conversation)
+        await db.flush()
+        conversation_id = conversation.id
+        await db.commit()
+
+    # Validate ownership before creating the StreamingResponse.  The producer
+    # itself repeats this check inside the Start transaction, but that happens
+    # after the HTTP 200 headers have been sent and would surface to AI SDK as a
+    # misleading ``network error``.
+    try:
+        await service.assert_conversation_available(
+            conversation_id=conversation_id,
+            user_id=current_user.id,
+        )
+    except ChatExecutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    factory = await service.stream_factory(
+        request_id=request_id,
+        user_id=current_user.id,
+        conversation_id=conversation_id,
+        idempotency_key=idempotency_key.strip(),
+        message=message,
+        client_ip=request.client.host if request.client else "unknown",
+    )
+
+    store = get_stream_resume_store()
+    stream = await store.start_or_resume(str(request_id), factory)
+    if stream is None:
+        stream = await store.resume(str(request_id))
+    if stream is None:
+        return JSONResponse(status_code=204, content=None)
+
+    return sse_response(
+        stream,
+        headers={
+            "x-vercel-ai-ui-message-stream": "v1",
+            "X-Request-Id": str(request_id),
+        },
+    )
+
+
+@router.get("/chat/requests/{request_id}/stream")
+async def reconnect_stream(
+    request_id: uuid.UUID,
+    current_user: CurrentUser,
+    db: SessionDep,
+) -> Response:
+    """Reconnect to an active assistant stream (F5 / network resume).
+
+    Ownership check against Product RequestRun; then resume the transport stream
+    via StreamResumeStore. Returns 204 when no active transport exists (client
+    reconciles via durable status/history).
+    """
+    request_run = await RequestRunRepository(db).get_owned(request_id, current_user.id)
+    if request_run is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    store = get_stream_resume_store()
+    stream = await store.resume(str(request_id))
+    if stream is None:
+        return JSONResponse(status_code=204, content=None)
+    return sse_response(stream, headers={"x-vercel-ai-ui-message-stream": "v1"})
+
+
+@router.post("/chat/stream/dispatch")
+async def chat_stream_dispatch(request: Request, current_user: CurrentUser) -> Response:
+    """Compatibility spike endpoint (NOT the production Product lifecycle path).
+
+    Kept for AI SDK protocol spike only. Production streaming goes through
+    ``/chat/stream`` + ``/chat/requests/{id}/stream``.
+    """
+    del current_user
+    return await dispatch_vercel_spike(request)

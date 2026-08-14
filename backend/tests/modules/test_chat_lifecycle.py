@@ -8,7 +8,7 @@ from httpx import AsyncClient
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.executor import AgentExecutionResult
+from app.agent.executor import AgentExecutionRequest, AgentExecutionResult
 from app.core.config import settings
 from app.infra.database import AsyncSessionLocal
 from app.modules.chat import api as api_module
@@ -28,17 +28,9 @@ class CallbackExecutor:
         self.callback = callback
         self.error = error
 
-    async def execute(
-        self,
-        *,
-        request_id: uuid.UUID,
-        conversation_id: uuid.UUID,
-        message: str,
-        deadline_at: object,
-    ) -> AgentExecutionResult:
-        del conversation_id, message, deadline_at
+    async def execute(self, request: AgentExecutionRequest) -> AgentExecutionResult:
         if self.callback is not None:
-            await self.callback(request_id)
+            await self.callback(request.request_id)
         if self.error is not None:
             raise self.error
         return AgentExecutionResult(content="durable final")
