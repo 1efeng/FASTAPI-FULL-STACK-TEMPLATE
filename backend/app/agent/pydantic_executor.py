@@ -52,12 +52,11 @@ from app.agent.executor import (
     AgentExecutor,
     AgentStreamTerminalKind,
 )
+from app.agent.prompts import MAIN_TRAVEL_INSTRUCTIONS
 from app.agent.usage import AgentModelCallUsage, AgentTokenUsage, AgentUsage
 from app.core.config import settings
 
-# Server-controlled guidance. ``instructions`` are injected fresh on every run and
-# are never persisted, which is the recommended pattern for server-owned prompts.
-_CHAT_INSTRUCTIONS = (
+_GENERIC_CHAT_INSTRUCTIONS = (
     "你是「行伴」，一位专业的旅行规划助手。"
     "用用户使用的语言简洁、准确地回答问题；不编造实时信息。"
 )
@@ -151,8 +150,16 @@ def get_chat_agent() -> Agent:
         model,
         # Literal guidance remains a cache-stable prefix. The callable is resolved
         # at run time, so a cached Agent never freezes the process-start clock.
-        instructions=(_CHAT_INSTRUCTIONS, _runtime_clock_instructions),
-        capabilities=build_travel_capabilities(),
+        instructions=(
+            MAIN_TRAVEL_INSTRUCTIONS
+            if settings.TRAVEL_CORE_ENABLED
+            else _GENERIC_CHAT_INSTRUCTIONS,
+            _runtime_clock_instructions,
+        ),
+        capabilities=build_travel_capabilities(
+            enable_planning_core=settings.TRAVEL_CORE_ENABLED,
+            researcher_model=model,
+        ),
         defer_model_check=True,
     )
 
@@ -364,9 +371,7 @@ async def stream_vercel_events(
     request: AgentExecutionRequest,
     *,
     on_complete: Callable[[AgentExecutionResult], Awaitable[None]] | None = None,
-    on_terminal: Callable[
-        [AgentStreamTerminalKind, str | None], Awaitable[str]
-    ]
+    on_terminal: Callable[[AgentStreamTerminalKind, str | None], Awaitable[str]]
     | None = None,
 ) -> AsyncIterator[str]:
     """Stream a chat turn as Vercel AI SDK data-stream SSE strings.
@@ -409,7 +414,9 @@ async def stream_vercel_events(
                     content=output,
                     reasoning_summary=_to_reasoning_summary(result),
                     reasoning_duration_ms=reasoning_timer.duration_ms,
-                    usage=_to_agent_usage(result, logical_model=settings.LLM_LOGICAL_MODEL),
+                    usage=_to_agent_usage(
+                        result, logical_model=settings.LLM_LOGICAL_MODEL
+                    ),
                 )
             )
 

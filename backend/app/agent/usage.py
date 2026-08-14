@@ -1,6 +1,7 @@
 """Framework-neutral model usage contract for Product attribution."""
 
 from dataclasses import dataclass
+from typing import cast
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +94,7 @@ class AgentUsage:
         if any(usage is None for usage in usages):
             return None
         return sum(
-            getattr(usage, name)
+            cast(int, getattr(usage, name))
             for usage in usages
             if isinstance(usage, AgentTokenUsage)
         )

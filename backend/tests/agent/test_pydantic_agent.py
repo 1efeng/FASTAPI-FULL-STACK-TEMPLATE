@@ -21,7 +21,7 @@ def test_chat_agent_uses_litellm_logical_model() -> None:
     assert agent.model.model_name == settings.LLM_LOGICAL_MODEL
 
 
-def test_chat_agent_includes_harness_skill_and_tool_capabilities() -> None:
+def test_chat_agent_enables_migrated_planning_core_by_default() -> None:
     agent = get_chat_agent()
     leaves: list[AbstractCapability[object]] = []
 
@@ -29,7 +29,9 @@ def test_chat_agent_includes_harness_skill_and_tool_capabilities() -> None:
 
     capability_ids = {leaf.id for leaf in leaves}
     assert "travel-budget" in capability_ids
-    assert "travel-deterministic-tools" in capability_ids
+    assert "travel-main-tools" in capability_ids
+    assert "travel-planning" in capability_ids
+    assert "travel-research-delegation" in capability_ids
 
 
 def test_runtime_clock_is_resolved_fresh_for_each_agent_run() -> None:

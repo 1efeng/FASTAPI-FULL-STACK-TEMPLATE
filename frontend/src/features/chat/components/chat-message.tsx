@@ -1,4 +1,4 @@
-﻿import { Check, Copy } from "lucide-react"
+﻿import { Check, Copy, Globe } from "lucide-react"
 
 import {
   Message,
@@ -43,6 +43,9 @@ export function ChatMessage({
     (part) => part.type === "reasoning",
   )
   const reasoning = reasoningParts.map((part) => part.text).join("")
+  const sourceParts = message.parts.filter(
+    (part) => part.type === "source-url",
+  )
   const isReasoningStreaming =
     isLastAssistant &&
     isStreaming &&
@@ -73,7 +76,7 @@ export function ChatMessage({
                 : "w-full bg-transparent px-0 py-0 text-foreground",
             )}
           >
-            {reasoningParts.length > 0 && (
+            {(reasoningParts.length > 0 || sourceParts.length > 0) && (
               <Reasoning
                 className="w-full"
                 duration={
@@ -96,9 +99,32 @@ export function ChatMessage({
                     )
                   }
                 />
-                <ReasoningContent className="mt-3 border-l-2 border-primary/15 pl-4 leading-7">
-                  {reasoning}
-                </ReasoningContent>
+                {reasoning && (
+                  <ReasoningContent className="mt-3 border-l-2 border-primary/15 pl-4 leading-7">
+                    {reasoning}
+                  </ReasoningContent>
+                )}
+                {sourceParts.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {sourceParts.map((part) => {
+                      if (part.type !== "source-url") return null
+                      return (
+                        <a
+                          className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          href={part.url}
+                          key={part.sourceId}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          <Globe className="size-3.5 shrink-0" />
+                          <span className="truncate">
+                            {part.title || part.url}
+                          </span>
+                        </a>
+                      )
+                    })}
+                  </div>
+                )}
               </Reasoning>
             )}
 

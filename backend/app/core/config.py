@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8
     FRONTEND_HOST: str = "http://localhost:5173"
     ENVIRONMENT: Literal["local", "staging", "production"] = "local"
-    APP_ENV: Literal["local", "staging", "production"] = "local"
+    APP_ENV: Literal["local", "test", "staging", "production"] = "local"
     APP_DEBUG: bool = False
     APP_TIMEZONE: str = "Asia/Shanghai"
     REQUEST_DEADLINE_SECONDS: PositiveFloat = 60.0
@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     TAVILY_API_KEY: str | None = None
     AMAP_API_KEY: str | None = None
     WEATHER_API_KEY: str | None = None
+    QWEATHER_API_KEY: str | None = None
+    QWEATHER_API_HOST: str = "https://devapi.qweather.com"
+    FX_BASE_URL: str = "https://api.frankfurter.dev/v2"
+    TRAVEL_CORE_ENABLED: bool = True
 
     # Shared runtime and AI infrastructure. These are configuration contracts;
     # feature modules connect to them when their roadmap milestone is enabled.
