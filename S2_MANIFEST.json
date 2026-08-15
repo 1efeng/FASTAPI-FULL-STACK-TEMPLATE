@@ -1,0 +1,146 @@
+{
+  "package": "travel_agent_v8_S2_final_deep_research_closed",
+  "base_repo": "1efeng/FASTAPI-FULL-STACK-TEMPLATE",
+  "base_branch": "travel_agent_v8",
+  "base_head": "ab0738def24828b71c5c9ff60bf39bd2042414c2",
+  "base_executor_git_blob": "d5ee0947471480bd8c735268e20cae556b6fc910",
+  "source_s1_zip_sha256": "a380d3e0e441ae1f1a03263c8a2e6b309c891f27543e2c8d826710a5f95094a0",
+  "ready_for_cursor": true,
+  "ready_for_commit": false,
+  "deletions": [
+    "backend/tests/agent/test_optional_researcher_routing.py",
+    "backend/app/agent/tools/search_providers/"
+  ],
+  "files": [
+    {
+      "path": ".env.example",
+      "size": 3913,
+      "sha256": "6d38b27d355d3d979c01564ec182b02ec3dfb77814a3a910106f04d53665f533"
+    },
+    {
+      "path": "CURSOR_INSTRUCTION_S2.md",
+      "size": 1102,
+      "sha256": "4d50450cec47a8df236ecbf432f777d7fa3898fccc2a8c6af94fad3f6191ad4f"
+    },
+    {
+      "path": "README_S2_FINAL.md",
+      "size": 5723,
+      "sha256": "74fa0cf63d6a64817f1311857c308ccb5f7ce3f3138ff622b2145f807d70e3b7"
+    },
+    {
+      "path": "S2_DELETIONS.txt",
+      "size": 144,
+      "sha256": "69196a34d9a4febc1b6e2c12298f13a71baa1df4bdb7b554f107ee07b8ea4491"
+    },
+    {
+      "path": "backend/app/agent/capabilities/research_guard.py",
+      "size": 2076,
+      "sha256": "873ca2de20e5f23e47905034dd7d0717b7034eb15fccf34caa985db925f954c5"
+    },
+    {
+      "path": "backend/app/agent/capabilities/travel.py",
+      "size": 4728,
+      "sha256": "3e937420e1ed4066d6754a4c8ff26794fb7714278aea62480832ef9478255235"
+    },
+    {
+      "path": "backend/app/agent/prompts.py",
+      "size": 6118,
+      "sha256": "b8b46433605b77048bef922ab21793d266a6fe7375a02a07cfaab719c4918f6f"
+    },
+    {
+      "path": "backend/app/agent/research_runtime.py",
+      "size": 12231,
+      "sha256": "053be8b606b494985ce600a629f38e340a7cd270a9c9b4e6bc95d48f4fa2ec02"
+    },
+    {
+      "path": "backend/app/agent/skills/travel-planning/SKILL.md",
+      "size": 8675,
+      "sha256": "6e0de20c85b3ac249e53a63a65b34cefd2cf115023c5f64e78071b554f408fda"
+    },
+    {
+      "path": "backend/app/agent/subagents/research_worker.py",
+      "size": 7227,
+      "sha256": "7e3ca510b72d7d78137f7d3957660477fd8c30e63a1cfd952c2f8c31c18a2ca9"
+    },
+    {
+      "path": "backend/app/agent/tools/image_search.py",
+      "size": 4975,
+      "sha256": "e3d0e02354305a1ecc313e2f875d94d910d9c949b48cc14362ab328ae8301a03"
+    },
+    {
+      "path": "backend/app/agent/tools/research_tools.py",
+      "size": 1059,
+      "sha256": "8071738f2e4db92802621783a948e5f3ad4c5f1ef45b348cc03739d6af421323"
+    },
+    {
+      "path": "backend/app/agent/tools/search.py",
+      "size": 7216,
+      "sha256": "667826f0cfe6d35b7786bcd6938774b4cc5271c3171b6a8bab837c05b896159d"
+    },
+    {
+      "path": "backend/app/core/config.py",
+      "size": 6936,
+      "sha256": "24295031238682763d82c80d6e48d5223c510fe8e32b8cf0756b58787275d160"
+    },
+    {
+      "path": "backend/pyproject.toml",
+      "size": 2264,
+      "sha256": "ebeccd58c35ac261720703ad0d51a3bef019cde02f924ea74e1f044dd17ade92"
+    },
+    {
+      "path": "backend/tests/agent/test_deep_research_workflow.py",
+      "size": 8992,
+      "sha256": "61bdbfd99e4caaacb4b25166cf33e0b3ac6edd66f866dfb088a151e228c9a0d9"
+    },
+    {
+      "path": "backend/tests/agent/test_harness_capabilities.py",
+      "size": 4055,
+      "sha256": "320fbe1d4bbd7b205bc9377d1fa3381d43e8e9d4ece5b72626e69a32f7e99cc1"
+    },
+    {
+      "path": "backend/tests/agent/test_pydantic_agent.py",
+      "size": 4156,
+      "sha256": "e053169c0d68b623102c1d52fe7fd4205ef9ef4f2f63bd780ea75fe8e75721ef"
+    },
+    {
+      "path": "backend/tests/agent/test_research_routing.py",
+      "size": 21017,
+      "sha256": "1d4cbdfcf7e2f877994055bfbc7abfce0f911fc29a58b24cf218ed409e36ecc8"
+    },
+    {
+      "path": "backend/tests/agent/test_research_runtime.py",
+      "size": 11630,
+      "sha256": "b684f93d705f21191334561d3e3e852a77508e196b80c9750835cb024b305c41"
+    },
+    {
+      "path": "backend/tests/agent/test_research_usage_accounting.py",
+      "size": 10861,
+      "sha256": "081fda74ea5ed6dd280b5c74880ea25a11a26cde7bc7e4ec8062b5b7632614fb"
+    },
+    {
+      "path": "backend/tests/agent/test_runtime_protection_e2e.py",
+      "size": 6582,
+      "sha256": "6eaccb1727e5cbc73e1fe957dd10eeadb9cfabde05761388df363d57fe36d3b8"
+    },
+    {
+      "path": "backend/tests/agent/test_tool_timeout_closure.py",
+      "size": 4332,
+      "sha256": "eed601b51473704f76f44232ec880c31d5c701c414437761a6be73b42c499502"
+    },
+    {
+      "path": "backend/tests/agent/test_travel_tools.py",
+      "size": 9439,
+      "sha256": "1bab1d7df40609bc98a258f3d9d3c33c47b97fac3806324a0a424d92d4d27d22"
+    },
+    {
+      "path": "backend/tests/infra/test_config.py",
+      "size": 3544,
+      "sha256": "ffe0d6aae987a10ffc1961280863d3d07fb8ea30f9eb47f50e81c353dea26e69"
+    },
+    {
+      "path": "scripts/apply_travel_agent_s2.py",
+      "size": 10691,
+      "sha256": "e417688f92da359e8e9369f7bc94387bd302cbac33afaa714548557fb3720b6c"
+    }
+  ]
+}

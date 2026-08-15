@@ -8,24 +8,18 @@ from pathlib import Path
 from pydantic_ai import Tool, UsageLimits
 from pydantic_ai.capabilities import AgentCapability, Capability
 from pydantic_ai.models import KnownModelName, Model
+from pydantic_ai_harness.dynamic_workflow import DynamicWorkflow
 from pydantic_ai_harness.skills import Skills
-from pydantic_ai_harness.subagents import SubAgent, SubAgents
 
-from app.agent.subagents.travel_researcher import build_travel_researcher
+from app.agent.capabilities.research_guard import SingleWorkflowCallGate
+from app.agent.subagents.research_worker import build_research_worker
 from app.agent.tools.budget import calculate_budget
 from app.agent.tools.currency import convert_currency
-from app.agent.tools.route import search_maps
-from app.agent.tools.search import search_web
-from app.agent.tools.weather import get_weather
-from app.agent.tools.web_fetch import web_fetch
+from app.agent.tools.research_tools import build_research_tools
 from app.core.config import settings
 
 SKILL_LIBRARY = Path(__file__).resolve().parents[1] / "skills"
-_DELEGATION_TOOL_NAME = "delegate_task"
-RESEARCHER_ON_FAILURE_MESSAGE = (
-    "Travel Researcher 本次调研未在时限内完成（或自身重试耗尽）。"
-    "请基于已有可靠信息继续，并明确标注未核实事实。"
-)
+_DEEP_RESEARCH_TOOL_NAME = "run_workflow"
 
 # Skills contain instructions only. Every executable dependency stays explicit and
 # is validated before the capability bundle can reach a model.
@@ -33,25 +27,24 @@ SKILL_TOOL_DEPENDENCIES: Mapping[str, frozenset[str]] = {
     "travel-budget": frozenset({"calculate_budget"}),
     "travel-planning": frozenset(
         {
-            _DELEGATION_TOOL_NAME,
-            "search_web",
+            "web_search",
+            "web_fetch",
+            "image_search",
             "search_maps",
             "get_weather",
             "calculate_budget",
             "convert_currency",
+            _DEEP_RESEARCH_TOOL_NAME,
         }
     ),
 }
 
 _BUDGET_TOOL = Tool[object](calculate_budget, takes_ctx=False)
-_WEB_FETCH_TOOL = Tool[object](web_fetch, takes_ctx=False)
+_CURRENCY_TOOL = Tool[object](convert_currency, takes_ctx=False)
 _MAIN_TOOLS: tuple[Tool[object], ...] = (
-    Tool[object](search_web, takes_ctx=False),
-    Tool[object](get_weather, takes_ctx=False),
-    Tool[object](search_maps, takes_ctx=False),
+    *build_research_tools(),
     _BUDGET_TOOL,
-    Tool[object](convert_currency, takes_ctx=False),
-    _WEB_FETCH_TOOL,
+    _CURRENCY_TOOL,
 )
 
 
@@ -77,7 +70,11 @@ def build_travel_capabilities(
     researcher_model: Model | KnownModelName | str | None = None,
     enable_planning_core: bool = True,
 ) -> tuple[AgentCapability[object], ...]:
-    """Build the migrated core, or the pre-Gate budget-only subset."""
+    """Build Main tools, Skills, and the optional parallel Deep Research capability.
+
+    ``researcher_model`` is retained as the composition-root argument name for
+    compatibility with the current executor; it now configures ``research_worker``.
+    """
     selected_skills = (
         frozenset(SKILL_TOOL_DEPENDENCIES)
         if enable_planning_core
@@ -86,38 +83,38 @@ def build_travel_capabilities(
     active_tools = _MAIN_TOOLS if enable_planning_core else (_BUDGET_TOOL,)
     available_tools = {tool.name for tool in active_tools}
     if enable_planning_core:
-        available_tools.add(_DELEGATION_TOOL_NAME)
+        available_tools.add(_DEEP_RESEARCH_TOOL_NAME)
     validate_skill_tool_dependencies(
         selected_skills=selected_skills,
         available_tools=available_tools,
     )
 
     skill_catalog = Skills[object](SKILL_LIBRARY, include=selected_skills)
-    main_tools = Capability[object](
-        id="travel-main-tools",
-        tools=active_tools,
-    )
+    main_tools = Capability[object](id="travel-main-tools", tools=active_tools)
     if not enable_planning_core:
         return (skill_catalog, main_tools)
 
-    researcher = build_travel_researcher(model=researcher_model)
-    research_delegation = SubAgents[object](
-        agents=(
-            SubAgent[object](
-                researcher,
-                max_calls=1,
-                timeout_seconds=settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS,
-                usage_limits=UsageLimits(
-                    request_limit=settings.TRAVEL_RESEARCHER_MODEL_REQUEST_LIMIT,
-                    tool_calls_limit=settings.TRAVEL_RESEARCHER_TOOL_CALL_LIMIT,
-                ),
-                on_failure=RESEARCHER_ON_FAILURE_MESSAGE,
-            ),
+    research_worker = build_research_worker(model=researcher_model)
+    workflow_gate = SingleWorkflowCallGate(tool_name=_DEEP_RESEARCH_TOOL_NAME)
+    deep_research = DynamicWorkflow[object](
+        agents=(research_worker,),
+        id="deep-research",
+        description=(
+            "Parallel Deep Research for 2-3 independent travel fact topics; "
+            "returns only compact structured findings to Main."
         ),
-        agent_folders=None,
-        forward_usage=True,
-        inherit_tools=False,
-        contain_errors=False,
-        id="travel-research-delegation",
+        defer_loading=True,
+        max_agent_calls=3,
+        # Keep Main's 8/6 UsageLimits independent from child loops. Harness 0.21
+        # uses the parent's shared usage counter when forward_usage=True, which
+        # would make child requests/tool calls consume Main's small role budget.
+        forward_usage=False,
+        inherit_model=False,
+        # Monty CPU guard only; time awaiting sub-agents is intentionally not counted.
+        resource_limits={"max_duration_secs": 5},
+        sub_agent_usage_limits=UsageLimits(
+            request_limit=settings.RESEARCH_WORKER_MODEL_REQUEST_LIMIT,
+            tool_calls_limit=settings.RESEARCH_WORKER_TOOL_CALL_LIMIT,
+        ),
     )
-    return (skill_catalog, main_tools, research_delegation)
+    return (skill_catalog, main_tools, workflow_gate, deep_research)

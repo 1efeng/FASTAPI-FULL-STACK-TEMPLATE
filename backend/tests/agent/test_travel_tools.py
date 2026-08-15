@@ -1,8 +1,8 @@
 from decimal import Decimal
-from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from ddgs.exceptions import DDGSException, TimeoutException
 from pydantic_ai import ToolReturn
 
 from app.agent.tools.currency import (
@@ -10,10 +10,12 @@ from app.agent.tools.currency import (
     convert_currency,
     convert_currency_data,
 )
-from app.agent.tools.search import search_web
-from app.agent.tools.search_providers.base import SearchProvider, SearchResult
-from app.agent.tools.search_providers.fake import FakeSearchProvider
-from app.agent.tools.search_providers.fallback import FallbackSearchProvider
+from app.agent.tools.image_search import (
+    ImageSearchResult,
+    _normalize_image_results,
+    image_search,
+)
+from app.agent.tools.search import SearchResult, web_search
 from app.agent.tools.weather import get_weather
 
 
@@ -68,43 +70,207 @@ async def test_currency_tool_degrades_to_text_on_provider_failure() -> None:
     assert result == "汇率换算暂时失败：TimeoutError"
 
 
-def test_search_facade_clamps_results_and_uses_provider_contract() -> None:
-    provider = FakeSearchProvider()
-    with patch("app.agent.tools.search.get_search_provider", return_value=provider):
-        result = search_web("东京 当前 开放", max_results=99)
+@pytest.mark.asyncio
+async def test_web_search_clamps_results_and_emits_source_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    async def fake_execute_search(**kwargs: object) -> list[SearchResult]:
+        observed.update(kwargs)
+        return [
+            SearchResult(
+                title="Official result",
+                url="https://example.test/official",
+                snippet="verified snippet",
+            )
+        ]
+
+    monkeypatch.setattr("app.agent.tools.search._execute_search", fake_execute_search)
+    result = await web_search("东京 当前 开放", max_results=99)
 
     assert isinstance(result, ToolReturn)
-    assert "FAKE SEARCH RESULT" in result.return_value
-    assert "东京 当前 开放" in result.return_value
+    assert observed["max_results"] == 8
+    assert observed["operation"] == "text"
+    assert "Official result" in result.return_value
     assert result.metadata
-    assert result.metadata[0].url == "https://example.test/search"
+    assert result.metadata[0].url == "https://example.test/official"
 
 
-def test_fallback_search_uses_secondary_after_primary_failure() -> None:
-    class BrokenProvider:
-        name = "broken"
+@pytest.mark.asyncio
+async def test_web_search_routes_clear_news_intent_internally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
 
-        def search(self, **kwargs: object) -> list[SearchResult]:
-            del kwargs
-            raise TimeoutError
+    async def fake_execute_search(**kwargs: object) -> list[SearchResult]:
+        observed.update(kwargs)
+        return [
+            SearchResult(
+                title="北京新闻",
+                url="https://example.test/news",
+                snippet="新闻摘要",
+                published_at="2026-08-15",
+                source="example",
+            )
+        ]
 
-    provider = FallbackSearchProvider(
-        providers=[
-            cast(SearchProvider, BrokenProvider()),
-            cast(SearchProvider, FakeSearchProvider()),
-        ],
+    monkeypatch.setattr("app.agent.tools.search._execute_search", fake_execute_search)
+    result = await web_search("北京今天有什么新闻")
+
+    assert isinstance(result, ToolReturn)
+    assert observed["operation"] == "news"
+    assert "2026-08-15" in result.return_value
+
+
+@pytest.mark.asyncio
+async def test_web_search_timeout_is_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def timeout(**kwargs: object) -> list[SearchResult]:
+        del kwargs
+        raise TimeoutError("provider secret timeout details")
+
+    monkeypatch.setattr("app.agent.tools.search._execute_search", timeout)
+    result = await web_search("current policy")
+
+    assert result == "SEARCH_TIMEOUT"
+    assert "provider secret" not in result
+
+
+@pytest.mark.asyncio
+async def test_web_search_failure_is_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fail(**kwargs: object) -> list[SearchResult]:
+        del kwargs
+        raise RuntimeError("raw upstream payload")
+
+    monkeypatch.setattr("app.agent.tools.search._execute_search", fail)
+    result = await web_search("current policy")
+
+    assert result == "SEARCH_UNAVAILABLE"
+    assert "raw upstream" not in result
+
+
+@pytest.mark.asyncio
+async def test_web_search_no_results_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def empty(**kwargs: object) -> list[SearchResult]:
+        del kwargs
+        return []
+
+    monkeypatch.setattr("app.agent.tools.search._execute_search", empty)
+    assert await web_search("nothing") == "NO_RESULTS"
+
+
+@pytest.mark.asyncio
+async def test_web_search_maps_ddgs_no_results_exception_to_no_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def empty(**kwargs: object) -> list[SearchResult]:
+        del kwargs
+        raise DDGSException("No results found.")
+
+    monkeypatch.setattr("app.agent.tools.search._execute_search", empty)
+    assert await web_search("nothing") == "NO_RESULTS"
+
+
+@pytest.mark.asyncio
+async def test_web_search_maps_ddgs_timeout_to_safe_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def timeout(**kwargs: object) -> list[SearchResult]:
+        del kwargs
+        raise TimeoutException("sensitive upstream timeout detail")
+
+    monkeypatch.setattr("app.agent.tools.search._execute_search", timeout)
+    assert await web_search("current policy") == "SEARCH_TIMEOUT"
+
+
+def test_image_search_normalization_keeps_image_and_source_page_distinct() -> None:
+    results = _normalize_image_results(
+        [
+            {
+                "title": "故宫",
+                "image": "https://img.example/fb.jpg",
+                "thumbnail": "https://img.example/fb-thumb.jpg",
+                "url": "https://source.example/palace",
+                "width": "1600",
+                "height": 900,
+                "source": "source.example",
+            }
+        ]
     )
-    result = provider.search(
-        query="current policy",
-        max_results=5,
-        topic="general",
-        search_depth="advanced",
-        include_domains=None,
-        exclude_domains=None,
-    )
 
-    assert result
-    assert result[0].title == "[FAKE SEARCH RESULT]"
+    assert results == [
+        ImageSearchResult(
+            title="故宫",
+            image_url="https://img.example/fb.jpg",
+            thumbnail_url="https://img.example/fb-thumb.jpg",
+            source_page_url="https://source.example/palace",
+            width=1600,
+            height=900,
+            source="source.example",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_image_search_failure_is_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fail(**kwargs: object) -> list[ImageSearchResult]:
+        del kwargs
+        raise RuntimeError("raw image backend payload")
+
+    monkeypatch.setattr("app.agent.tools.image_search._execute_image_search", fail)
+    result = await image_search("故宫")
+
+    assert result == "IMAGE_SEARCH_UNAVAILABLE"
+    assert "raw image backend" not in result
+
+
+@pytest.mark.asyncio
+async def test_image_search_maps_ddgs_no_results_exception_to_no_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def empty(**kwargs: object) -> list[ImageSearchResult]:
+        del kwargs
+        raise DDGSException("No results found.")
+
+    monkeypatch.setattr("app.agent.tools.image_search._execute_image_search", empty)
+    assert await image_search("不存在的景点") == "NO_RESULTS"
+
+
+@pytest.mark.asyncio
+async def test_image_search_maps_ddgs_timeout_to_safe_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def timeout(**kwargs: object) -> list[ImageSearchResult]:
+        del kwargs
+        raise TimeoutException("sensitive image timeout detail")
+
+    monkeypatch.setattr("app.agent.tools.image_search._execute_image_search", timeout)
+    assert await image_search("故宫") == "IMAGE_SEARCH_TIMEOUT"
+
+
+@pytest.mark.asyncio
+async def test_search_tools_are_offline_in_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "APP_ENV", "test")
+
+    async def forbidden_web(**kwargs: object) -> list[SearchResult]:
+        del kwargs
+        raise AssertionError("DDGS web network path must not run in tests")
+
+    async def forbidden_images(**kwargs: object) -> list[ImageSearchResult]:
+        del kwargs
+        raise AssertionError("DDGS image network path must not run in tests")
+
+    monkeypatch.setattr("app.agent.tools.search._search_ddgs", forbidden_web)
+    monkeypatch.setattr("app.agent.tools.image_search._search_ddgs_images", forbidden_images)
+
+    web_result = await web_search("offline test")
+    image_result = await image_search("offline image test")
+
+    assert isinstance(web_result, ToolReturn)
+    assert isinstance(image_result, list)
+    assert image_result[0].source_page_url == "https://example.test/poi"
 
 
 @pytest.mark.asyncio

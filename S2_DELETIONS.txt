@@ -1,0 +1,3 @@
+# Applied by scripts/apply_travel_agent_s2.py
+backend/tests/agent/test_optional_researcher_routing.py
+backend/app/agent/tools/search_providers/

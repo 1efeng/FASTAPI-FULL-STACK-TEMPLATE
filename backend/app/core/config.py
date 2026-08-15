@@ -45,15 +45,13 @@ class Settings(BaseSettings):
     APP_DEBUG: bool = False
     APP_TIMEZONE: str = "Asia/Shanghai"
     REQUEST_DEADLINE_SECONDS: PositiveFloat = 300.0
-    # Time budget contract for A2-A5 runtime protection. Hierarchy:
-    # 0 < LITELLM_CLIENT_TIMEOUT_SECONDS < TRAVEL_RESEARCHER_TIMEOUT_SECONDS
-    #   < REQUEST_DEADLINE_SECONDS.
-    TRAVEL_RESEARCHER_TIMEOUT_SECONDS: PositiveFloat = 240.0
+    # Runtime protection hierarchy: tool/provider bounds are tighter than the
+    # model RPC bound, which is tighter than the Product request deadline.
     LITELLM_CLIENT_TIMEOUT_SECONDS: PositiveFloat = 150.0
     MAIN_MODEL_REQUEST_LIMIT: PositiveInt = 8
     MAIN_TOOL_CALL_LIMIT: PositiveInt = 6
-    TRAVEL_RESEARCHER_MODEL_REQUEST_LIMIT: PositiveInt = 8
-    TRAVEL_RESEARCHER_TOOL_CALL_LIMIT: PositiveInt = 18
+    RESEARCH_WORKER_MODEL_REQUEST_LIMIT: PositiveInt = 8
+    RESEARCH_WORKER_TOOL_CALL_LIMIT: PositiveInt = 18
 
     BACKEND_CORS_ORIGINS: Annotated[
         list[AnyUrl] | str, BeforeValidator(parse_cors)
@@ -77,7 +75,6 @@ class Settings(BaseSettings):
     DATABASE_URL: PostgresDsn | None = None
     OTEL_SERVICE_NAME: str = "travel-agent-api"
     OTLP_ENDPOINT: str | None = None
-    TAVILY_API_KEY: str | None = None
     AMAP_API_KEY: str | None = None
     WEATHER_API_KEY: str | None = None
     QWEATHER_API_KEY: str | None = None

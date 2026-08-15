@@ -7,243 +7,204 @@ description: 创建、重新规划或修改完整旅行行程的专业旅行规�
 
 生成真实可执行、路线合理、符合用户偏好的完整旅行计划。
 
-Main Agent 始终负责最终判断、最终规划和最终回答。
-本 Skill 提供规划方法、Research Need 判断细则和输出规范，不定义固定 Workflow。
+Main Agent 始终是 Research Leader、最终决策者、最终规划者和最终回答者。
+本 Skill 只提供规划方法、Research Need 判断和输出规范。
 
-## 1. 理解旅行需求
+## 1. 先理解真正影响方案的条件
 
-关注真正影响行程的信息：
-
-- 目的地与城市路线
-- 日期或旅行天数
-- 出发地与抵达 / 返程时间
-- 旅行者组成及行动能力
-- 预算
-- 旅行风格与兴趣
-- 交通偏好
-- 必去 / 避开项目
-- 住宿区域要求
-- 其他明确约束
+关注：
+- 目的地 / 城市路线；
+- 日期或旅行天数；
+- 出发地、抵达 / 返程时间；
+- 人数、年龄 / 行动能力；
+- 预算及预算是否包含往返；
+- 旅行风格 / 兴趣；
+- 交通偏好；
+- 必去 / 避开；
+- 住宿区域要求；
+- 其他明确约束。
 
 不要把旅行规划变成问卷。
+只有缺失信息会直接改变整体路线、核心日期逻辑、跨城结构或预算口径时才追问；非关键偏好允许采用合理假设并在方案中说明。
+不同 slot 不得相互推断，例如“高铁”只绑定交通偏好，不能推断预算是否包含往返。
 
-在开始规划或 Research 前，先确认是否缺少会直接改变整体方案的关键条件。
-例如进出城市、实际旅行日期 / 时间范围、是否跨城等核心信息如果当前请求存在歧义，应先简洁追问。
+## 2. Research Need
 
-关键条件未明确时，不要先读取本 Skill、不要委派 Research，也不要猜测核心路线。
+判断标准是：最终方案是否依赖需要当前外部世界核验的信息，而不是单纯看天数或城市数量。
 
-对不会明显改变整体方案的非关键偏好，可以采用合理假设。
-会显著影响预算的核心交通方案（如是否购买 JR Pass 等 Pass / 周游券）不要预先假设，应等 Research 比价后由 Main 决定。
+### Research Need YES
 
-## 2. Research Need 判断
+满足任一：
+1. 依赖当前 / 最新 / 官方事实：开放、闭馆、预约、门票 / Pass、运营政策、交通规则、施工 / 临时关闭；
+2. 用户要求“真正能执行 / 查最新 / 查官方 / 确认预约 / 按实际情况”；
+3. 需要比较当前交通 / Pass / 票价 / 路线现实时间；
+4. 与实际旅行日期直接相关的天气、季节运营、节假日规则或近期交通变化；
+5. Main 无法只靠用户信息 + 稳定常识可靠完成关键决策。
 
-判断标准是“最终方案是否依赖需要当前外部世界核验的信息”，不是天数、城市数或复杂度。
+### Research Need NO
 
-### Research Need YES（满足任一即 YES）
+- 灵感 / brainstorm；
+- rough draft / 框架；
+- 用户明确说不用查最新 / 不联网 / 先做草案；
+- 只要区域组合、路线思路、节奏建议；
+- 用户已经提供足够事实，只需重组。
 
-1. 最终方案依赖当前 / 最新 / 官方事实：开放时间、闭馆日、预约规则、门票 / Pass 价格、运营政策、交通规则、当前施工 / 关闭状态；
-2. 用户要求实际执行性核验：如“真正能执行的”“核实一下”“查最新”“查官方”“确认预约”“确认交通”“按实际情况规划”；
-3. 需要外部方案比较：当前交通方案、Pass 是否划算、票价、路线现实时间；
-4. 与具体旅行日期直接相关的动态事实：天气、季节性运营、临时关闭、节假日规则、近期交通变化；
-5. Main 无法仅凭用户已提供信息 + 稳定常识可靠完成关键决策。
+## 3. Research 选择：Quick vs Deep
 
-### Research Need NO（默认）
+Research Need YES 不代表一定启动 Deep Research。
 
-- 灵感 / brainstorm：如“给我一个北京三日游思路”；
-- rough draft / 初稿：如“先大概排一下”“先给个框架”；
-- 用户明确说“不用查最新 / 先不要联网 / 先做草案”；
-- 用户只需要路线思路、区域组合、节奏建议、风格设计，且不依赖动态事实；
-- 用户已提供足够事实，只需重新组织规划。
+### Quick Research
 
-## 3. 两条合法路径
+只有一个清晰研究轴时，Main 直接调用需要的 Tool：
+`web_search`、`web_fetch`、`search_maps`、`get_weather`、`image_search`。
 
-- PATH A（Research Need NO）：`Main → travel-planning Skill → 直接规划 → Budget / FX（按需）→ Markdown Contract → Final`
-- PATH B（Research Need YES）：`Main → travel-planning Skill → delegate_task(travel-researcher) → Research Findings → Main 选定最终方案 → Budget / FX（按需）→ Markdown Contract → Final`
+例如：
+- 一个景点的最新预约规则；
+- 单条城际路线；
+- 某天的天气；
+- 一个景点图片请求。
 
-两条路径都以 Main 生成最终完整计划结束。Markdown Contract 在 Main 准备生成最终完整计划时读取，
-不因 Researcher 缺席（PATH A）而跳过。
+不要为单个事实开 Deep Research。
 
-## 4. Travel Researcher（可选 Research Worker）
+### Parallel Deep Research
 
-Research Need 为 YES 时，Main 通过 `delegate_task(agent_name="travel-researcher", task="...")` 委托 Research。
+完整计划存在 2~3 个真正独立、可并行的 research axes 时才使用。
 
-Travel Researcher 在独立 Context 中完成所有与最终计划有关的外部 Research，只返回 Research Findings，不生成最终旅行计划。
+流程：
 
-规划模式下：
+`Main → load deep-research → run_workflow once → research_worker × 2~3 parallel → structured ResearchFindings → Main synthesis → Budget / FX → Markdown Contract → Final`
 
-- Main 不直接调用 `search_travel_info`
-- Main 不直接调用 `search_maps`
-- Main 不直接调用 `get_weather`
-- Research 中间 Tool Result 留在 Travel Researcher Context
-- Main 只接收 Research Findings
+Main 自己就是 Leader，不创建 Lead Researcher / Supervisor。
 
-Main 只委托一次。Findings 存在关键缺口时，不继续委派补充 Research；若 Findings 缺失或不可靠，
-基于已有可靠信息继续，明确标记未核实项，必要时建议用户执行前确认。
+Deep Research v1 规则：
+- 同一用户请求最多一次 `run_workflow`；
+- 总 Worker 调用 hard cap = 3；
+- 只做一层 fan-out；
+- Worker 不调用 Worker；
+- Worker 不拥有 `run_workflow`；
+- 不做自动第二轮 Research；
+- topic 必须独立、non-overlapping、self-contained。
 
-### Research Brief
+典型复杂旅行拆分：
+1. 景区开放 / 预约 / 门票 + 关键 POI 展示图片；
+2. 城际 / 关键市内交通；
+3. 旅行日期天气 / 行程风险。
 
-Main 的委派描述必须自包含，至少包括：
+## 4. Workflow 编排规则
 
-1. Runtime 当前日期、星期、时区、年份
-2. 旅行背景
-3. 用户约束
-4. Research 目标
-5. Research 范围
-6. 当前信息的新鲜度要求
-7. Anti-confirmation 要求
-8. Research Findings 返回要求
-9. “只做 Research、不生成最终计划”的职责边界
-10. 币种要求：Research 以当地货币核实事实价格，Findings 中每个价格标注币种
+workflow 内应真正并行：使用 `asyncio.gather(...)` 调用多个 `research_worker(task=...)`，不要串行等待。
 
-普通旅行问答不是完整旅行规划，可由 Main 按需直接调用 Tool。
+Harness sandbox 不支持 `return_exceptions=True`。需要部分失败不拖垮全批时，用 async wrapper：
+- wrapper 内 `try: await research_worker(...)`；
+- `except RuntimeError:` 返回一个明确的 unavailable/unresolved 结果；
+- gather wrapper calls；
+- 最后一行返回结果列表，不用 `print()` 承载结构化结果。
 
-## 5. Research 新鲜度
+Worker 失败后 Main 不启动第二个 workflow，不用模型记忆补当前事实。
 
-当前旅行事实必须以 Runtime 当前时间为基准。
+## 5. Research Task 必须自包含
 
-对于：
+每个 task 至少说明：
+- Runtime 当前日期、年份、时区；
+- 旅行背景和实际相关日期；
+- 用户关键约束；
+- 一个明确 research topic；
+- freshness / official-source 要求；
+- Anti-confirmation：不得把猜测写进 Query 当事实；
+- 若 topic 涉及最终展示 POI，允许发现少量 media；
+- 只返回 ResearchFindings，不生成最终 itinerary。
 
-- 门票 / Pass 价格
-- 预约规则
-- 开放 / 闭馆时间
-- 当前运营状态
-- 交通政策
-- 节假日特殊安排
-- 其他易变化事实
+## 6. Research 新鲜度与证据
 
-Research 必须：
+对门票、预约、开放、运营、交通规则、节假日特殊安排等动态事实：
+- 以 Runtime 时间为基准；
+- 优先 latest / current / official；
+- 重要动态事实优先 official / primary source；
+- `web_search` 用于 discovery，关键事实尽量 `web_fetch` 页面正文；
+- 第三方旅行平台主要用于比较、评论和补充；
+- 旧资料不能直接当当前事实；
+- 无法可靠确认则 unresolved；
+- 不构造确认性 Query 自证模型猜测。
 
-- 优先 latest / current / official / 最新 / 当前 / 官方
-- 用户未询问历史时，不主动使用旧年份
-- 需要年份时使用 Runtime 当前年份
-- 旧资料不能直接当作当前事实
-- 无法确认时明确标记不确定性
-- 不把未经确认的模型猜测写进下一轮 Query 当作前提
+`get_weather` 和 `search_maps` 是专用事实 Tool；图片搜索不是事实验证 Tool。
 
-天气只在与实际旅行日期相关时 Research。
-没有实际旅行日期时，不应把“今天的天气”当作未来旅行计划依据。
+## 7. 图片 / Media
 
-## 6. 设计可执行路线
+景区、POI、地标、酒店或特色体验需要最终展示素材时，Main 或相关 Research Worker 可以调用 `image_search`。
+
+规则：
+- 图片用于 presentation / itinerary card；
+- 不用于证明开放、预约、门票、交通政策、价格或天气；
+- 每个关键 POI 优先保留 1 张主候选、最多 2 张；
+- 保留 `source_page_url`；
+- 纯天气、纯交通、纯政策 Research 不要无意义搜图；
+- 本阶段不做下载、CDN、转存或版权授权判断。
+
+## 8. 路线可执行性
 
 优先：
+- 同区域集中；
+- 减少跨区往返；
+- 避免明显回头路；
+- 控制每天长距离移动；
+- 给交通、排队、吃饭、休息留真实时间；
+- 根据旅行者调整强度；
+- 保留必要缓冲。
 
-- 同区域活动集中安排
-- 减少跨区域往返
-- 避免明显回头路
-- 控制每天长距离移动
-- 给交通、排队、吃饭和休息留出真实时间
-- 根据旅行者情况调整强度
-- 保留必要缓冲
+结合可靠 Findings 检查开放 / 最晚入场 / 闭馆日 / 预约 / 天气 / 抵返时间 / 城际交通 / 排队时间。
+不得生成明显冲突的行程。
 
-亲子、老人或轻松旅行应降低强度并增加缓冲。
-高强度旅行可以提高活动密度，但仍必须保证实际可执行。
+## 9. 预算
 
-相关情况下根据 Research Findings 检查：
+根据预算调整住宿、城际交通、当地交通、景点体验、餐饮和其他消费。
 
-- 开放 / 关闭时间
-- 最晚入场时间
-- 固定闭馆日
-- 预约时间
-- 天气
-- 抵达 / 返程时间
-- 飞机 / 高铁时间
-- 城际交通
-- 排队时间
+- 没有可靠价格时使用区间或明确规划预留；
+- 不编造未经核验的精确金额；
+- `calculate_budget` 只汇总最终采用方案；
+- 不把未采用备选价格混入最终预算；
+- 计算器不能把未核验价格变成事实；
+- 金额必须写明币种，不用裸 `¥`；
+- 事实价保留当地货币；需要辅助换算时才用 `convert_currency`。
 
-不得生成明显存在时间冲突的行程。
+## 10. 创建完整计划
 
-## 7. 让预算参与规划
+1. 理解用户需求和 slot。
+2. 缺少会改变整体方案的关键条件时先简洁澄清。
+3. 读取本 Skill。
+4. 判断 Research Need。
+5. Research Need NO：Main 直接选定方案。
+6. Research Need YES 且只有一个 axis：Main Quick Research。
+7. Research Need YES 且有 2~3 个独立 axes：加载 `deep-research`，调用一次 `run_workflow` 并行研究。
+8. Main 根据用户约束 + 可靠 Findings 做最终路线 / 交通 / 住宿 / 每日节奏决策。
+9. 涉及多项费用时用 `calculate_budget`；需要时用 `convert_currency`。
+10. 读取 `references/markdown-contract.md`。
+11. 严格按 Markdown Contract 输出完整计划。
 
-根据预算调整：
+如果 Research 部分失败：使用成功 Findings + 用户事实 + 稳定常识 + 明确假设继续；动态未核验项必须标记，不得编造精确事实。
 
-- 住宿
-- 城际交通
-- 当地交通
-- 景点与付费体验
-- 餐饮
-- 其他消费
+## 11. 修改已有计划
 
-没有可靠价格时使用区间。
-不要编造未经验证的精确金额。
-若方案可能明显超预算，应主动调整或指出主要超支来源。
-最终路线 / 交通 / 住宿方案确定后，涉及多项费用时使用 `calculate_budget` 做确定性汇总。
-计算器只接收最终采用方案的项目，不得把备选方案价格混入最终预算。
+将 conversation 中最近一版完整计划视为当前版本：
+- 保留未被修改的约束和有效安排；
+- 对受影响部分重新判断 Research Need；
+- 单一新事实用 Quick Research；多个独立动态轴才使用一次 Deep Research；
+- 重新检查路线、时间和预算连锁影响；
+- 最终返回新的完整计划，而不是 diff / patch。
 
-所有金额必须明确币种，不得仅用 "¥" 表示（对中文用户易误读为人民币）。
-当地货币是事实价格；人民币等换算金额只能由 Main 通过 `convert_currency` 基于当前参考汇率换算，不得与事实价混写。
-币种表达规则见 Markdown Contract「币种规范」。
+## 12. 最终质量检查
 
-## 8. 创建完整旅行计划
+输出前确认：
+- 最新用户要求和预算口径正确；
+- Runtime 时间使用正确；
+- Research 路径选择正确，没有为单一事实滥用 Deep Research；
+- 同一请求没有第二次 `run_workflow`；
+- Worker Findings 与 Main 最终决策职责没有混淆；
+- 天数、路线、交通时间和抵返时间合理；
+- 开放 / 预约 / 天气等动态约束基于可靠证据或明确 unresolved；
+- 图片只作 media，不作事实证据；
+- 没有用猜测自证；
+- 预算只汇总最终采用方案；
+- 没有伪造当前精确事实；
+- 最终结果是完整旅行计划。
 
-当用户明确要求生成完整旅行计划时：
-
-1. Main 理解需求。
-2. 如果缺少会改变整体方案的关键条件，先向用户做简洁澄清；关键条件明确前不要开始规划或 Research。
-3. 对不影响整体方案的非关键偏好采用合理假设。
-4. 读取本 Skill。
-5. 按第 2 节判断 Research Need。
-6. Research Need NO：直接选定最终路线、交通、住宿与每日节奏，跳到第 10 步。
-7. Research Need YES：通过 `delegate_task` 委托 `travel-researcher` 一次，等待 Research Findings 返回；
-   若超时 / 失败 / Findings 不完整，不再次委托，基于已有可靠信息继续并标记未核实项。
-8. Main 根据 conversation、用户约束和 Findings（如有）选定最终路线、交通、住宿与每日节奏。
-9. 涉及多项费用时调用 `calculate_budget` 汇总最终采用方案；需要人民币等辅助参考时调用 `convert_currency`。
-10. 计算完成后读取 `references/markdown-contract.md`。
-11. 严格按照 Markdown Contract 输出。
-12. 返回完整旅行计划，而不是 Research 摘要或景点清单。
-
-普通旅行问答不要读取 Markdown Contract。
-
-## 9. 修改已有旅行计划
-
-当用户要求修改已有完整计划时：
-
-1. 将 conversation 中最近一次完整旅行计划视为当前版本。
-2. 理解用户真正想改变的内容。
-3. 保留未被修改的约束、偏好和有效安排。
-4. 按第 2 节判断 Research Need：需要当前外部事实核实才委托 `travel-researcher` 一次；
-   用户明确表示“不用查最新 / 先不要联网”等修改不委托。
-5. Main 根据 Findings（如有）检查时间、路线、交通和预算连锁影响。
-6. 必要时重新平衡其他日期，并重新调用 `calculate_budget` / `convert_currency` 更新受影响预算。
-7. 计算完成后读取 `references/markdown-contract.md`。
-8. 返回新的完整 Markdown 旅行计划。
-
-不得只返回 Patch、Diff、修改项列表或单独修改后的某一天。
-
-普通解释性问题不是修改，直接回答即可。
-
-## 10. 最终质量检查
-
-输出完整计划前确认：
-
-- 最新用户要求已体现
-- Runtime 时间已正确用于相对日期和当前信息判断
-- Research Need 已正确判断；若已 Research 则 Findings 已返回
-- 天数和 Day 数量一致
-- 路线顺序合理
-- 没有明显折返
-- 主要交通时间现实
-- 抵达 / 返程时间合理
-- 开放、预约、天气等约束已考虑
-- 当前事实没有被旧年份资料错误替代
-- 没有把未经核验的猜测通过搜索“自证”
-- 预算没有明显违背用户要求
-- 最终预算只汇总实际采用方案，没有混入未采用备选价格
-- 预算模块金额币种明确，未被裸 "¥" 误读为人民币
-- 没有伪造未经验证的精确事实
-- 用户明确要求没有遗漏
-- 修改时保留了未涉及内容
-- 最终结果是一份完整旅行计划
-
-不要创建额外 Validator Agent 或 Validator Workflow。
-
-## 核心原则
-
-- 模糊、概率性的旅行判断交给 Main。
-- 当前日期和星期由 Runtime 动态提供。
-- 需要当前外部事实时由 Travel Researcher Research（可选，最多委托一次）。
-- Research 中间上下文与 Main 最终规划上下文隔离。
-- Travel Researcher 只返回 Findings。
-- Main 是唯一最终旅行计划语义负责人。
-- 完整计划必须遵守 Markdown Contract。
-- 不得为了内容丰富而编造事实。
-- 优先保证旅行真实可执行，而不是增加景点数量。
+不要创建额外 Validator Agent / Validator Workflow。

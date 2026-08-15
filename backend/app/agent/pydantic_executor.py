@@ -52,6 +52,10 @@ from app.agent.executor import (
     AgentStreamTerminalKind,
 )
 from app.agent.prompts import MAIN_TRAVEL_INSTRUCTIONS
+from app.agent.research_runtime import (
+    ResearchRequestState,
+    bind_research_request_state,
+)
 from app.agent.usage import AgentModelCallUsage, AgentTokenUsage, AgentUsage
 from app.core.config import settings
 
@@ -187,12 +191,24 @@ def _to_agent_usage(
     result: AgentRunResult[Any],
     *,
     logical_model: str,
+    research_state: ResearchRequestState | None = None,
 ) -> AgentUsage:
-    """Map new PydanticAI responses into the framework-neutral usage contract."""
-    responses = (
+    """Map Main + isolated Research Worker usage into one Product contract.
+
+    Harness keeps Worker budgets isolated with ``forward_usage=False``. Worker
+    responses are therefore captured by request-scoped PydanticAI hooks and merged
+    here explicitly. This preserves Main's 8/6 role limit while Product billing,
+    quota analysis, and observability still see the complete request tree.
+    """
+    main_responses = tuple(
         message
         for message in result.new_messages()
         if isinstance(message, ModelResponse)
+    )
+    worker_runs = tuple(research_state.worker_runs) if research_state is not None else ()
+    all_responses = (
+        *main_responses,
+        *(response for run in worker_runs for response in run.responses),
     )
     model_calls = tuple(
         _to_agent_model_call_usage(
@@ -200,17 +216,20 @@ def _to_agent_usage(
             call_index=call_index,
             logical_model=logical_model,
         )
-        for call_index, message in enumerate(responses)
-    )
-    return AgentUsage(
-        model_calls=model_calls,
-        tool_calls=result.usage.tool_calls,
-        unattributed_model_requests=max(
-            0,
-            result.usage.requests - len(model_calls),
-        ),
+        for call_index, message in enumerate(all_responses)
     )
 
+    main_unattributed = max(0, result.usage.requests - len(main_responses))
+    worker_requests = sum(run.requests for run in worker_runs)
+    worker_attributed = sum(len(run.responses) for run in worker_runs)
+    worker_unattributed = max(0, worker_requests - worker_attributed)
+    worker_tool_calls = sum(run.tool_calls for run in worker_runs)
+
+    return AgentUsage(
+        model_calls=model_calls,
+        tool_calls=result.usage.tool_calls + worker_tool_calls,
+        unattributed_model_requests=main_unattributed + worker_unattributed,
+    )
 
 def _to_reasoning_summary(result: AgentRunResult[Any]) -> str | None:
     """Collect only textual thinking already projected to the public UI stream.
@@ -313,13 +332,15 @@ class PydanticAIExecutor:
         request: AgentExecutionRequest,
     ) -> AgentExecutionResult:
         message_history = _to_model_messages(request)
+        research_state = ResearchRequestState()
         try:
-            result = await self._agent.run(
-                request.message,
-                message_history=message_history,
-                run_id=str(request.request_id),
-                usage_limits=_main_usage_limits(),
-            )
+            with bind_research_request_state(research_state):
+                result = await self._agent.run(
+                    request.message,
+                    message_history=message_history,
+                    run_id=str(request.request_id),
+                    usage_limits=_main_usage_limits(),
+                )
         except AgentExecutionError:
             raise
         except TimeoutError as exc:
@@ -347,7 +368,11 @@ class PydanticAIExecutor:
         return AgentExecutionResult(
             content=content,
             reasoning_summary=_to_reasoning_summary(result),
-            usage=_to_agent_usage(result, logical_model=self._logical_model),
+            usage=_to_agent_usage(
+                result,
+                logical_model=self._logical_model,
+                research_state=research_state,
+            ),
         )
 
 
@@ -406,6 +431,7 @@ async def stream_vercel_events(
     message_history = _to_model_messages(request)
     reasoning_timer = _ReasoningDurationTracker()
     stream_error_code: AgentExecutionErrorCode | None = None
+    research_state = ResearchRequestState()
 
     async def _on_complete(result: AgentRunResult[Any]) -> None:
         if on_complete is None:
@@ -418,7 +444,9 @@ async def stream_vercel_events(
                     reasoning_summary=_to_reasoning_summary(result),
                     reasoning_duration_ms=reasoning_timer.duration_ms,
                     usage=_to_agent_usage(
-                        result, logical_model=settings.LLM_LOGICAL_MODEL
+                        result,
+                        logical_model=settings.LLM_LOGICAL_MODEL,
+                        research_state=research_state,
                     ),
                 )
             )
@@ -432,20 +460,24 @@ async def stream_vercel_events(
 
     async def _classified_native_events() -> AsyncIterator[Any]:
         nonlocal stream_error_code
-        try:
-            async for event in native_events:
-                yield event
-        except asyncio.CancelledError:
-            raise
-        except TimeoutError:
-            stream_error_code = "MODEL_TIMEOUT"
-            raise
-        except ModelAPIError as exc:
-            stream_error_code = _product_safe_model_error(exc).code
-            raise
-        except UsageLimitExceeded:
-            stream_error_code = "MODEL_CALL_LIMIT_REACHED"
-            raise
+        # Bind while the native run is actually driven. asyncio child tasks spawned
+        # by DynamicWorkflow inherit this ContextVar, but their usage counters remain
+        # independent because Harness still receives ``usage=None`` for Workers.
+        with bind_research_request_state(research_state):
+            try:
+                async for event in native_events:
+                    yield event
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                stream_error_code = "MODEL_TIMEOUT"
+                raise
+            except ModelAPIError as exc:
+                stream_error_code = _product_safe_model_error(exc).code
+                raise
+            except UsageLimitExceeded:
+                stream_error_code = "MODEL_CALL_LIMIT_REACHED"
+                raise
 
     events = adapter.transform_stream(
         _classified_native_events(),

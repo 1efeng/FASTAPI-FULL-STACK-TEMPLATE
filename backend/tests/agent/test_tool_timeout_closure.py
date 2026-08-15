@@ -1,13 +1,6 @@
-"""Tool Timeout Closure contract tests.
+"""External-tool timeout ownership contracts after the web research refactor."""
 
-Every external IO tool must finish within a bounded window; a hung provider
-must degrade to the standard tool text result instead of hanging the run or
-eating the Product deadline / Researcher budget.
-
-The tool layer owns this boundary: ``TOOL_EXECUTION_TIMEOUT_SECONDS`` is the
-tightest time owner and must stay below the model RPC timeout. No real
-provider is called — providers are faked or hung in-process.
-"""
+from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
@@ -15,32 +8,56 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic_ai.common_tools.web_fetch import WebFetchLocalTool, web_fetch_tool
 
 from app.agent.tools import _timeout
 from app.agent.tools.currency import CurrencyAmount, convert_currency
+from app.agent.tools.image_search import (
+    _DDGS_TIMEOUT_SECONDS as IMAGE_DDGS_TIMEOUT_SECONDS,
+)
+from app.agent.tools.image_search import (
+    _IMAGE_SEARCH_WALL_TIMEOUT_SECONDS,
+)
 from app.agent.tools.route import search_maps
+from app.agent.tools.search import _DDGS_TIMEOUT_SECONDS as WEB_DDGS_TIMEOUT_SECONDS
+from app.agent.tools.search import _SEARCH_WALL_TIMEOUT_SECONDS
 from app.agent.tools.weather import get_weather
-from app.agent.tools.web_fetch import _fetcher
 from app.core.config import settings
 
 
-def test_tool_execution_bound_is_tighter_than_model_rpc_timeout() -> None:
+def test_runtime_timeout_hierarchy_is_bounded() -> None:
     assert 0 < _timeout.TOOL_EXECUTION_TIMEOUT_SECONDS
-    assert (
-        _timeout.TOOL_EXECUTION_TIMEOUT_SECONDS
-        < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
-        < settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS
-        < settings.REQUEST_DEADLINE_SECONDS
-    )
+    assert _timeout.TOOL_EXECUTION_TIMEOUT_SECONDS < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
+    assert settings.LITELLM_CLIENT_TIMEOUT_SECONDS < settings.REQUEST_DEADLINE_SECONDS
+    assert _timeout.TOOL_EXECUTION_TIMEOUT_SECONDS == 30
+    assert settings.LITELLM_CLIENT_TIMEOUT_SECONDS == 150
+    assert settings.REQUEST_DEADLINE_SECONDS == 300
+
+
+def test_ddgs_internal_timeouts_are_tighter_than_search_wall_bounds() -> None:
+    assert 0 < WEB_DDGS_TIMEOUT_SECONDS < _SEARCH_WALL_TIMEOUT_SECONDS
+    assert 0 < IMAGE_DDGS_TIMEOUT_SECONDS < _IMAGE_SEARCH_WALL_TIMEOUT_SECONDS
+    assert _SEARCH_WALL_TIMEOUT_SECONDS < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
+    assert _IMAGE_SEARCH_WALL_TIMEOUT_SECONDS < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
+
+
+def test_official_web_fetch_keeps_its_internal_30_second_bound() -> None:
+    tool = web_fetch_tool()
+    bound_instance = getattr(tool.function, "__self__", None)
+
+    assert isinstance(bound_instance, WebFetchLocalTool)
+    assert bound_instance.timeout == 30
+    assert bound_instance.allow_local_urls is False
+    assert bound_instance.max_content_length == 50_000
+    assert bound_instance.timeout < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
 
 
 class _HangingClient:
-    """AsyncClient stand-in whose requests never complete."""
-
     async def __aenter__(self) -> _HangingClient:
         return self
 
     async def __aexit__(self, *args: object) -> None:
+        del args
         return None
 
     async def get(self, *args: object, **kwargs: object) -> Any:
@@ -58,10 +75,7 @@ async def test_weather_tool_bounded_when_provider_hangs(
         "app.agent.tools.weather.httpx.AsyncClient",
         return_value=_HangingClient(),
     ):
-        result = await asyncio.wait_for(
-            get_weather("东京"),
-            timeout=2,
-        )
+        result = await asyncio.wait_for(get_weather("东京"), timeout=2)
 
     assert result == "天气查询暂时失败：TimeoutError"
 
@@ -107,10 +121,3 @@ async def test_currency_tool_bounded_when_provider_hangs(
         )
 
     assert result == "汇率换算暂时失败：TimeoutError"
-
-
-def test_web_fetch_has_internal_execution_bound() -> None:
-    fetcher = _fetcher()
-
-    assert fetcher.timeout == 30
-    assert fetcher.timeout < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
