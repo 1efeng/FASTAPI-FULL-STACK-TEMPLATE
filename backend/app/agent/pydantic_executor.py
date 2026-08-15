@@ -17,6 +17,7 @@ Reference:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -44,6 +45,7 @@ from app.agent.capabilities.travel import build_travel_capabilities
 from app.agent.context.runtime_clock import runtime_clock_context
 from app.agent.executor import (
     AgentExecutionError,
+    AgentExecutionErrorCode,
     AgentExecutionRequest,
     AgentExecutionResult,
     AgentExecutor,
@@ -389,6 +391,7 @@ async def stream_vercel_events(
 
     message_history = _to_model_messages(request)
     reasoning_timer = _ReasoningDurationTracker()
+    stream_error_code: AgentExecutionErrorCode | None = None
 
     async def _on_complete(result: AgentRunResult[Any]) -> None:
         if on_complete is None:
@@ -406,11 +409,29 @@ async def stream_vercel_events(
                 )
             )
 
-    events = adapter.run_stream(
+    native_events = adapter.run_stream_native(
         message_history=message_history,
         run_id=str(request.request_id),
-        on_complete=_on_complete,
         model_settings=_model_rpc_settings(),
+    )
+
+    async def _classified_native_events() -> AsyncIterator[Any]:
+        nonlocal stream_error_code
+        try:
+            async for event in native_events:
+                yield event
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            stream_error_code = "MODEL_TIMEOUT"
+            raise
+        except ModelAPIError as exc:
+            stream_error_code = _product_safe_model_error(exc).code
+            raise
+
+    events = adapter.transform_stream(
+        _classified_native_events(),
+        on_complete=_on_complete,
     )
 
     async for chunk in adapter.encode_stream(events):
@@ -424,7 +445,11 @@ async def stream_vercel_events(
         if on_terminal is not None:
             if isinstance(payload, dict) and payload.get("type") in {"abort", "error"}:
                 kind = payload["type"]
-                reason = payload.get("reason") or payload.get("errorText")
+                reason = (
+                    stream_error_code
+                    if kind == "error"
+                    else payload.get("reason")
+                )
                 replacement = await on_terminal(kind, reason)
                 yield replacement
                 continue

@@ -148,7 +148,7 @@ async def test_adapter_terminal_chunks_are_held_for_product_gate(
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
 
-        def run_stream(self, **kwargs):
+        def run_stream_native(self, **kwargs):
             del kwargs
 
             async def empty_events():
@@ -156,6 +156,10 @@ async def test_adapter_terminal_chunks_are_held_for_product_gate(
                 yield
 
             return empty_events()
+
+        def transform_stream(self, stream, *, on_complete=None):
+            del stream, on_complete
+            return self.run_stream_native()
 
         async def encode_stream(self, stream):
             del stream
@@ -189,7 +193,7 @@ async def test_adapter_terminal_chunks_are_held_for_product_gate(
         'data: {"type":"error","errorText":"safe product error"}\n\n',
         "data: [DONE]\n\n",
     ]
-    assert observed == [("error", "unsafe provider detail")]
+    assert observed == [("error", None)]
 
 
 async def test_adapter_completion_projects_reasoning_into_product_result(
@@ -226,13 +230,21 @@ async def test_adapter_completion_projects_reasoning_into_product_result(
         def __init__(self, *args, **kwargs) -> None:
             del args, kwargs
 
-        def run_stream(self, **kwargs):
-            callback = kwargs["on_complete"]
+        def run_stream_native(self, **kwargs):
+            del kwargs
 
             async def events():
                 yield "reasoning-start"
                 yield "reasoning-end"
-                await callback(cast(Any, FakeResult()))
+
+            return events()
+
+        def transform_stream(self, stream, *, on_complete=None):
+            async def events():
+                async for event in stream:
+                    yield event
+                if on_complete is not None:
+                    await on_complete(cast(Any, FakeResult()))
 
             return events()
 

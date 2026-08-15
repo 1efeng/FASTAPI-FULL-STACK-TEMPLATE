@@ -311,6 +311,52 @@ async def test_stream_error_terminal_is_emitted_after_failed_commit(
     ]
 
 
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    ["MODEL_TIMEOUT", "MODEL_RATE_LIMITED", "MODEL_UNAVAILABLE"],
+)
+async def test_stream_typed_model_error_preserves_product_code(
+    db: AsyncSession,
+    normal_user_token_headers: dict[str, str],
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    error_code: str,
+) -> None:
+    conversation_id = await _create_conversation(
+        client, normal_user_token_headers, f"Streaming {error_code} gate"
+    )
+    user = await UserService(db).get_by_email(settings.EMAIL_TEST_USER)
+    assert user is not None
+    raw_provider_detail = "private-provider-model sk-secret-upstream-detail"
+
+    async def classified_stream(request, *, on_complete=None, on_terminal=None):
+        del request, on_complete
+        assert on_terminal is not None
+        yield await on_terminal("error", error_code)
+        assert raw_provider_detail not in error_code
+
+    monkeypatch.setattr(service_module, "stream_vercel_events", classified_stream)
+    service = ChatService(db, executor=ImmediateExecutor())
+    request_id = uuid.uuid4()
+    idempotency_key = f"stream-{error_code.lower()}-gate"
+    factory = await service.stream_factory(
+        request_id=request_id,
+        user_id=user.id,
+        conversation_id=conversation_id,
+        idempotency_key=idempotency_key,
+        message=f"fail with {error_code}",
+    )
+
+    chunks = [chunk async for chunk in factory()]
+    assert any('"type": "error"' in chunk for chunk in chunks)
+    assert raw_provider_detail not in "".join(chunks)
+    request_run = await _request_run_for_key(idempotency_key)
+    assert request_run.status is RequestRunStatus.FAILED
+    assert request_run.error_code == error_code
+
+
 async def test_stream_cancel_terminal_is_emitted_after_cancel_commit(
     db: AsyncSession,
     normal_user_token_headers: dict[str, str],

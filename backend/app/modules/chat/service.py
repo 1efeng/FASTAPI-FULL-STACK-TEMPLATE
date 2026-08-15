@@ -686,12 +686,18 @@ class ChatService:
                         )
                         return sse.abort_part("请求已取消。")
 
+                    if _reason in _EXECUTOR_ERROR_MAP:
+                        error_code = _reason
+                        error_message = _EXECUTOR_ERROR_MAP[error_code][0]
+                    else:
+                        error_code = "INTERNAL_ERROR"
+                        error_message = "请求处理失败，请稍后重试。"
                     await self._persist_request_terminal(
                         request_id=request_id,
                         status=RequestRunStatus.FAILED,
-                        error_code="INTERNAL_ERROR",
+                        error_code=error_code,
                     )
-                    return sse.error_part("请求处理失败，请稍后重试。")
+                    return sse.error_part(error_message)
 
                 # The supervisor owns the Agent/adapter execution. The
                 # StreamResumeStore producer only drains this channel and may
