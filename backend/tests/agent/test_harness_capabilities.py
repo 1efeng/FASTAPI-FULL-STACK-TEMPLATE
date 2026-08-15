@@ -53,7 +53,10 @@ def test_travel_bundle_contains_skills_main_tools_and_research_delegate() -> Non
         if isinstance(item, Capability) and item.id == "travel-main-tools"
     )
     delegation = next(item for item in capabilities if isinstance(item, SubAgents))
-
+    researcher_delegate = delegation.agents[0]
+    assert researcher_delegate.max_calls == 1
+    assert researcher_delegate.timeout_seconds == settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS
+    assert settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS == 240
     skill_leaves = _leaf_capabilities(skills)
     assert {leaf.id for leaf in skill_leaves} == {
         "travel-budget",
@@ -192,42 +195,62 @@ def test_researcher_has_fresh_history_and_research_only_tools() -> None:
     }
 
 
-async def test_researcher_timeout_returns_soft_steering_and_parent_continues() -> None:
+async def test_researcher_timeout_returns_soft_steering_and_cancels_child() -> None:
+    child_started = asyncio.Event()
+    child_cancelled = asyncio.Event()
+
     async def slow_child(
         messages: list[ModelMessage],
         info: AgentInfo,
     ) -> ModelResponse:
         del messages, info
-        await asyncio.sleep(1)
-        return ModelResponse(parts=[TextPart("late")])
+        child_started.set()
+        try:
+            await asyncio.Future[None]()
+        except asyncio.CancelledError:
+            child_cancelled.set()
+            raise
 
     async def parent_model(
         messages: list[ModelMessage],
         info: AgentInfo,
     ) -> ModelResponse:
         del info
-        if any(
-            isinstance(part, ToolReturnPart)
+        delegate_results = [
+            part
             for message in messages
             if isinstance(message, ModelRequest)
             for part in message.parts
-        ):
-            return ModelResponse(parts=[TextPart("final")])
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="delegate_task",
-                    args={"agent_name": "travel-researcher", "task": "BRIEF"},
-                    tool_call_id="delegate-1",
-                )
-            ]
-        )
+            if isinstance(part, ToolReturnPart) and part.tool_name == "delegate_task"
+        ]
+        if len(delegate_results) == 0:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="delegate_task",
+                        args={"agent_name": "travel-researcher", "task": "BRIEF"},
+                        tool_call_id="delegate-1",
+                    )
+                ]
+            )
+        if len(delegate_results) == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="delegate_task",
+                        args={"agent_name": "travel-researcher", "task": "RETRY"},
+                        tool_call_id="delegate-2",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("final")])
 
     researcher = build_travel_researcher(model=FunctionModel(slow_child))
     delegation = SubAgents[object](
         agents=(
             SubAgent[object](
                 researcher,
+                max_calls=1,
                 timeout_seconds=0.01,
                 on_failure=RESEARCHER_ON_FAILURE_MESSAGE,
             ),
@@ -239,6 +262,8 @@ async def test_researcher_timeout_returns_soft_steering_and_parent_continues() -
     result = await agent.run("go")
 
     assert result.output == "final"
+    await asyncio.wait_for(child_started.wait(), timeout=1)
+    await asyncio.wait_for(child_cancelled.wait(), timeout=1)
     delegate_returns = [
         part.content
         for message in result.all_messages()
@@ -246,7 +271,64 @@ async def test_researcher_timeout_returns_soft_steering_and_parent_continues() -
         for part in message.parts
         if isinstance(part, ToolReturnPart) and part.tool_name == "delegate_task"
     ]
-    assert delegate_returns == [RESEARCHER_ON_FAILURE_MESSAGE]
+    assert delegate_returns == [
+        RESEARCHER_ON_FAILURE_MESSAGE,
+        RESEARCHER_ON_FAILURE_MESSAGE,
+    ]
+    assert "MODEL_TIMEOUT" not in result.output
+    assert "REQUEST_DEADLINE_EXCEEDED" not in result.output
+
+
+async def test_researcher_parent_cancellation_propagates_to_child() -> None:
+    child_started = asyncio.Event()
+    child_cancelled = asyncio.Event()
+
+    async def slow_child(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del messages, info
+        child_started.set()
+        try:
+            await asyncio.Future[None]()
+        except asyncio.CancelledError:
+            child_cancelled.set()
+            raise
+
+    def parent_model(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del messages, info
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="delegate_task",
+                    args={"agent_name": "travel-researcher", "task": "BRIEF"},
+                    tool_call_id="delegate-1",
+                )
+            ]
+        )
+
+    delegation = SubAgents[object](
+        agents=(
+            SubAgent[object](
+                build_travel_researcher(model=FunctionModel(slow_child)),
+                max_calls=1,
+                timeout_seconds=10,
+                on_failure=RESEARCHER_ON_FAILURE_MESSAGE,
+            ),
+        ),
+        agent_folders=None,
+    )
+    agent = Agent(FunctionModel(parent_model), capabilities=(delegation,))
+    run = asyncio.create_task(agent.run("go"))
+
+    await asyncio.wait_for(child_started.wait(), timeout=1)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    await asyncio.wait_for(child_cancelled.wait(), timeout=1)
 
 
 def test_skill_tool_dependency_validation_fails_closed() -> None:

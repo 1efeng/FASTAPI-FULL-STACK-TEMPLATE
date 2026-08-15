@@ -18,6 +18,7 @@ from app.agent.tools.route import search_maps
 from app.agent.tools.search import search_web
 from app.agent.tools.weather import get_weather
 from app.agent.tools.web_fetch import web_fetch
+from app.core.config import settings
 
 SKILL_LIBRARY = Path(__file__).resolve().parents[1] / "skills"
 _DELEGATION_TOOL_NAME = "delegate_task"
@@ -104,12 +105,8 @@ def build_travel_capabilities(
         agents=(
             SubAgent[object](
                 researcher,
-                # Debug phase: prove the delegation chain closes before adding
-                # budgets back. max_calls=1 bounds the chain; timeout is unset so
-                # a slow Researcher surfaces the real bottleneck instead of a
-                # soft-fallback message (see docs/施工路线图.md Travel Domain
-                # 2026-08-15 debug note; restore max_calls/timeout after 验收).
                 max_calls=1,
+                timeout_seconds=settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS,
                 on_failure=RESEARCHER_ON_FAILURE_MESSAGE,
             ),
         ),
