@@ -44,3 +44,48 @@ def test_database_url_is_the_database_source_of_truth() -> None:
     assert str(configured.SQLALCHEMY_DATABASE_URI_SYNC) == (
         "postgresql+psycopg://app_user:secret@database.internal:5433/travel"
     )
+
+
+def test_runtime_budget_defaults_match_contract() -> None:
+    """A1 contract: App->LiteLLM 150 < Researcher 240 < Product 300."""
+    configured = _settings()
+
+    assert configured.REQUEST_DEADLINE_SECONDS == 300.0
+    assert configured.TRAVEL_RESEARCHER_TIMEOUT_SECONDS == 240.0
+    assert configured.LITELLM_CLIENT_TIMEOUT_SECONDS == 150.0
+
+
+def test_runtime_budget_hierarchy_is_strict() -> None:
+    configured = _settings()
+
+    assert (
+        0
+        < configured.LITELLM_CLIENT_TIMEOUT_SECONDS
+        < configured.TRAVEL_RESEARCHER_TIMEOUT_SECONDS
+        < configured.REQUEST_DEADLINE_SECONDS
+    )
+
+
+def test_runtime_budget_respects_env_override() -> None:
+    """pydantic-settings env override path still parses the new fields."""
+    configured = _settings(
+        REQUEST_DEADLINE_SECONDS=500.0,
+        TRAVEL_RESEARCHER_TIMEOUT_SECONDS=400.0,
+        LITELLM_CLIENT_TIMEOUT_SECONDS=300.0,
+    )
+
+    assert configured.REQUEST_DEADLINE_SECONDS == 500.0
+    assert configured.TRAVEL_RESEARCHER_TIMEOUT_SECONDS == 400.0
+    assert configured.LITELLM_CLIENT_TIMEOUT_SECONDS == 300.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("TRAVEL_RESEARCHER_TIMEOUT_SECONDS", -1.0),
+        ("LITELLM_CLIENT_TIMEOUT_SECONDS", 0.0),
+    ],
+)
+def test_runtime_budget_rejects_non_positive(field: str, value: float) -> None:
+    with pytest.raises(ValidationError, match=field):
+        _settings(**{field: value})

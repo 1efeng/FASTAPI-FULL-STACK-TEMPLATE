@@ -48,7 +48,12 @@ class Settings(BaseSettings):
     # (service timeout wrappers and executor per-step budget). `deadline_at` is
     # still persisted to keep the RequestRun/API contract unchanged.
     AGENT_EXECUTION_TIMEOUT_ENABLED: bool = True
-    REQUEST_DEADLINE_SECONDS: PositiveFloat = 60.0
+    REQUEST_DEADLINE_SECONDS: PositiveFloat = 300.0
+    # Time budget contract for A2-A5 runtime protection. Hierarchy:
+    # 0 < LITELLM_CLIENT_TIMEOUT_SECONDS < TRAVEL_RESEARCHER_TIMEOUT_SECONDS
+    #   < REQUEST_DEADLINE_SECONDS.
+    TRAVEL_RESEARCHER_TIMEOUT_SECONDS: PositiveFloat = 240.0
+    LITELLM_CLIENT_TIMEOUT_SECONDS: PositiveFloat = 150.0
 
     BACKEND_CORS_ORIGINS: Annotated[
         list[AnyUrl] | str, BeforeValidator(parse_cors)

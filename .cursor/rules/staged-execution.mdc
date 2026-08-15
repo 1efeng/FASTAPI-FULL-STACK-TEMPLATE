@@ -1,0 +1,71 @@
+---
+description: Use this workflow when the user or approved plan defines staged implementation gates such as A0/A1/B1, acceptance criteria, audit gates, or explicit stop-after-stage execution.
+alwaysApply: false
+---
+
+# Staged implementation workflow
+
+Use this rule only for explicitly staged work.
+
+## Before the stage
+
+1. Read the current approved stage instructions.
+2. Inspect only the source files, tests, contracts, and dependency metadata required for that stage.
+3. Run `git status --short`.
+4. Do not pre-implement later stages.
+
+## During the stage
+
+- Keep the diff minimal.
+- Preserve unrelated working-tree changes.
+- Add or update only tests required to prove the current stage.
+- If the approved plan conflicts with the actual locked dependency API, stop and report `BLOCKED`.
+- If Docker/network/local-service restrictions prevent verification, report `ENVIRONMENT_BLOCKED`; do not weaken production code.
+
+## Gate
+
+A stage is `PASS` only when every acceptance criterion for that stage is demonstrated.
+
+If any criterion fails because of product code:
+`FAIL`
+
+If the implementation cannot satisfy the approved semantics due to architecture or third-party constraints:
+`BLOCKED`
+
+If verification cannot run because of the local execution environment:
+`ENVIRONMENT_BLOCKED`
+
+## End-of-stage report
+
+Use:
+
+```text
+STAGE: <name>
+RESULT: PASS | FAIL | ENVIRONMENT_BLOCKED | BLOCKED
+
+FILES CHANGED:
+- ...
+
+WHAT CHANGED:
+- ...
+
+COMMANDS RUN:
+- ...
+
+TEST RESULTS:
+- ...
+
+ENVIRONMENT LIMITATIONS:
+- ...
+
+GIT DIFF SUMMARY:
+- ...
+
+RISKS / OPEN QUESTIONS:
+- ...
+
+NEXT:
+Stop. Wait for approval.
+```
+
+Never proceed automatically to the next stage.

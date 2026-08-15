@@ -1,0 +1,26 @@
+{
+  "autoRun": {
+    "allow_instructions": [
+      "Allow read-only repository inspection such as git status, git diff, git log, git show, git branch --show-current, git rev-parse, find, grep, rg, cat, sed, and ls.",
+      "Allow running repository-local unit tests, contract tests, integration tests, lint checks, type checks, formatting checks, frontend builds, and Playwright tests when they do not modify production infrastructure.",
+      "Allow uv commands that use the existing lockfile without changing dependency versions, including uv sync --frozen, uv run pytest, uv run ruff, uv run mypy, and uv run ty.",
+      "Allow Bun commands that use the existing lockfile and repository scripts, including bun install --frozen-lockfile, bun run build, bun run lint, and bun run test.",
+      "Allow read-only Docker inspection commands such as docker ps, docker info, docker compose ps, docker compose logs, and docker compose config.",
+      "Allow starting or restarting this repository's local development and test services with docker compose when required for Redis, PostgreSQL, LiteLLM, backend, frontend, or E2E verification.",
+      "Allow localhost health checks and test requests required to verify this repository's local services.",
+      "Allow creating and editing files inside the current workspace when the edit is within the explicitly approved stage and scope."
+    ],
+    "block_instructions": [
+      "Require explicit approval before any git push, force push, rebase, branch deletion, git reset --hard, git clean, or any command that may discard uncommitted user changes.",
+      "Require explicit approval before deleting files or directories, except disposable build artifacts that are explicitly part of the current approved task.",
+      "Require explicit approval before docker system prune, docker volume rm, docker image rm, docker container rm, docker compose down -v, or other destructive Docker cleanup.",
+      "Require explicit approval before dropping, truncating, resetting, or destructively migrating any database or Redis data.",
+      "Require explicit approval before modifying production infrastructure, production databases, production Redis, cloud resources, DNS, CI secrets, deployment credentials, or remote environments.",
+      "Require explicit approval before reading or modifying secrets, .env files containing real credentials, SSH configuration, shell credential stores, API keys, tokens, certificates, or private keys.",
+      "Require explicit approval before adding, removing, or upgrading dependencies, changing version pins, changing lockfiles for dependency upgrades, patching site-packages, or vendoring third-party libraries.",
+      "Require explicit approval before modifying AGENTS.md, .cursor/permissions.json, .cursor/sandbox.json, .cursor rules, or other agent-governance files unless the current task explicitly requests that change.",
+      "Require explicit approval before changing architecture ownership, persistence boundaries, public API contracts, timeout/retry/fallback policy, security boundaries, or current milestone status unless explicitly included in the approved stage.",
+      "Do not weaken tests, delete failing tests, skip tests, relax type checking, disable authentication or authorization, or remove runtime safety limits merely to make validation pass."
+    ]
+  }
+}
