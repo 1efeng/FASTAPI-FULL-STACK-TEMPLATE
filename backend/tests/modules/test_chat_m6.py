@@ -408,22 +408,22 @@ async def test_absolute_deadline_marks_request_failed(
     assert message_roles == [MessageRole.USER]
 
 
-async def test_execution_timeout_disabled_allows_slow_agent_to_finish(
+async def test_execution_timeout_switch_cannot_disable_product_deadline(
     client: AsyncClient,
     normal_user_token_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
+    db: AsyncSession,
 ) -> None:
-    """Debug mode: with AGENT_EXECUTION_TIMEOUT_ENABLED=False the Product layer
-    does not cut an agent that outlives `REQUEST_DEADLINE_SECONDS`; the request
-    completes naturally instead of returning 504."""
+    """The transitional executor switch cannot disable the Product deadline."""
     conversation_id = await _create_conversation(
         client,
         normal_user_token_headers,
-        "No execution deadline",
+        "Product deadline ownership",
     )
     calls = [0]
     entered = asyncio.Event()
     release = asyncio.Event()
+    cancelled = asyncio.Event()
     monkeypatch.setattr(settings, "AGENT_EXECUTION_TIMEOUT_ENABLED", False)
     monkeypatch.setattr(settings, "REQUEST_DEADLINE_SECONDS", 0.05)
     monkeypatch.setattr(
@@ -433,22 +433,24 @@ async def test_execution_timeout_disabled_allows_slow_agent_to_finish(
             calls,
             entered=entered,
             release=release,
+            cancelled=cancelled,
         ),
     )
 
-    request_task = asyncio.create_task(
-        _post_chat(
-            client,
-            normal_user_token_headers,
-            conversation_id=conversation_id,
-            key="no-execution-deadline",
-            message="slow but should finish",
-        )
+    response = await _post_chat(
+        client,
+        normal_user_token_headers,
+        conversation_id=conversation_id,
+        key="product-deadline-ownership",
+        message="slow despite debug switch",
     )
-    await asyncio.wait_for(entered.wait(), timeout=5)
-    release.set()
-    response = await asyncio.wait_for(request_task, timeout=5)
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "completed"
+    assert response.status_code == 504
+    assert response.json()["code"] == "REQUEST_DEADLINE_EXCEEDED"
+    request_run = await db.get(RequestRun, uuid.UUID(response.json()["request_id"]))
+    assert request_run is not None
+    assert request_run.status is RequestRunStatus.FAILED
+    assert request_run.error_code == "REQUEST_DEADLINE_EXCEEDED"
     assert calls == [1]
+    assert entered.is_set()
+    assert cancelled.is_set()

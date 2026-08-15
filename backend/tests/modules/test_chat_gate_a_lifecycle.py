@@ -376,10 +376,12 @@ async def test_stream_deadline_terminal_is_emitted_after_failed_commit(
 
     async def never_stream(request, *, on_complete=None, on_terminal=None):
         del request, on_complete, on_terminal
+        await asyncio.Future[None]()
         yield "unreachable"
 
     monkeypatch.setattr(service_module, "stream_vercel_events", never_stream)
-    monkeypatch.setattr(service_module, "remaining_deadline_seconds", lambda _: 0)
+    monkeypatch.setattr(settings, "AGENT_EXECUTION_TIMEOUT_ENABLED", False)
+    monkeypatch.setattr(settings, "REQUEST_DEADLINE_SECONDS", 0.05)
     service = ChatService(db, executor=ImmediateExecutor())
     request_id = uuid.uuid4()
     factory = await service.stream_factory(

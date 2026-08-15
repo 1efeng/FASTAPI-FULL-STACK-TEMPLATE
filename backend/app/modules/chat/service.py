@@ -95,15 +95,11 @@ _EXECUTOR_ERROR_MAP: dict[str, tuple[str, bool, int]] = {
 
 @asynccontextmanager
 async def _execution_timeout(deadline_at: datetime) -> AsyncIterator[None]:
-    """Bound Agent execution to the Product deadline, or no-op when disabled.
+    """Bound one Product Turn execution to its absolute deadline.
 
-    ``AGENT_EXECUTION_TIMEOUT_ENABLED=False`` is a debug mode: the agent runs to
-    its natural end so a slow SubAgent chain is not masked by a wall clock.
-    ``deadline_at`` is still persisted to keep the RequestRun/API contract.
+    The Product Runtime is the sole owner of this hard boundary. Debug or
+    transitional executor switches must not disable it.
     """
-    if not settings.AGENT_EXECUTION_TIMEOUT_ENABLED:
-        yield
-        return
     timeout = remaining_deadline_seconds(deadline_at)
     if timeout <= 0:
         raise TimeoutError
