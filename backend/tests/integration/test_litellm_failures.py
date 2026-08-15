@@ -24,21 +24,27 @@ from pathlib import Path
 
 import httpx
 import pytest
+import pytest_asyncio
 from openai import APIStatusError, AsyncOpenAI
 
-from app.core.config import settings
-
 _RUN_KEY = "RUN_LITELLM_FAILURE_INTEGRATION"
-pytestmark = [
-    pytest.mark.skipif(
-        os.getenv(_RUN_KEY) != "1",
-        reason=f"set {_RUN_KEY}=1 to run against the live failure-injection gateway",
-    ),
-    pytest.mark.usefixtures("stub_server"),
-]
+pytestmark = pytest.mark.skipif(
+    os.getenv(_RUN_KEY) != "1",
+    reason=f"set {_RUN_KEY}=1 to run against the live failure-injection gateway",
+)
 
 STUB_PORT = int(os.environ.get("FAILURE_INJECTOR_PORT", "9000"))
 STUB_BASE_URL = f"http://127.0.0.1:{STUB_PORT}"
+SMOKE_CLIENT_TIMEOUT_SECONDS = float(
+    os.getenv("LITELLM_FAILURE_SMOKE_CLIENT_TIMEOUT_SECONDS", "20")
+)
+EXPECTED_MODEL_GROUPS = {
+    "smoke-ok",
+    "smoke-timeout",
+    "smoke-429",
+    "smoke-all-down",
+    "smoke-down",
+}
 
 
 def _stub_process() -> subprocess.Popen[bytes]:
@@ -92,11 +98,40 @@ def stub_server() -> Iterator[str]:
 
 def _gateway_client() -> AsyncOpenAI:
     return AsyncOpenAI(
-        api_key=settings.LITELLM_SERVICE_KEY,
-        base_url=f"{settings.LITELLM_BASE_URL.rstrip('/')}/v1",
-        timeout=settings.REQUEST_DEADLINE_SECONDS,
+        api_key=os.environ.get("LITELLM_SERVICE_KEY", "sk-local-master"),
+        base_url=f"{os.environ['LITELLM_BASE_URL'].rstrip('/')}/v1",
+        timeout=SMOKE_CLIENT_TIMEOUT_SECONDS,
         max_retries=0,
     )
+
+
+@pytest_asyncio.fixture(scope="module", autouse=True)
+async def smoke_preflight(stub_server: str) -> None:
+    """Prove model registration and the fallback target before failure tests."""
+    assert stub_server == STUB_BASE_URL
+    client = _gateway_client()
+    try:
+        models = await client.models.list()
+        model_ids = {model.id for model in models.data}
+        sys.stderr.write(f"SMOKE /v1/models: {sorted(model_ids)}\n")
+        assert EXPECTED_MODEL_GROUPS <= model_ids
+
+        response = await client.chat.completions.create(
+            model="smoke-ok",
+            messages=[{"role": "user", "content": "ping"}],
+        )
+        content = response.choices[0].message.content
+        sys.stderr.write(
+            f"SMOKE DIRECT smoke-ok: status=200 content={content!r}\n"
+        )
+        assert content == "OK"
+    except Exception as exc:
+        sys.stderr.write(
+            f"SMOKE PREFLIGHT: FAIL {type(exc).__name__}: {exc}\n"
+        )
+        raise
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio

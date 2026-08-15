@@ -51,6 +51,7 @@ model_list:
 router_settings:
   routing_strategy: simple-shuffle
   num_retries: 0
+  max_fallbacks: 1
   allowed_fails: 1
   cooldown_time: 0
   retry_after: 0

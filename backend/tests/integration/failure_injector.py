@@ -51,6 +51,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/chat/completions")
 @app.post("/v1/chat/completions")
 async def chat_completions(payload: dict[str, Any]) -> JSONResponse:
     model = payload.get("model", "")
