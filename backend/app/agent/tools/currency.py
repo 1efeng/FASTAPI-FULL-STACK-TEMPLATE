@@ -8,6 +8,7 @@ from typing import TypedDict
 import httpx
 from pydantic import BaseModel, Field
 
+from app.agent.tools._timeout import bound_tool_execution
 from app.core.config import settings
 
 _CURRENCY_ALIASES = {
@@ -143,10 +144,12 @@ async def convert_currency(
     当地货币仍是事实价格；换算只作辅助参考，失败时不得猜测汇率。
     """
     try:
-        return await convert_currency_data(
-            from_currency=from_currency,
-            to_currency=to_currency,
-            amounts=amounts,
+        return await bound_tool_execution(
+            convert_currency_data(
+                from_currency=from_currency,
+                to_currency=to_currency,
+                amounts=amounts,
+            )
         )
     except Exception as exc:
         return f"汇率换算暂时失败：{type(exc).__name__}"

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import httpx
 
+from app.agent.tools._timeout import bound_tool_execution
 from app.core.config import settings
 
 
@@ -82,6 +83,8 @@ async def get_weather(city: str, forecast: bool = False) -> str:
     超过三天的旅行不得把短期预报当作届时天气，应改查季节气候或说明尚不可预测。
     """
     try:
-        return await _get_weather(city=city, forecast=forecast)
+        return await bound_tool_execution(
+            _get_weather(city=city, forecast=forecast)
+        )
     except Exception as exc:
         return f"天气查询暂时失败：{type(exc).__name__}"

@@ -7,6 +7,7 @@ from typing import Literal
 import httpx
 
 from app.agent.tools._settings import require_tool_key
+from app.agent.tools._timeout import bound_tool_execution
 
 AMAP_HOST = "https://restapi.amap.com"
 
@@ -94,10 +95,12 @@ async def search_maps(
 ) -> str:
     """查询两个地点之间的路线、距离与预计耗时。"""
     try:
-        return await _get_route(
-            origin=origin,
-            destination=destination,
-            mode=mode,
+        return await bound_tool_execution(
+            _get_route(
+                origin=origin,
+                destination=destination,
+                mode=mode,
+            )
         )
     except Exception as exc:
         return f"路线查询暂时失败：{type(exc).__name__}"
