@@ -66,6 +66,12 @@ def test_runtime_budget_hierarchy_is_strict() -> None:
     )
 
 
+def test_legacy_agent_timeout_switch_is_ignored() -> None:
+    configured = _settings(AGENT_EXECUTION_TIMEOUT_ENABLED=False)
+
+    assert not hasattr(configured, "AGENT_EXECUTION_TIMEOUT_ENABLED")
+
+
 def test_runtime_budget_respects_env_override() -> None:
     """pydantic-settings env override path still parses the new fields."""
     configured = _settings(

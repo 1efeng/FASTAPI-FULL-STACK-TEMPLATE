@@ -24,6 +24,7 @@ from app.agent.capabilities.travel import (
     validate_skill_tool_dependencies,
 )
 from app.agent.subagents.travel_researcher import build_travel_researcher
+from app.core.config import settings
 
 
 def _leaf_capabilities(
@@ -87,7 +88,12 @@ def test_travel_bundle_contains_skills_main_tools_and_research_delegate() -> Non
     assert set(delegate_toolset.tools) == {"delegate_task"}
 
 
-def test_agent_request_exposes_skill_catalog_tools_and_delegate() -> None:
+def test_researcher_uses_same_model_rpc_timeout() -> None:
+    researcher = build_travel_researcher(model=FunctionModel(_noop_model))
+
+    assert researcher.model_settings == {
+        "timeout": settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS
+    }
     observed_tool_names: set[str] = set()
     observed_instructions = ""
 

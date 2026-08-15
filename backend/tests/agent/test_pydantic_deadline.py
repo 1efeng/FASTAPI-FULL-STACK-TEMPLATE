@@ -1,20 +1,18 @@
-import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
-import pytest
 from pydantic_ai import Agent, Tool
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelResponse,
-    TextPart,
-    ToolCallPart,
-)
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.settings import ModelSettings
 
-from app.agent.executor import AgentExecutionError, AgentExecutionRequest
-from app.agent.pydantic_executor import PydanticAIExecutor
+from app.agent.executor import AgentExecutionRequest
+from app.agent.pydantic_executor import (
+    PydanticAIExecutor,
+    get_chat_agent,
+    stream_vercel_events,
+)
 from app.core.config import settings
 
 
@@ -28,7 +26,7 @@ def _request(*, deadline_at: datetime) -> AgentExecutionRequest:
     )
 
 
-async def test_expired_deadline_does_not_call_model() -> None:
+async def test_expired_product_deadline_is_not_enforced_by_executor() -> None:
     called = False
 
     def model_function(
@@ -38,55 +36,34 @@ async def test_expired_deadline_does_not_call_model() -> None:
         del messages, info
         nonlocal called
         called = True
-        return ModelResponse(parts=[TextPart("too late")])
+        return ModelResponse(parts=[TextPart("late but valid at executor boundary")])
 
     executor = PydanticAIExecutor(Agent(FunctionModel(model_function)))
 
-    with pytest.raises(AgentExecutionError) as captured:
-        await executor.execute(
-            _request(deadline_at=datetime.now(UTC) - timedelta(seconds=1))
-        )
+    result = await executor.execute(
+        _request(deadline_at=datetime.now(UTC) - timedelta(seconds=1))
+    )
 
-    assert captured.value.code == "MODEL_TIMEOUT"
-    assert captured.value.retryable is True
-    assert called is False
+    assert result.content == "late but valid at executor boundary"
+    assert called is True
 
 
-async def test_running_model_is_cancelled_when_deadline_expires() -> None:
-    entered = asyncio.Event()
-    cancelled = asyncio.Event()
+def test_main_agent_uses_rpc_timeout_and_disables_sdk_retries() -> None:
+    agent = get_chat_agent()
+    model = agent.model
+    provider = model.provider
 
-    async def model_function(
-        messages: list[ModelMessage],
-        info: AgentInfo,
-    ) -> ModelResponse:
-        del messages, info
-        entered.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            cancelled.set()
-            raise
-        return ModelResponse(parts=[TextPart("unreachable")])
-
-    executor = PydanticAIExecutor(Agent(FunctionModel(model_function)))
-
-    with pytest.raises(AgentExecutionError) as captured:
-        await executor.execute(
-            _request(deadline_at=datetime.now(UTC) + timedelta(seconds=0.05))
-        )
-
-    assert captured.value.code == "MODEL_TIMEOUT"
-    assert entered.is_set()
-    assert cancelled.is_set()
+    assert agent.model_settings == {
+        "timeout": settings.LITELLM_CLIENT_TIMEOUT_SECONDS
+    }
+    assert provider.client.max_retries == 0
 
 
-async def test_each_model_step_receives_current_remaining_budget() -> None:
+async def test_non_stream_model_requests_receive_rpc_timeout() -> None:
     observed_timeouts: list[float] = []
     model_calls = 0
 
     def deadline_probe() -> str:
-        """Return a deterministic tool result."""
         return "tool complete"
 
     def model_function(
@@ -97,9 +74,7 @@ async def test_each_model_step_receives_current_remaining_budget() -> None:
         nonlocal model_calls
         model_calls += 1
         assert info.model_settings is not None
-        timeout = info.model_settings["timeout"]
-        assert isinstance(timeout, int | float)
-        observed_timeouts.append(float(timeout))
+        observed_timeouts.append(float(info.model_settings["timeout"]))
         if model_calls == 1:
             return ModelResponse(
                 parts=[ToolCallPart(tool_name="deadline_probe", args={})]
@@ -108,70 +83,57 @@ async def test_each_model_step_receives_current_remaining_budget() -> None:
 
     agent: Agent[object, str] = Agent(
         FunctionModel(model_function),
+        model_settings=ModelSettings(
+            timeout=settings.LITELLM_CLIENT_TIMEOUT_SECONDS,
+        ),
         tools=[Tool[object](deadline_probe, takes_ctx=False)],
     )
     executor = PydanticAIExecutor(agent)
 
-    with patch(
-        "app.agent.pydantic_executor.remaining_deadline_seconds",
-        side_effect=(30.0, 20.0, 10.0),
-    ):
-        result = await executor.execute(
-            _request(deadline_at=datetime.now(UTC) + timedelta(seconds=30))
-        )
-
-    assert result.content == "done"
-    assert observed_timeouts == [20.0, 10.0]
-
-
-async def test_deadline_not_enforced_when_execution_timeout_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Debug mode: AGENT_EXECUTION_TIMEOUT_ENABLED=False lets a slow Agent run to
-    completion even when `deadline_at` is already in the past, so the SubAgent
-    chain can be diagnosed instead of being cut by the Product wall clock."""
-    monkeypatch.setattr(settings, "AGENT_EXECUTION_TIMEOUT_ENABLED", False)
-
-    async def slow_model(
-        messages: list[ModelMessage],
-        info: AgentInfo,
-    ) -> ModelResponse:
-        del messages, info
-        await asyncio.sleep(0.01)
-        return ModelResponse(parts=[TextPart("slow but finished")])
-
-    executor = PydanticAIExecutor(Agent(FunctionModel(slow_model)))
-
     result = await executor.execute(
-        _request(deadline_at=datetime.now(UTC) - timedelta(seconds=60))
+        _request(deadline_at=datetime.now(UTC) - timedelta(seconds=1))
     )
 
-    assert result.content == "slow but finished"
+    assert result.content == "done"
+    assert observed_timeouts == [
+        settings.LITELLM_CLIENT_TIMEOUT_SECONDS,
+        settings.LITELLM_CLIENT_TIMEOUT_SECONDS,
+    ]
 
 
-async def test_deadline_enforced_when_execution_timeout_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The switch must be an explicit opt-out: with the default (enabled) the
-    expired deadline still fails fast before any model call."""
-    monkeypatch.setattr(settings, "AGENT_EXECUTION_TIMEOUT_ENABLED", True)
-    called = False
+async def test_stream_model_requests_receive_same_rpc_timeout() -> None:
+    captured_agent_settings: dict[str, object] = {}
+    captured_run_settings: dict[str, object] = {}
 
-    def model_function(
-        messages: list[ModelMessage],
-        info: AgentInfo,
-    ) -> ModelResponse:
-        del messages, info
-        nonlocal called
-        called = True
-        return ModelResponse(parts=[TextPart("too late")])
+    class FakeAdapter:
+        def __init__(self, *, agent, **kwargs) -> None:
+            del kwargs
+            captured_agent_settings.update(agent.model_settings or {})
 
-    executor = PydanticAIExecutor(Agent(FunctionModel(model_function)))
+        def run_stream(self, **kwargs):
+            captured_run_settings.update(kwargs["model_settings"] or {})
 
-    with pytest.raises(AgentExecutionError) as captured:
-        await executor.execute(
-            _request(deadline_at=datetime.now(UTC) - timedelta(seconds=1))
-        )
+            async def events():
+                if False:
+                    yield None
 
-    assert captured.value.code == "MODEL_TIMEOUT"
-    assert called is False
+            return events()
+
+        async def encode_stream(self, stream):
+            del stream
+            yield "data: [DONE]\n\n"
+
+    request = _request(deadline_at=datetime.now(UTC) - timedelta(seconds=1))
+    with patch(
+        "app.agent.pydantic_executor.VercelAIAdapter",
+        FakeAdapter,
+    ):
+        chunks = [chunk async for chunk in stream_vercel_events(request)]
+
+    assert chunks == ["data: [DONE]\n\n"]
+    assert captured_agent_settings == {
+        "timeout": settings.LITELLM_CLIENT_TIMEOUT_SECONDS
+    }
+    assert captured_run_settings == {
+        "timeout": settings.LITELLM_CLIENT_TIMEOUT_SECONDS
+    }

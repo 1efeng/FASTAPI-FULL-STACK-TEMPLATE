@@ -17,17 +17,15 @@ Reference:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
 from functools import lru_cache
 from typing import Any, Literal
 
-from openai import APITimeoutError
-from pydantic_ai import Agent, AgentRunResult, RunContext
+from openai import APITimeoutError, AsyncOpenAI
+from pydantic_ai import Agent, AgentRunResult
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import (
     ModelRequest,
@@ -43,7 +41,6 @@ from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage, TextUIPart, UIMessage
 
 from app.agent.capabilities.travel import build_travel_capabilities
-from app.agent.context.deadline import remaining_deadline_seconds
 from app.agent.context.runtime_clock import runtime_clock_context
 from app.agent.executor import (
     AgentExecutionError,
@@ -83,33 +80,9 @@ def _litellm_openai_base_url() -> str:
     return base if base.endswith("/v1") else f"{base}/v1"
 
 
-def _execution_budget(deadline_at: datetime) -> float | None:
-    """Remaining Product execution budget, or ``None`` when the deadline is off.
-
-    ``AGENT_EXECUTION_TIMEOUT_ENABLED=False`` is a debug mode: the agent loop is
-    not bounded here (the Product layer also skips its own timeout wrapper), so a
-    slow SubAgent chain can be diagnosed instead of being cut at a wall clock.
-    """
-    if not settings.AGENT_EXECUTION_TIMEOUT_ENABLED:
-        return None
-    remaining = remaining_deadline_seconds(deadline_at)
-    if remaining <= 0:
-        raise TimeoutError
-    return remaining
-
-
-def _deadline_model_settings(
-    deadline_at: datetime,
-) -> Callable[[RunContext[object]], ModelSettings]:
-    """Recompute the downstream model timeout before every model request."""
-
-    def settings_for_step(_ctx: RunContext[object]) -> ModelSettings:
-        remaining = remaining_deadline_seconds(deadline_at)
-        if remaining <= 0:
-            raise TimeoutError
-        return ModelSettings(timeout=remaining)
-
-    return settings_for_step
+def _model_rpc_settings() -> ModelSettings:
+    """Return the timeout applied independently to every model request."""
+    return ModelSettings(timeout=settings.LITELLM_CLIENT_TIMEOUT_SECONDS)
 
 
 def _caused_by_sdk_timeout(exc: BaseException) -> bool:
@@ -154,15 +127,18 @@ def get_chat_agent() -> Agent:
     credentials/fallback stay on the gateway instead of leaking into Product code.
     ``defer_model_check`` keeps construction safe even when the gateway is not up.
     """
+    client = AsyncOpenAI(
+        base_url=_litellm_openai_base_url(),
+        api_key=settings.LITELLM_SERVICE_KEY,
+        max_retries=0,
+    )
     model = OpenAIChatModel(
         settings.LLM_LOGICAL_MODEL,
-        provider=OpenAIProvider(
-            base_url=_litellm_openai_base_url(),
-            api_key=settings.LITELLM_SERVICE_KEY,
-        ),
+        provider=OpenAIProvider(openai_client=client),
     )
     return Agent(
         model,
+        model_settings=_model_rpc_settings(),
         # Literal guidance remains a cache-stable prefix. The callable is resolved
         # at run time, so a cached Agent never freezes the process-start clock.
         instructions=(
@@ -328,18 +304,11 @@ class PydanticAIExecutor:
     ) -> AgentExecutionResult:
         message_history = _to_model_messages(request)
         try:
-            budget = _execution_budget(request.deadline_at)
-            async with asyncio.timeout(budget):
-                result = await self._agent.run(
-                    request.message,
-                    message_history=message_history,
-                    run_id=str(request.request_id),
-                    model_settings=(
-                        _deadline_model_settings(request.deadline_at)
-                        if budget is not None
-                        else None
-                    ),
-                )
+            result = await self._agent.run(
+                request.message,
+                message_history=message_history,
+                run_id=str(request.request_id),
+            )
         except AgentExecutionError:
             raise
         except TimeoutError as exc:
@@ -441,6 +410,7 @@ async def stream_vercel_events(
         message_history=message_history,
         run_id=str(request.request_id),
         on_complete=_on_complete,
+        model_settings=_model_rpc_settings(),
     )
 
     async for chunk in adapter.encode_stream(events):

@@ -408,13 +408,13 @@ async def test_absolute_deadline_marks_request_failed(
     assert message_roles == [MessageRole.USER]
 
 
-async def test_execution_timeout_switch_cannot_disable_product_deadline(
+async def test_product_deadline_marks_slow_agent_failed(
     client: AsyncClient,
     normal_user_token_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
     db: AsyncSession,
 ) -> None:
-    """The transitional executor switch cannot disable the Product deadline."""
+    """A slow Agent execution is terminated by the Product deadline."""
     conversation_id = await _create_conversation(
         client,
         normal_user_token_headers,
@@ -424,7 +424,6 @@ async def test_execution_timeout_switch_cannot_disable_product_deadline(
     entered = asyncio.Event()
     release = asyncio.Event()
     cancelled = asyncio.Event()
-    monkeypatch.setattr(settings, "AGENT_EXECUTION_TIMEOUT_ENABLED", False)
     monkeypatch.setattr(settings, "REQUEST_DEADLINE_SECONDS", 0.05)
     monkeypatch.setattr(
         api_module,

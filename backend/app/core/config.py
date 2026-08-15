@@ -44,10 +44,6 @@ class Settings(BaseSettings):
     APP_ENV: Literal["local", "test", "staging", "production"] = "local"
     APP_DEBUG: bool = False
     APP_TIMEZONE: str = "Asia/Shanghai"
-    # When disabled, the Product execution deadline is not enforced at any layer
-    # (service timeout wrappers and executor per-step budget). `deadline_at` is
-    # still persisted to keep the RequestRun/API contract unchanged.
-    AGENT_EXECUTION_TIMEOUT_ENABLED: bool = True
     REQUEST_DEADLINE_SECONDS: PositiveFloat = 300.0
     # Time budget contract for A2-A5 runtime protection. Hierarchy:
     # 0 < LITELLM_CLIENT_TIMEOUT_SECONDS < TRAVEL_RESEARCHER_TIMEOUT_SECONDS
