@@ -73,6 +73,33 @@ def _delegate_returns(messages: list[ModelMessage]) -> list[str]:
     ]
 
 
+def _researcher_delegation(researcher: Agent[object, str]) -> SubAgents[object]:
+    """Build the production delegation shape with the configured role budgets.
+
+    Mirrors ``build_travel_capabilities`` so the boundary tests exercise the
+    real per-delegate controls (max_calls / timeout / usage_limits / on_failure).
+    """
+    return SubAgents[object](
+        agents=(
+            SubAgent[object](
+                researcher,
+                max_calls=1,
+                timeout_seconds=settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS,
+                usage_limits=UsageLimits(
+                    request_limit=settings.TRAVEL_RESEARCHER_MODEL_REQUEST_LIMIT,
+                    tool_calls_limit=settings.TRAVEL_RESEARCHER_TOOL_CALL_LIMIT,
+                ),
+                on_failure=RESEARCHER_ON_FAILURE_MESSAGE,
+            ),
+        ),
+        agent_folders=None,
+        forward_usage=True,
+        inherit_tools=False,
+        contain_errors=False,
+        id="travel-research-delegation",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main budgets (8 model requests / 6 tool calls)
 # ---------------------------------------------------------------------------
@@ -213,27 +240,10 @@ async def test_researcher_blocks_ninth_model_request() -> None:
         name=_DELEGATE_NAME,
         tools=[Tool[object](lookup, takes_ctx=False)],
     )
-
-    delegation = SubAgents[object](
-        agents=(
-            SubAgent[object](
-                researcher,
-                max_calls=1,
-                timeout_seconds=settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS,
-                usage_limits=UsageLimits(
-                    request_limit=settings.TRAVEL_RESEARCHER_MODEL_REQUEST_LIMIT,
-                    tool_calls_limit=settings.TRAVEL_RESEARCHER_TOOL_CALL_LIMIT,
-                ),
-                on_failure=RESEARCHER_ON_FAILURE_MESSAGE,
-            ),
-        ),
-        agent_folders=None,
-        forward_usage=True,
-        inherit_tools=False,
-        contain_errors=False,
-        id="travel-research-delegation",
+    agent = Agent(
+        FunctionModel(parent_model),
+        capabilities=(_researcher_delegation(researcher),),
     )
-    agent = Agent(FunctionModel(parent_model), capabilities=(delegation,))
 
     result = await agent.run("plan")
 
@@ -287,27 +297,10 @@ async def test_researcher_blocks_nineteenth_tool_call() -> None:
         name=_DELEGATE_NAME,
         tools=[Tool[object](lookup, takes_ctx=False)],
     )
-
-    delegation = SubAgents[object](
-        agents=(
-            SubAgent[object](
-                researcher,
-                max_calls=1,
-                timeout_seconds=settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS,
-                usage_limits=UsageLimits(
-                    request_limit=settings.TRAVEL_RESEARCHER_MODEL_REQUEST_LIMIT,
-                    tool_calls_limit=settings.TRAVEL_RESEARCHER_TOOL_CALL_LIMIT,
-                ),
-                on_failure=RESEARCHER_ON_FAILURE_MESSAGE,
-            ),
-        ),
-        agent_folders=None,
-        forward_usage=True,
-        inherit_tools=False,
-        contain_errors=False,
-        id="travel-research-delegation",
+    agent = Agent(
+        FunctionModel(parent_model),
+        capabilities=(_researcher_delegation(researcher),),
     )
-    agent = Agent(FunctionModel(parent_model), capabilities=(delegation,))
 
     result = await agent.run("plan")
 
@@ -326,7 +319,7 @@ def test_researcher_limits_are_role_specific_and_token_free() -> None:
     delegation = next(
         capability
         for capability in capabilities
-        if capability.__class__.__name__ == "SubAgents"
+        if isinstance(capability, SubAgents)
     )
     delegate = delegation.agents[0]
 
