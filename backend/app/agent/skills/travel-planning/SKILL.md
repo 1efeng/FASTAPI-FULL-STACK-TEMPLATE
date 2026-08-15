@@ -8,7 +8,7 @@ description: 创建、重新规划或修改完整旅行行程的专业旅行规�
 生成真实可执行、路线合理、符合用户偏好的完整旅行计划。
 
 Main Agent 始终负责最终判断、最终规划和最终回答。
-本 Skill 提供规划方法和输出规范，不定义固定 Workflow。
+本 Skill 提供规划方法、Research Need 判断细则和输出规范，不定义固定 Workflow。
 
 ## 1. 理解旅行需求
 
@@ -27,7 +27,7 @@ Main Agent 始终负责最终判断、最终规划和最终回答。
 
 不要把旅行规划变成问卷。
 
-在开始 Travel Researcher Research 前，先确认是否缺少会直接改变整体方案的关键条件。
+在开始规划或 Research 前，先确认是否缺少会直接改变整体方案的关键条件。
 例如进出城市、实际旅行日期 / 时间范围、是否跨城等核心信息如果当前请求存在歧义，应先简洁追问。
 
 关键条件未明确时，不要先读取本 Skill、不要委派 Research，也不要猜测核心路线。
@@ -35,25 +35,39 @@ Main Agent 始终负责最终判断、最终规划和最终回答。
 对不会明显改变整体方案的非关键偏好，可以采用合理假设。
 会显著影响预算的核心交通方案（如是否购买 JR Pass 等 Pass / 周游券）不要预先假设，应等 Research 比价后由 Main 决定。
 
-## 2. Travel Researcher
+## 2. Research Need 判断
 
-完整旅行规划天然需要多主题 Research。
+判断标准是“最终方案是否依赖需要当前外部世界核验的信息”，不是天数、城市数或复杂度。
 
-只要进入以下任一模式：
+### Research Need YES（满足任一即 YES）
 
-- 创建完整旅行计划
-- 重新规划完整旅行
-- 修改已有完整旅行计划
+1. 最终方案依赖当前 / 最新 / 官方事实：开放时间、闭馆日、预约规则、门票 / Pass 价格、运营政策、交通规则、当前施工 / 关闭状态；
+2. 用户要求实际执行性核验：如“真正能执行的”“核实一下”“查最新”“查官方”“确认预约”“确认交通”“按实际情况规划”；
+3. 需要外部方案比较：当前交通方案、Pass 是否划算、票价、路线现实时间；
+4. 与具体旅行日期直接相关的动态事实：天气、季节性运营、临时关闭、节假日规则、近期交通变化；
+5. Main 无法仅凭用户已提供信息 + 稳定常识可靠完成关键决策。
 
-Main 必须调用：
+### Research Need NO（默认）
 
-`delegate_task(agent_name="travel-researcher", task="...")`
+- 灵感 / brainstorm：如“给我一个北京三日游思路”；
+- rough draft / 初稿：如“先大概排一下”“先给个框架”；
+- 用户明确说“不用查最新 / 先不要联网 / 先做草案”；
+- 用户只需要路线思路、区域组合、节奏建议、风格设计，且不依赖动态事实；
+- 用户已提供足够事实，只需重新组织规划。
 
-由 Travel Researcher 在独立 Context 中完成所有与最终计划有关的外部 Research。
+## 3. 两条合法路径
 
-固定链路：
+- PATH A（Research Need NO）：`Main → travel-planning Skill → 直接规划 → Budget / FX（按需）→ Markdown Contract → Final`
+- PATH B（Research Need YES）：`Main → travel-planning Skill → delegate_task(travel-researcher) → Research Findings → Main 选定最终方案 → Budget / FX（按需）→ Markdown Contract → Final`
 
-`Main → 必要需求澄清 → travel-planning Skill → Travel Researcher → Research Findings → Main 选定最终方案 → Budget / FX（按需）→ Markdown Contract → Main Final Synthesis`
+两条路径都以 Main 生成最终完整计划结束。Markdown Contract 在 Main 准备生成最终完整计划时读取，
+不因 Researcher 缺席（PATH A）而跳过。
+
+## 4. Travel Researcher（可选 Research Worker）
+
+Research Need 为 YES 时，Main 通过 `delegate_task(agent_name="travel-researcher", task="...")` 委托 Research。
+
+Travel Researcher 在独立 Context 中完成所有与最终计划有关的外部 Research，只返回 Research Findings，不生成最终旅行计划。
 
 规划模式下：
 
@@ -62,9 +76,9 @@ Main 必须调用：
 - Main 不直接调用 `get_weather`
 - Research 中间 Tool Result 留在 Travel Researcher Context
 - Main 只接收 Research Findings
-- 如果 Findings 有影响最终计划的关键缺口，继续委派 Travel Researcher 补充
 
-Travel Researcher 只负责 Research，不生成最终完整旅行计划。
+Main 只委托一次。Findings 存在关键缺口时，不继续委派补充 Research；若 Findings 缺失或不可靠，
+基于已有可靠信息继续，明确标记未核实项，必要时建议用户执行前确认。
 
 ### Research Brief
 
@@ -83,7 +97,7 @@ Main 的委派描述必须自包含，至少包括：
 
 普通旅行问答不是完整旅行规划，可由 Main 按需直接调用 Tool。
 
-## 3. Research 新鲜度
+## 5. Research 新鲜度
 
 当前旅行事实必须以 Runtime 当前时间为基准。
 
@@ -109,7 +123,7 @@ Research 必须：
 天气只在与实际旅行日期相关时 Research。
 没有实际旅行日期时，不应把“今天的天气”当作未来旅行计划依据。
 
-## 4. 设计可执行路线
+## 6. 设计可执行路线
 
 优先：
 
@@ -138,7 +152,7 @@ Research 必须：
 
 不得生成明显存在时间冲突的行程。
 
-## 5. 让预算参与规划
+## 7. 让预算参与规划
 
 根据预算调整：
 
@@ -159,33 +173,36 @@ Research 必须：
 当地货币是事实价格；人民币等换算金额只能由 Main 通过 `convert_currency` 基于当前参考汇率换算，不得与事实价混写。
 币种表达规则见 Markdown Contract「币种规范」。
 
-## 6. 创建完整旅行计划
+## 8. 创建完整旅行计划
 
 当用户明确要求生成完整旅行计划时：
 
 1. Main 理解需求。
-2. 如果缺少会改变整体方案的关键条件，先向用户做简洁澄清；关键条件明确前不要开始 Research。
+2. 如果缺少会改变整体方案的关键条件，先向用户做简洁澄清；关键条件明确前不要开始规划或 Research。
 3. 对不影响整体方案的非关键偏好采用合理假设。
 4. 读取本 Skill。
-5. 必须委派 Travel Researcher。
-6. 等待 Research Findings 返回。
-7. Main 根据 conversation、用户约束和 Findings 选定最终路线、交通、住宿与每日节奏。
-8. 涉及多项费用时调用 `calculate_budget` 汇总最终采用方案；需要人民币等辅助参考时调用 `convert_currency`。
-9. 计算完成后读取 `references/markdown-contract.md`。
-10. 严格按照 Markdown Contract 输出。
-11. 返回完整旅行计划，而不是 Research 摘要或景点清单。
+5. 按第 2 节判断 Research Need。
+6. Research Need NO：直接选定最终路线、交通、住宿与每日节奏，跳到第 10 步。
+7. Research Need YES：通过 `delegate_task` 委托 `travel-researcher` 一次，等待 Research Findings 返回；
+   若超时 / 失败 / Findings 不完整，不再次委托，基于已有可靠信息继续并标记未核实项。
+8. Main 根据 conversation、用户约束和 Findings（如有）选定最终路线、交通、住宿与每日节奏。
+9. 涉及多项费用时调用 `calculate_budget` 汇总最终采用方案；需要人民币等辅助参考时调用 `convert_currency`。
+10. 计算完成后读取 `references/markdown-contract.md`。
+11. 严格按照 Markdown Contract 输出。
+12. 返回完整旅行计划，而不是 Research 摘要或景点清单。
 
 普通旅行问答不要读取 Markdown Contract。
 
-## 7. 修改已有旅行计划
+## 9. 修改已有旅行计划
 
 当用户要求修改已有完整计划时：
 
 1. 将 conversation 中最近一次完整旅行计划视为当前版本。
 2. 理解用户真正想改变的内容。
 3. 保留未被修改的约束、偏好和有效安排。
-4. 必须委派 Travel Researcher Research 受影响的信息。
-5. Main 根据 Findings 检查时间、路线、交通和预算连锁影响。
+4. 按第 2 节判断 Research Need：需要当前外部事实核实才委托 `travel-researcher` 一次；
+   用户明确表示“不用查最新 / 先不要联网”等修改不委托。
+5. Main 根据 Findings（如有）检查时间、路线、交通和预算连锁影响。
 6. 必要时重新平衡其他日期，并重新调用 `calculate_budget` / `convert_currency` 更新受影响预算。
 7. 计算完成后读取 `references/markdown-contract.md`。
 8. 返回新的完整 Markdown 旅行计划。
@@ -194,13 +211,13 @@ Research 必须：
 
 普通解释性问题不是修改，直接回答即可。
 
-## 8. 最终质量检查
+## 10. 最终质量检查
 
 输出完整计划前确认：
 
 - 最新用户要求已体现
 - Runtime 时间已正确用于相对日期和当前信息判断
-- Research Findings 已返回
+- Research Need 已正确判断；若已 Research 则 Findings 已返回
 - 天数和 Day 数量一致
 - 路线顺序合理
 - 没有明显折返
@@ -223,7 +240,7 @@ Research 必须：
 
 - 模糊、概率性的旅行判断交给 Main。
 - 当前日期和星期由 Runtime 动态提供。
-- 外部旅行事实由 Travel Researcher Research。
+- 需要当前外部事实时由 Travel Researcher Research（可选，最多委托一次）。
 - Research 中间上下文与 Main 最终规划上下文隔离。
 - Travel Researcher 只返回 Findings。
 - Main 是唯一最终旅行计划语义负责人。
