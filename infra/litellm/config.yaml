@@ -4,7 +4,7 @@ model_list:
       model: openai/deepseek-v4-flash
       api_base: os.environ/DEEPSEEK_BASE_URL
       api_key: os.environ/DEEPSEEK_API_KEY
-      timeout: 45
+      timeout: 60
       stream_timeout: 60
       rpm: 600
       tpm: 1000000
@@ -25,7 +25,7 @@ model_list:
       model: openai/doubao-seed-2-0-lite-260428
       api_base: os.environ/DOUBAO_BASE_URL
       api_key: os.environ/DOUBAO_API_KEY
-      timeout: 45
+      timeout: 60
       stream_timeout: 60
       rpm: 600
       tpm: 1000000
@@ -33,10 +33,15 @@ model_list:
 
 router_settings:
   routing_strategy: usage-based-routing-v2
-  # Debug phase (SubAgent chain diagnosis): no gateway retry so a slow/failed
-  # delegation is attributable to a single layer instead of multiplied latency.
-  # Restore num_retries: 1 once the chain closes (AGENTS.md 施工顺序 §10).
   num_retries: 0
+  max_fallbacks: 1
+  retry_policy:
+    BadRequestErrorRetries: 0
+    AuthenticationErrorRetries: 0
+    TimeoutErrorRetries: 0
+    RateLimitErrorRetries: 1
+    ContentPolicyViolationErrorRetries: 0
+    InternalServerErrorRetries: 1
   allowed_fails: 2
   cooldown_time: 60
   retry_after: 1
@@ -45,7 +50,7 @@ router_settings:
 
 litellm_settings:
   drop_params: true
-  request_timeout: 50
+  request_timeout: 60
   set_verbose: false
 
 general_settings:
