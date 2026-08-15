@@ -49,7 +49,7 @@ def build_travel_researcher(
     return Agent(
         model,
         model_settings=ModelSettings(
-            timeout=settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS,
+            timeout=settings.LITELLM_CLIENT_TIMEOUT_SECONDS,
         ),
         name=TRAVEL_RESEARCHER_NAME,
         description=TRAVEL_RESEARCHER_DESCRIPTION,

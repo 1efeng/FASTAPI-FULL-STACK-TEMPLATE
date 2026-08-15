@@ -92,8 +92,10 @@ def test_researcher_uses_same_model_rpc_timeout() -> None:
     researcher = build_travel_researcher(model=FunctionModel(_noop_model))
 
     assert researcher.model_settings == {
-        "timeout": settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS
+        "timeout": settings.LITELLM_CLIENT_TIMEOUT_SECONDS
     }
+    assert settings.LITELLM_CLIENT_TIMEOUT_SECONDS == 150
+    assert settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS == 240
     observed_tool_names: set[str] = set()
     observed_instructions = ""
 
