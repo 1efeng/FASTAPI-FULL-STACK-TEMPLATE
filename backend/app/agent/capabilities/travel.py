@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from pathlib import Path
 
-from pydantic_ai import Tool
+from pydantic_ai import Tool, UsageLimits
 from pydantic_ai.capabilities import AgentCapability, Capability
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai_harness.skills import Skills
@@ -107,6 +107,10 @@ def build_travel_capabilities(
                 researcher,
                 max_calls=1,
                 timeout_seconds=settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS,
+                usage_limits=UsageLimits(
+                    request_limit=settings.TRAVEL_RESEARCHER_MODEL_REQUEST_LIMIT,
+                    tool_calls_limit=settings.TRAVEL_RESEARCHER_TOOL_CALL_LIMIT,
+                ),
                 on_failure=RESEARCHER_ON_FAILURE_MESSAGE,
             ),
         ),

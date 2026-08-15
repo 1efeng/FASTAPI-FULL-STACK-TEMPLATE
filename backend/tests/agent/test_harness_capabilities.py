@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from pydantic_ai import Agent, Tool
+from pydantic_ai import Agent, Tool, UsageLimits
 from pydantic_ai.capabilities import AbstractCapability, Capability
 from pydantic_ai.messages import (
     ModelMessage,
@@ -56,6 +56,9 @@ def test_travel_bundle_contains_skills_main_tools_and_research_delegate() -> Non
     researcher_delegate = delegation.agents[0]
     assert researcher_delegate.max_calls == 1
     assert researcher_delegate.timeout_seconds == settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS
+    assert researcher_delegate.usage_limits is not None
+    assert researcher_delegate.usage_limits.request_limit == 8
+    assert researcher_delegate.usage_limits.tool_calls_limit == 18
     assert settings.TRAVEL_RESEARCHER_TIMEOUT_SECONDS == 240
     skill_leaves = _leaf_capabilities(skills)
     assert {leaf.id for leaf in skill_leaves} == {
@@ -349,6 +352,144 @@ def test_skill_tool_dependency_validation_fails_closed() -> None:
                 "convert_currency",
             },
         )
+
+
+
+
+async def test_forward_usage_regression_observes_shared_parent_accounting() -> None:
+    parent_calls = 0
+    child_calls = 0
+
+    def child_model(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del messages, info
+        nonlocal child_calls
+        child_calls += 1
+        return ModelResponse(parts=[TextPart("findings")])
+
+    def parent_model(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del info
+        nonlocal parent_calls
+        parent_calls += 1
+        has_delegate_return = any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        )
+        if not has_delegate_return:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="delegate_task",
+                        args={"agent_name": "travel-researcher", "task": "BRIEF"},
+                        tool_call_id="delegate-1",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("final")])
+
+    delegation = SubAgents[object](
+        agents=(
+            SubAgent[object](
+                build_travel_researcher(model=FunctionModel(child_model)),
+            ),
+        ),
+        agent_folders=None,
+        forward_usage=True,
+    )
+    result = await Agent(
+        FunctionModel(parent_model),
+        capabilities=(delegation,),
+    ).run(
+        "go",
+        usage_limits=UsageLimits(request_limit=5, tool_calls_limit=5),
+    )
+
+    assert result.output == "final"
+    assert parent_calls == 2
+    assert child_calls == 1
+    assert result.usage.requests == 3
+    assert result.usage.tool_calls == 1
+
+
+async def test_explicit_child_usage_limits_isolated_from_parent_accounting() -> None:
+    parent_calls = 0
+    child_calls = 0
+
+    def child_model(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del messages, info
+        nonlocal child_calls
+        child_calls += 1
+        if child_calls == 1:
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="lookup", args={}, tool_call_id="lookup-1")]
+            )
+        return ModelResponse(parts=[TextPart("findings")])
+
+    def lookup() -> str:
+        return "source"
+
+    def parent_model(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del info
+        nonlocal parent_calls
+        parent_calls += 1
+        if any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            return ModelResponse(parts=[TextPart("final")])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="delegate_task",
+                    args={"agent_name": "travel-researcher", "task": "BRIEF"},
+                    tool_call_id="delegate-1",
+                )
+            ]
+        )
+
+    researcher = Agent(
+        FunctionModel(child_model),
+        name="travel-researcher",
+        tools=[Tool[object](lookup, takes_ctx=False)],
+    )
+    delegation = SubAgents[object](
+        agents=(
+            SubAgent[object](
+                researcher,
+                usage_limits=UsageLimits(request_limit=2, tool_calls_limit=1),
+            ),
+        ),
+        agent_folders=None,
+        forward_usage=True,
+    )
+    result = await Agent(
+        FunctionModel(parent_model),
+        capabilities=(delegation,),
+    ).run(
+        "go",
+        usage_limits=UsageLimits(request_limit=2, tool_calls_limit=1),
+    )
+
+    assert result.output == "final"
+    assert parent_calls == 2
+    assert child_calls == 2
+    assert result.usage.requests == 2
+    assert result.usage.tool_calls == 1
 
 
 def test_every_selected_skill_declares_dependencies() -> None:

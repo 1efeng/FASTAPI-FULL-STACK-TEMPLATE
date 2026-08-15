@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from pydantic_ai import Agent, Tool
 from pydantic_ai.messages import (
     ModelMessage,
@@ -11,11 +12,13 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.usage import RequestUsage
 
-from app.agent.executor import AgentExecutionRequest, AgentMessage
+from app.agent.executor import AgentExecutionError, AgentExecutionRequest, AgentMessage
 from app.agent.pydantic_executor import (
     PydanticAIExecutor,
+    _main_usage_limits,
     _to_agent_model_call_usage,
 )
+from app.core.config import settings
 
 
 def _request(
@@ -152,3 +155,78 @@ def test_mapper_preserves_missing_usage_and_call_id_as_unknown() -> None:
 
     assert call.provider_response_id is None
     assert call.token_usage is None
+
+
+
+def test_main_usage_limits_are_role_specific() -> None:
+    limits = _main_usage_limits()
+
+    assert limits.request_limit == settings.MAIN_MODEL_REQUEST_LIMIT == 8
+    assert limits.tool_calls_limit == settings.MAIN_TOOL_CALL_LIMIT == 6
+    assert limits.total_tokens_limit is None
+    assert limits.input_tokens_limit is None
+    assert limits.output_tokens_limit is None
+
+
+async def test_main_request_limit_exhaustion_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "MAIN_MODEL_REQUEST_LIMIT", 1)
+    model_calls = 0
+
+    def lookup() -> str:
+        return "result"
+
+    def model_function(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del messages, info
+        nonlocal model_calls
+        model_calls += 1
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name="lookup", args={}, tool_call_id="lookup-1")]
+        )
+
+    executor = PydanticAIExecutor(
+        Agent(
+            FunctionModel(model_function),
+            tools=[Tool[object](lookup, takes_ctx=False)],
+        )
+    )
+
+    with pytest.raises(AgentExecutionError) as raised:
+        await executor.execute(_request())
+
+    assert raised.value.code == "MODEL_CALL_LIMIT_REACHED"
+    assert model_calls == 1
+
+
+async def test_main_tool_limit_exhaustion_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "MAIN_TOOL_CALL_LIMIT", 0)
+    tool_calls = 0
+
+    def lookup() -> str:
+        nonlocal tool_calls
+        tool_calls += 1
+        return "result"
+
+    def model_function(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del messages, info
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name="lookup", args={}, tool_call_id="lookup-1")]
+        )
+
+    executor = PydanticAIExecutor(
+        Agent(
+            FunctionModel(model_function),
+            tools=[Tool[object](lookup, takes_ctx=False)],
+        )
+    )
+
+    with pytest.raises(AgentExecutionError) as raised:
+        await executor.execute(_request())
+
+    assert raised.value.code == "MODEL_CALL_LIMIT_REACHED"
+    assert tool_calls == 0

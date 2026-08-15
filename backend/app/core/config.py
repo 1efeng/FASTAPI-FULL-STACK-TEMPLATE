@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     #   < REQUEST_DEADLINE_SECONDS.
     TRAVEL_RESEARCHER_TIMEOUT_SECONDS: PositiveFloat = 240.0
     LITELLM_CLIENT_TIMEOUT_SECONDS: PositiveFloat = 150.0
+    MAIN_MODEL_REQUEST_LIMIT: PositiveInt = 8
+    MAIN_TOOL_CALL_LIMIT: PositiveInt = 6
+    TRAVEL_RESEARCHER_MODEL_REQUEST_LIMIT: PositiveInt = 8
+    TRAVEL_RESEARCHER_TOOL_CALL_LIMIT: PositiveInt = 18
 
     BACKEND_CORS_ORIGINS: Annotated[
         list[AnyUrl] | str, BeforeValidator(parse_cors)
@@ -71,8 +75,6 @@ class Settings(BaseSettings):
     POSTGRES_DB: str = ""
 
     DATABASE_URL: PostgresDsn | None = None
-    MODEL_CALL_LIMIT: int = 20
-    TOOL_CALL_LIMIT: int = 50
     OTEL_SERVICE_NAME: str = "travel-agent-api"
     OTLP_ENDPOINT: str | None = None
     TAVILY_API_KEY: str | None = None

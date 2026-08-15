@@ -26,8 +26,8 @@ from functools import lru_cache
 from typing import Any, Literal
 
 from openai import APITimeoutError, AsyncOpenAI
-from pydantic_ai import Agent, AgentRunResult
-from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai import Agent, AgentRunResult, UsageLimits
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -85,6 +85,14 @@ def _litellm_openai_base_url() -> str:
 def _model_rpc_settings() -> ModelSettings:
     """Return the timeout applied independently to every model request."""
     return ModelSettings(timeout=settings.LITELLM_CLIENT_TIMEOUT_SECONDS)
+
+
+def _main_usage_limits() -> UsageLimits:
+    """Return the independent hard budget for one Main Agent run."""
+    return UsageLimits(
+        request_limit=settings.MAIN_MODEL_REQUEST_LIMIT,
+        tool_calls_limit=settings.MAIN_TOOL_CALL_LIMIT,
+    )
 
 
 def _caused_by_sdk_timeout(exc: BaseException) -> bool:
@@ -310,6 +318,7 @@ class PydanticAIExecutor:
                 request.message,
                 message_history=message_history,
                 run_id=str(request.request_id),
+                usage_limits=_main_usage_limits(),
             )
         except AgentExecutionError:
             raise
@@ -320,6 +329,11 @@ class PydanticAIExecutor:
             ) from exc
         except ModelAPIError as exc:
             raise _product_safe_model_error(exc) from exc
+        except UsageLimitExceeded as exc:
+            raise AgentExecutionError(
+                code="MODEL_CALL_LIMIT_REACHED",
+                retryable=False,
+            ) from exc
         except Exception as exc:
             # Provider/gateway errors must not leak raw details into Product layer.
             raise AgentExecutionError(
@@ -413,6 +427,7 @@ async def stream_vercel_events(
         message_history=message_history,
         run_id=str(request.request_id),
         model_settings=_model_rpc_settings(),
+        usage_limits=_main_usage_limits(),
     )
 
     async def _classified_native_events() -> AsyncIterator[Any]:
@@ -427,6 +442,9 @@ async def stream_vercel_events(
             raise
         except ModelAPIError as exc:
             stream_error_code = _product_safe_model_error(exc).code
+            raise
+        except UsageLimitExceeded:
+            stream_error_code = "MODEL_CALL_LIMIT_REACHED"
             raise
 
     events = adapter.transform_stream(
