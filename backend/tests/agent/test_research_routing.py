@@ -155,6 +155,68 @@ async def test_single_current_fact_uses_main_web_search_without_workflow(
     assert _tool_calls(messages, "run_workflow") == 0
 
 
+async def test_quick_news_uses_host_search_without_repeated_main_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "results": [
+                    {
+                        "title": "北京今日新闻",
+                        "url": "https://example.test/beijing-news",
+                        "content": "北京今日新闻摘要",
+                    }
+                ]
+            }
+
+    class _FakeClient:
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, *args: object, **kwargs: object) -> _FakeResponse:
+            calls.append(1)
+            return _FakeResponse()
+
+    monkeypatch.setattr(settings, "APP_ENV", "local")
+    monkeypatch.setattr(
+        "app.agent.tools.search.httpx.AsyncClient", lambda **_: _FakeClient()
+    )
+
+    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        returns = _tool_returns(messages, "web_search")
+        if returns:
+            content = str(returns[-1].content)
+            assert "北京今日新闻" in content
+            return ModelResponse(parts=[TextPart("北京今天的最新新闻如下：北京今日新闻摘要")])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="web_search",
+                    args={"query": "北京今天有什么最新新闻"},
+                    tool_call_id="beijing-news",
+                )
+            ]
+        )
+
+    result = await _agent(parent).run("北京今天有什么最新新闻？")
+    messages = result.all_messages()
+
+    assert result.output == "北京今天的最新新闻如下：北京今日新闻摘要"
+    assert _tool_calls(messages, "web_search") == 1
+    assert _tool_calls(messages, "run_workflow") == 0
+    assert calls == [1]
+    assert "网络访问出现临时超时" not in result.output
+
 async def test_explicit_verification_of_one_fact_stays_quick_research(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

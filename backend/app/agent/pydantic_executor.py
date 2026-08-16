@@ -43,6 +43,7 @@ from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage, TextUIPart, UI
 
 from app.agent.capabilities.travel import build_travel_capabilities
 from app.agent.context.runtime_clock import runtime_clock_context
+from app.agent.debug_logging import debug_runtime_log
 from app.agent.executor import (
     AgentExecutionError,
     AgentExecutionErrorCode,
@@ -333,6 +334,15 @@ class PydanticAIExecutor:
     ) -> AgentExecutionResult:
         message_history = _to_model_messages(request)
         research_state = ResearchRequestState()
+        # #region agent log
+        debug_runtime_log(
+            hypothesis_id="H5",
+            location="pydantic_executor.py:PydanticAIExecutor.execute.entry",
+            message="non-streaming agent execution started",
+            data={"request_id": str(request.request_id), "history_count": len(request.history)},
+            run_id=str(request.request_id),
+        )
+        # #endregion agent log
         try:
             with bind_research_request_state(research_state):
                 result = await self._agent.run(
@@ -341,6 +351,19 @@ class PydanticAIExecutor:
                     run_id=str(request.request_id),
                     usage_limits=_main_usage_limits(),
                 )
+            # #region agent log
+            debug_runtime_log(
+                hypothesis_id="H5",
+                location="pydantic_executor.py:PydanticAIExecutor.execute.after_run",
+                message="non-streaming agent execution returned",
+                data={
+                    "output_type": type(result.output).__name__,
+                    "main_requests": result.usage.requests,
+                    "worker_runs": len(research_state.worker_runs),
+                },
+                run_id=str(request.request_id),
+            )
+            # #endregion agent log
         except AgentExecutionError:
             raise
         except TimeoutError as exc:
@@ -432,8 +455,22 @@ async def stream_vercel_events(
     reasoning_timer = _ReasoningDurationTracker()
     stream_error_code: AgentExecutionErrorCode | None = None
     research_state = ResearchRequestState()
+    native_event_count = 0
 
     async def _on_complete(result: AgentRunResult[Any]) -> None:
+        # #region agent log
+        debug_runtime_log(
+            hypothesis_id="H4",
+            location="pydantic_executor.py:_on_complete",
+            message="adapter received completed agent result",
+            data={
+                "output_type": type(result.output).__name__,
+                "main_requests": result.usage.requests,
+                "worker_runs": len(research_state.worker_runs),
+            },
+            run_id=str(request.request_id),
+        )
+        # #endregion agent log
         if on_complete is None:
             return
         output = result.output
@@ -459,24 +496,83 @@ async def stream_vercel_events(
     )
 
     async def _classified_native_events() -> AsyncIterator[Any]:
-        nonlocal stream_error_code
+        nonlocal stream_error_code, native_event_count
+        # #region agent log
+        debug_runtime_log(
+            hypothesis_id="H4",
+            location="pydantic_executor.py:_classified_native_events.entry",
+            message="native stream execution started",
+            data={"request_id": str(request.request_id)},
+            run_id=str(request.request_id),
+        )
+        # #endregion agent log
         # Bind while the native run is actually driven. asyncio child tasks spawned
         # by DynamicWorkflow inherit this ContextVar, but their usage counters remain
         # independent because Harness still receives ``usage=None`` for Workers.
         with bind_research_request_state(research_state):
             try:
                 async for event in native_events:
+                    native_event_count += 1
+                    if native_event_count <= 8:
+                        # #region agent log
+                        debug_runtime_log(
+                            hypothesis_id="H4",
+                            location="pydantic_executor.py:_classified_native_events.event",
+                            message="native stream event observed",
+                            data={
+                                "event_index": native_event_count,
+                                "event_type": type(event).__name__,
+                            },
+                            run_id=str(request.request_id),
+                        )
+                        # #endregion agent log
                     yield event
+                # #region agent log
+                debug_runtime_log(
+                    hypothesis_id="H4",
+                    location="pydantic_executor.py:_classified_native_events.exit",
+                    message="native stream execution exhausted",
+                    data={"event_count": native_event_count},
+                    run_id=str(request.request_id),
+                )
+                # #endregion agent log
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
                 stream_error_code = "MODEL_TIMEOUT"
+                # #region agent log
+                debug_runtime_log(
+                    hypothesis_id="H5",
+                    location="pydantic_executor.py:_classified_native_events.timeout",
+                    message="native stream timed out",
+                    data={"event_count": native_event_count},
+                    run_id=str(request.request_id),
+                )
+                # #endregion agent log
                 raise
             except ModelAPIError as exc:
                 stream_error_code = _product_safe_model_error(exc).code
+                # #region agent log
+                debug_runtime_log(
+                    hypothesis_id="H5",
+                    location="pydantic_executor.py:_classified_native_events.model_error",
+                    message="native stream model error",
+                    data={"event_count": native_event_count, "error_type": type(exc).__name__},
+                    run_id=str(request.request_id),
+                )
+                # #endregion agent log
                 raise
             except UsageLimitExceeded:
                 stream_error_code = "MODEL_CALL_LIMIT_REACHED"
+                # #region agent log
+                debug_runtime_log(
+                    hypothesis_id="H5",
+                    location="pydantic_executor.py:_classified_native_events.usage_error",
+                    message="native stream usage limit reached",
+                    data={"event_count": native_event_count},
+                    run_id=str(request.request_id),
+                )
+                # #endregion agent log
                 raise
 
     events = adapter.transform_stream(

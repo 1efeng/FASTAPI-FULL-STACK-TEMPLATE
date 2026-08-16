@@ -12,15 +12,9 @@ from pydantic_ai.common_tools.web_fetch import WebFetchLocalTool, web_fetch_tool
 
 from app.agent.tools import _timeout
 from app.agent.tools.currency import CurrencyAmount, convert_currency
-from app.agent.tools.image_search import (
-    _DDGS_TIMEOUT_SECONDS as IMAGE_DDGS_TIMEOUT_SECONDS,
-)
-from app.agent.tools.image_search import (
-    _IMAGE_SEARCH_WALL_TIMEOUT_SECONDS,
-)
+from app.agent.tools.image_search import _TIMEOUT_SECONDS as IMAGE_SEARCH_TIMEOUT_SECONDS
 from app.agent.tools.route import search_maps
-from app.agent.tools.search import _DDGS_TIMEOUT_SECONDS as WEB_DDGS_TIMEOUT_SECONDS
-from app.agent.tools.search import _SEARCH_WALL_TIMEOUT_SECONDS
+from app.agent.tools.search import _TIMEOUT_SECONDS as WEB_SEARCH_TIMEOUT_SECONDS
 from app.agent.tools.weather import get_weather
 from app.core.config import settings
 
@@ -34,11 +28,9 @@ def test_runtime_timeout_hierarchy_is_bounded() -> None:
     assert settings.REQUEST_DEADLINE_SECONDS == 300
 
 
-def test_ddgs_internal_timeouts_are_tighter_than_search_wall_bounds() -> None:
-    assert 0 < WEB_DDGS_TIMEOUT_SECONDS < _SEARCH_WALL_TIMEOUT_SECONDS
-    assert 0 < IMAGE_DDGS_TIMEOUT_SECONDS < _IMAGE_SEARCH_WALL_TIMEOUT_SECONDS
-    assert _SEARCH_WALL_TIMEOUT_SECONDS < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
-    assert _IMAGE_SEARCH_WALL_TIMEOUT_SECONDS < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
+def test_search_timeouts_are_tighter_than_model_rpc_bound() -> None:
+    assert 0 < WEB_SEARCH_TIMEOUT_SECONDS < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
+    assert 0 < IMAGE_SEARCH_TIMEOUT_SECONDS < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
 
 
 def test_official_web_fetch_keeps_its_internal_30_second_bound() -> None:

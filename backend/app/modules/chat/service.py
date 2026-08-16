@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.context.deadline import remaining_deadline_seconds
+from app.agent.debug_logging import debug_runtime_log
 from app.agent.executor import (
     AgentExecutionError,
     AgentExecutionRequest,
@@ -589,6 +590,16 @@ class ChatService:
 
         async def producer() -> AsyncIterator[str]:
 
+            # #region agent log
+            debug_runtime_log(
+                hypothesis_id="H5",
+                location="chat/service.py:stream_producer.entry",
+                message="stream producer started",
+                data={"request_id": str(request_id)},
+                run_id=str(request_id),
+            )
+            # #endregion agent log
+
             # Admission
             lease = ChatAdmissionLease()
             started = False
@@ -666,6 +677,15 @@ class ChatService:
                 # adapter emits its finish chunk (on_complete runs upstream of
                 # after_stream's FinishChunk in VercelAIAdapter.transform_stream).
                 async def commit_final(result: AgentExecutionResult) -> None:
+                    # #region agent log
+                    debug_runtime_log(
+                        hypothesis_id="H5",
+                        location="chat/service.py:commit_final.before",
+                        message="stream final commit started",
+                        data={"request_id": str(request_id)},
+                        run_id=str(request_id),
+                    )
+                    # #endregion agent log
                     await self._persist_request_success(
                         request_id=request_id,
                         conversation_id=conversation_id,
@@ -673,6 +693,15 @@ class ChatService:
                         reasoning_summary=result.reasoning_summary,
                         reasoning_duration_ms=result.reasoning_duration_ms,
                     )
+                    # #region agent log
+                    debug_runtime_log(
+                        hypothesis_id="H5",
+                        location="chat/service.py:commit_final.after",
+                        message="stream final commit finished",
+                        data={"request_id": str(request_id)},
+                        run_id=str(request_id),
+                    )
+                    # #endregion agent log
 
                 async def commit_stream_terminal(
                     kind: AgentStreamTerminalKind,
@@ -705,6 +734,15 @@ class ChatService:
                 events: asyncio.Queue[str | BaseException | None] = asyncio.Queue()
 
                 async def run_execution() -> None:
+                    # #region agent log
+                    debug_runtime_log(
+                        hypothesis_id="H4",
+                        location="chat/service.py:run_execution.entry",
+                        message="stream agent execution started",
+                        data={"request_id": str(request_id)},
+                        run_id=str(request_id),
+                    )
+                    # #endregion agent log
                     try:
                         async with _execution_timeout(deadline_at):
                             async for chunk in stream_vercel_events(
@@ -729,6 +767,15 @@ class ChatService:
                     except BaseException as exc:
                         await events.put(exc)
                     finally:
+                        # #region agent log
+                        debug_runtime_log(
+                            hypothesis_id="H4",
+                            location="chat/service.py:run_execution.exit",
+                            message="stream agent execution ended",
+                            data={"request_id": str(request_id)},
+                            run_id=str(request_id),
+                        )
+                        # #endregion agent log
                         await events.put(None)
 
                 execution_task = self.supervisor.start(request_id, run_execution())

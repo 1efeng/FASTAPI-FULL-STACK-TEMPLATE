@@ -26,6 +26,8 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.tools import RunContext, ToolDefinition
 
+from app.agent.debug_logging import debug_runtime_log
+
 _URL_RE = re.compile(r"https?://[^\s<>\]\[\"']+")
 _FAILURE_MARKERS = (
     "NO_RESULTS",
@@ -263,9 +265,30 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
     async def wrap_run(self, ctx: RunContext[object], *, handler: Any) -> Any:
         trace = WorkerEvidenceTrace()
         token = _current_worker_trace.set(trace)
+        # #region agent log
+        debug_runtime_log(
+            hypothesis_id="H2",
+            location="research_runtime.py:wrap_run.entry",
+            message="research worker started",
+            data={"worker_trace_created": True},
+        )
+        # #endregion agent log
         try:
             return await handler()
         finally:
+            # #region agent log
+            debug_runtime_log(
+                hypothesis_id="H2",
+                location="research_runtime.py:wrap_run.exit",
+                message="research worker finished",
+                data={
+                    "model_responses": len(trace.model_responses),
+                    "successful_tools": sorted(trace.successful_tools),
+                    "requests": ctx.usage.requests,
+                    "tool_calls": ctx.usage.tool_calls,
+                },
+            )
+            # #endregion agent log
             state = get_research_request_state()
             if state is not None:
                 state.record_worker_run(
@@ -290,6 +313,25 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
             trace.model_responses.append(response)
         return response
 
+    async def before_tool_execute(
+        self,
+        ctx: RunContext[object],
+        *,
+        call: ToolCallPart,
+        tool_def: ToolDefinition,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        del ctx, tool_def
+        # #region agent log
+        debug_runtime_log(
+            hypothesis_id="H3",
+            location="research_runtime.py:before_tool_execute",
+            message="research worker tool started",
+            data={"tool": call.tool_name},
+        )
+        # #endregion agent log
+        return args
+
     async def after_tool_execute(
         self,
         ctx: RunContext[object],
@@ -301,10 +343,19 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
     ) -> Any:
         del ctx, tool_def
         trace = _current_worker_trace.get()
-        if trace is None or not _result_is_usable(result):
+        tool_name = call.tool_name
+        usable = _result_is_usable(result)
+        # #region agent log
+        debug_runtime_log(
+            hypothesis_id="H3",
+            location="research_runtime.py:after_tool_execute",
+            message="research worker tool finished",
+            data={"tool": tool_name, "usable": usable},
+        )
+        # #endregion agent log
+        if trace is None or not usable:
             return result
 
-        tool_name = call.tool_name
         trace.successful_tools.add(tool_name)
 
         if tool_name == "web_search":

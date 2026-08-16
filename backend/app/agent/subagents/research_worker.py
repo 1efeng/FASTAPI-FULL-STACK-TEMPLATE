@@ -10,6 +10,7 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.settings import ModelSettings
 
 from app.agent.context.runtime_clock import runtime_clock_context
+from app.agent.debug_logging import debug_runtime_log
 from app.agent.research_runtime import ResearchWorkerRuntimeCapability
 from app.agent.tools.research_tools import build_research_tools
 from app.core.config import settings

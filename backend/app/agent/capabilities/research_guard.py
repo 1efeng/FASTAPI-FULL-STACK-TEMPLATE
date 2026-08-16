@@ -10,6 +10,8 @@ from pydantic_ai.exceptions import SkipToolExecution
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import RunContext, ToolDefinition
 
+from app.agent.debug_logging import debug_runtime_log
+
 
 @dataclass
 class SingleWorkflowCallGate(AbstractCapability[object]):
@@ -44,6 +46,14 @@ class SingleWorkflowCallGate(AbstractCapability[object]):
         del ctx, tool_def
         if call.tool_name != self.tool_name:
             return args
+        # #region agent log
+        debug_runtime_log(
+            hypothesis_id="H1",
+            location="research_guard.py:before_tool_execute",
+            message="main requested deep research workflow",
+            data={"workflow_used_before": self._used},
+        )
+        # #endregion agent log
         if self._used:
             raise SkipToolExecution(
                 {

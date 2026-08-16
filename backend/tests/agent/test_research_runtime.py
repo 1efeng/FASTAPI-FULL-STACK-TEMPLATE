@@ -170,7 +170,7 @@ async def test_actual_web_search_attests_verified_source(
 async def test_poi_worker_image_search_trajectory_preserves_attested_media(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """POI Worker -> image_search -> DDGS-normalized result -> Findings.media."""
+    """POI Worker -> image_search -> SearXNG-normalized result -> Findings.media."""
 
     monkeypatch.setattr(settings, "APP_ENV", "test")
 

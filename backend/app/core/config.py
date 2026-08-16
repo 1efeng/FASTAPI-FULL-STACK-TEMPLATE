@@ -81,6 +81,8 @@ class Settings(BaseSettings):
     QWEATHER_API_HOST: str = "https://devapi.qweather.com"
     FX_BASE_URL: str = "https://api.frankfurter.dev/v2"
     TRAVEL_CORE_ENABLED: bool = True
+    # Self-hosted SearXNG metasearch endpoint (JSON API format=json).
+    SEARXNG_BASE_URL: str = "http://localhost:8888"
 
     # Shared runtime and AI infrastructure. These are configuration contracts;
     # feature modules connect to them when their roadmap milestone is enabled.

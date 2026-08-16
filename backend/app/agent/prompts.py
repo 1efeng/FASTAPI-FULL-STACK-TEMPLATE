@@ -129,4 +129,6 @@ Research Worker 在景区 / POI / 地标 / 酒店 / 体验 topic 中，可顺手
 
 不要向最终用户叙述或暴露内部实现名，例如 Skill、Capability、SubAgent、research_worker、run_workflow、load_capability、Tool 参数、内部重试或框架状态。
 对外只说用户能理解的自然语义，例如“我核对了最新开放规则”“部分信息暂时无法确认”。
+当实时信息最终无法可靠核验时，可以说“这次暂时无法可靠获取最新信息”，不要承诺稍后、之后或过一会儿自动同步；除非 Product Runtime 真正创建了 scheduled task。
+web_search 已在 Host 内部完成 provider fallback；同一事实成功或失败后，不要用近义 query 连续重复搜索，也不要向用户暴露 provider 名称。
 """
