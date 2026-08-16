@@ -16,7 +16,6 @@ from app.infra.stream_resume.provider import get_stream_resume_store
 from app.modules.chat.runtime import ChatRuntime, get_chat_runtime
 from app.modules.chat.schema import AgentChatError, AgentChatRequest, AgentChatResponse
 from app.modules.chat.service import ChatExecutionError, ChatService
-from app.modules.conversation.model import Conversation
 from app.modules.request_run.model import RequestRunStatus
 from app.modules.request_run.repository import RequestRunRepository
 
@@ -173,39 +172,23 @@ async def chat_stream(
     request_id = uuid.uuid4()
     service = ChatService(db, executor=get_agent_executor(), runtime=runtime)
 
-    if conversation_id is None:
-        # Create an owned active conversation for this turn.
-        conversation = Conversation(user_id=current_user.id, title=None)
-        db.add(conversation)
-        await db.flush()
-        conversation_id = conversation.id
-        await db.commit()
-
-    # Validate ownership before creating the StreamingResponse.  The producer
-    # itself repeats this check inside the Start transaction, but that happens
-    # after the HTTP 200 headers have been sent and would surface to AI SDK as a
-    # misleading ``network error``.
     try:
-        await service.assert_conversation_available(
-            conversation_id=conversation_id,
+        prepared = await service.prepare_turn(
+            request_id=request_id,
             user_id=current_user.id,
+            conversation_id=conversation_id,
+            idempotency_key=idempotency_key.strip(),
+            message=message,
+            client_ip=request.client.host if request.client else "unknown",
         )
+        factory = await service.stream_factory(prepared=prepared)
     except ChatExecutionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    factory = await service.stream_factory(
-        request_id=request_id,
-        user_id=current_user.id,
-        conversation_id=conversation_id,
-        idempotency_key=idempotency_key.strip(),
-        message=message,
-        client_ip=request.client.host if request.client else "unknown",
-    )
-
     store = get_stream_resume_store()
-    stream = await store.start_or_resume(str(request_id), factory)
+    stream = await store.start_or_resume(str(prepared.request_id), factory)
     if stream is None:
-        stream = await store.resume(str(request_id))
+        stream = await store.resume(str(prepared.request_id))
     if stream is None:
         return JSONResponse(status_code=204, content=None)
 
@@ -213,7 +196,8 @@ async def chat_stream(
         stream,
         headers={
             "x-vercel-ai-ui-message-stream": "v1",
-            "X-Request-Id": str(request_id),
+            "X-Request-Id": str(prepared.request_id),
+            "X-Conversation-Id": str(prepared.conversation_id),
         },
     )
 

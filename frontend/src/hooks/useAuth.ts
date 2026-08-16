@@ -11,6 +11,16 @@ import {
 import { handleError } from "@/utils"
 import useCustomToast from "./useCustomToast"
 
+const CHAT_STORAGE_KEYS = [
+  "travel_agent_conversation_id",
+  "travel_agent_request_id",
+  "travel_agent_active_request",
+] as const
+
+const clearChatStorage = () => {
+  for (const key of CHAT_STORAGE_KEYS) localStorage.removeItem(key)
+}
+
 const isLoggedIn = () => {
   return localStorage.getItem("access_token") !== null
 }
@@ -55,6 +65,7 @@ const useAuth = () => {
 
   const logout = () => {
     localStorage.removeItem("access_token")
+    clearChatStorage()
     navigate({ to: "/login" })
   }
 

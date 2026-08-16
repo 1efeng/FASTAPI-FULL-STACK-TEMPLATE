@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 import type { ChatStatus } from "ai"
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { z } from "zod"
 
 import {
@@ -60,6 +60,16 @@ function ChatPage() {
   const navigate = Route.useNavigate()
   const { setNavigationLocked } = useChatNavigation()
   const [copied, setCopied] = useState<string | null>(null)
+  const onConversationChange = useCallback(
+    (id: string) => {
+      localStorage.setItem(CONVERSATION_KEY, id)
+      void navigate({ search: { conversation: id }, replace: true })
+    },
+    [navigate],
+  )
+  const onConversationUnavailable = useCallback(() => {
+    void navigate({ search: {}, replace: true })
+  }, [navigate])
   const {
     messages,
     sendMessage,
@@ -69,13 +79,8 @@ function ChatPage() {
     isLoadingHistory,
   } = useProductChat({
     conversationId: conversation,
-    onConversationChange: (id) => {
-      localStorage.setItem(CONVERSATION_KEY, id)
-      void navigate({ search: { conversation: id }, replace: true })
-    },
-    onConversationUnavailable: () => {
-      void navigate({ search: {}, replace: true })
-    },
+    onConversationChange,
+    onConversationUnavailable,
   })
   const streaming = status === "submitted" || status === "streaming"
   const empty = !isLoadingHistory && messages.length === 0
@@ -114,7 +119,9 @@ function ChatPage() {
           </p>
         </header>
         <Conversation className="min-h-0 flex-1">
-          <ConversationContent className={`mx-auto w-full max-w-[780px] px-5 sm:px-8 ${empty ? "h-full" : "pb-80 pt-8"}`}>
+          <ConversationContent
+            className={`mx-auto w-full max-w-[780px] px-5 sm:px-8 ${empty ? "h-full" : "pb-80 pt-8"}`}
+          >
             {empty ? (
               <div className="relative -top-[4vh] flex h-full w-full flex-col items-center justify-center">
                 <div className="mb-10 w-full text-center">

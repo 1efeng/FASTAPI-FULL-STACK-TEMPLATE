@@ -147,8 +147,7 @@ function readActiveRequest(conversationId: string): ActiveRequest | null {
     }
   }
 
-  const legacyRequestId = localStorage.getItem(REQUEST_KEY)
-  return legacyRequestId ? { requestId: legacyRequestId, conversationId } : null
+  return null
 }
 
 function clearActiveRequest(activeRequest: ActiveRequest): void {
@@ -171,66 +170,9 @@ async function loadRequestRun(requestId: string): Promise<RequestRun | null> {
   return (await response.json()) as RequestRun
 }
 
-/**
- * Ensure an owned Product conversation exists, lazily creating one and
- * persisting its id. Returns the conversation id as a string.
- */
-async function ensureConversationId(
-  preferredId?: string,
-  title?: string,
-): Promise<string> {
-  const existing = preferredId ?? localStorage.getItem(CONVERSATION_KEY)
-  if (existing) {
-    // Conversation ids survive a page refresh, but the database may have been
-    // reset or the conversation may have been deleted.  Reusing such an id
-    // makes the streaming endpoint open a 200 SSE response and fail only later
-    // in its background producer, which AI SDK reports as ``network error``.
-    const check = await fetch(`/api/v1/conversations/${existing}`, {
-      headers: { Authorization: `Bearer ${bearerToken()}` },
-    })
-    if (check.ok) return existing
-    if (check.status !== 404) {
-      throw new Error(`failed to validate conversation: ${check.status}`)
-    }
-    localStorage.removeItem(CONVERSATION_KEY)
-  }
-
-  const response = await fetch("/api/v1/conversations/", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${bearerToken()}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ title: title ?? "新的旅行咨询" }),
-  })
-  if (!response.ok) {
-    throw new Error(`failed to create conversation: ${response.status}`)
-  }
-  const data = (await response.json()) as { id: string }
-  localStorage.setItem(CONVERSATION_KEY, data.id)
-  return data.id
-}
-
-function conversationTitle(messages: ProductUIMessage[]): string {
-  const lastUserMessage = [...messages]
-    .reverse()
-    .find((message) => message.role === "user")
-  const text = lastUserMessage?.parts
-    .filter((part) => part.type === "text")
-    .map((part) => (part.type === "text" ? part.text : ""))
-    .join("")
-    .trim()
-  if (!text) return "新的旅行咨询"
-  return text.length > 40 ? `${text.slice(0, 40)}…` : text
-}
-
-/**
- * Observe Product chat transport responses. The backend alone decides whether
- * a reconnectable stream exists; the browser only records a 204 so it can
- * refresh Product durable state after AI SDK returns to ready.
- */
 function productChatFetch(
   getConversationId: () => string | undefined,
+  onConversationId?: (conversationId: string) => void,
   onRequestId?: (requestId: string) => void,
   onReconnectUnavailable?: () => void,
 ): typeof globalThis.fetch {
@@ -239,11 +181,15 @@ function productChatFetch(
     if (init?.method === "GET" && response.status === 204) {
       onReconnectUnavailable?.()
     }
+    const responseConversationId = response.headers.get("X-Conversation-Id")
     const requestId = response.headers.get("X-Request-Id")
-    const currentConversationId = getConversationId()
+    const currentConversationId = responseConversationId ?? getConversationId()
     if (requestId && currentConversationId) {
-      onRequestId?.(requestId)
       saveActiveRequest(requestId, currentConversationId)
+      onRequestId?.(requestId)
+    }
+    if (responseConversationId) {
+      onConversationId?.(responseConversationId)
     }
     return response
   }
@@ -266,6 +212,7 @@ export function useProductChat({
   const resumeAttemptedRef = useRef<string | null>(null)
   const unavailableReconnectRef = useRef<string | null>(null)
   const reconcileConversationRef = useRef<string | null>(null)
+  const previousConversationIdRef = useRef(conversationId)
 
   conversationIdRef.current = conversationId
 
@@ -284,6 +231,16 @@ export function useProductChat({
         api: "/api/v1/chat/stream",
         fetch: productChatFetch(
           () => conversationIdRef.current,
+          (resolvedConversationId) => {
+            if (resolvedConversationId !== conversationIdRef.current) {
+              conversationIdRef.current = resolvedConversationId
+              hydratedConversationRef.current = resolvedConversationId
+              onConversationChange?.(resolvedConversationId)
+              void queryClient.invalidateQueries({
+                queryKey: ["conversations"],
+              })
+            }
+          },
           (requestId) => {
             requestIdRef.current = requestId
           },
@@ -295,21 +252,7 @@ export function useProductChat({
           Authorization: `Bearer ${bearerToken()}`,
         }),
         prepareSendMessagesRequest: async ({ body, headers, messages, id }) => {
-          const resolvedConversationId = await ensureConversationId(
-            conversationIdRef.current,
-            conversationTitle(messages),
-          )
-          if (resolvedConversationId !== conversationIdRef.current) {
-            conversationIdRef.current = resolvedConversationId
-            // This hook already owns the live UI state for a newly-created
-            // conversation. Do not overwrite it with an early durable snapshot
-            // when the URL update causes the detail query to start.
-            hydratedConversationRef.current = resolvedConversationId
-            onConversationChange?.(resolvedConversationId)
-            void queryClient.invalidateQueries({
-              queryKey: ["conversations"],
-            })
-          }
+          const resolvedConversationId = conversationIdRef.current ?? null
           const idempotencyKey =
             typeof crypto !== "undefined" && crypto.randomUUID
               ? crypto.randomUUID()
@@ -398,14 +341,17 @@ export function useProductChat({
   const { resumeStream, setMessages, status } = chat
 
   useEffect(() => {
-    if (conversationId || status !== "ready") return
-    if (hydratedConversationRef.current !== null) {
+    if (
+      previousConversationIdRef.current !== conversationId &&
+      conversationId === undefined
+    ) {
       hydratedConversationRef.current = null
       resumeAttemptedRef.current = null
       requestIdRef.current = null
       setMessages([])
     }
-  }, [conversationId, setMessages, status])
+    previousConversationIdRef.current = conversationId
+  }, [conversationId, setMessages])
 
   useEffect(() => {
     if (

@@ -73,7 +73,7 @@ test.describe("Chat conversation refresh", () => {
       },
     )
 
-    await page.goto("/chat")
+    await page.goto(`/chat?conversation=${conversationId}`)
 
     await expect(page).toHaveURL(
       new RegExp(`/chat\\?conversation=${conversationId}$`),
@@ -174,34 +174,71 @@ test.describe("Chat conversation refresh", () => {
 
     await page.getByRole("button", { name: "新对话" }).click()
     await expect(page).toHaveURL(/\/chat$/)
-    await expect(page.getByText(/今天想去哪里/)).toBeVisible()
+    await expect(page.getByText("有什么旅行问题我能帮你的吗？")).toBeVisible()
   })
 
-  test("drops a stale saved conversation instead of trapping the page", async ({
+  test("treats bare chat as a draft and creates its conversation in the stream turn", async ({
     page,
   }) => {
+    let conversationPostCalls = 0
+    let requestBody: Record<string, unknown> | undefined
+    await page.route("**/api/v1/conversations/?limit=100", async (route) => {
+      if (route.request().method() === "POST") conversationPostCalls += 1
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: [], count: 0 }),
+      })
+    })
     await page.route(
       `**/api/v1/conversations/${conversationId}`,
       async (route) => {
         await route.fulfill({
-          status: 404,
+          status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ detail: "Conversation not found" }),
+          body: JSON.stringify({ ...conversation, messages: [] }),
         })
       },
     )
+    await page.route("**/api/v1/chat/stream", async (route) => {
+      requestBody = route.request().postDataJSON() as Record<string, unknown>
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "Content-Type": "text/event-stream",
+          "X-Request-Id": requestId,
+          "X-Conversation-Id": conversationId,
+          "x-vercel-ai-ui-message-stream": "v1",
+        },
+        body: [
+          { type: "start", messageId: requestId },
+          { type: "text-start", id: "answer" },
+          { type: "text-delta", id: "answer", delta: "首条回复" },
+          { type: "text-end", id: "answer" },
+          { type: "finish" },
+          "[DONE]",
+        ]
+          .map(
+            (chunk) =>
+              `data: ${typeof chunk === "string" ? chunk : JSON.stringify(chunk)}\n\n`,
+          )
+          .join(""),
+      })
+    })
 
     await page.goto("/chat")
-
     await expect(page).toHaveURL(/\/chat$/)
-    await expect(page.getByText(/今天想去哪里/)).toBeVisible()
-    await expect
-      .poll(() =>
-        page.evaluate(() =>
-          localStorage.getItem("travel_agent_conversation_id"),
-        ),
-      )
-      .toBeNull()
+    await expect(page.getByText("有什么旅行问题我能帮你的吗？")).toBeVisible()
+
+    await page.getByPlaceholder("给行伴发送消息").fill("规划一次东京旅行")
+    await page.getByRole("button", { name: "Submit" }).click()
+
+    await expect(page).toHaveURL(
+      new RegExp(`/chat\\?conversation=${conversationId}$`),
+    )
+    await expect(page.getByText("首条回复")).toBeVisible()
+    await expect.poll(() => conversationPostCalls).toBe(0)
+    await expect.poll(() => requestBody?.conversation_id).toBeNull()
   })
 
   test("reattaches and replays an active assistant stream after reload", async ({
@@ -530,7 +567,7 @@ test.describe("Chat conversation refresh", () => {
     )
 
     await page.goto(`/chat?conversation=${conversationId}`)
-    await page.getByPlaceholder("发消息...").fill("请生成一个行程")
+    await page.getByPlaceholder("给行伴发送消息").fill("请生成一个行程")
     await page.getByRole("button", { name: "Submit" }).click()
     await expect(page.getByRole("button", { name: "Stop" })).toBeVisible()
     await page.evaluate(

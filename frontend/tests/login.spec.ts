@@ -67,19 +67,41 @@ test("Log in with invalid password", async ({ page }) => {
   await expect(page.getByText("Incorrect email or password")).toBeVisible()
 })
 
-test("Successful log out", async ({ page }) => {
+test("Successful log out clears chat state", async ({ page }) => {
   await page.goto("/login")
 
   await fillForm(page, firstSuperuser, firstSuperuserPassword)
   await page.getByRole("button", { name: "Log In" }).click()
 
   await page.waitForURL("/chat")
-
   await expect(page.getByText(/今天想去哪里/)).toBeVisible()
+
+  await page.evaluate(() => {
+    localStorage.setItem("travel_agent_conversation_id", "conversation-id")
+    localStorage.setItem("travel_agent_request_id", "request-id")
+    localStorage.setItem(
+      "travel_agent_active_request",
+      JSON.stringify({
+        conversationId: "conversation-id",
+        requestId: "request-id",
+      }),
+    )
+  })
 
   await page.getByTestId("user-menu").click()
   await page.getByRole("menuitem", { name: "退出登录" }).click()
   await page.waitForURL("/login")
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        [
+          "travel_agent_conversation_id",
+          "travel_agent_request_id",
+          "travel_agent_active_request",
+        ].map((key) => localStorage.getItem(key)),
+      ),
+    )
+    .toEqual([null, null, null])
 })
 
 test("Logged-out user cannot access protected routes", async ({ page }) => {
@@ -89,7 +111,6 @@ test("Logged-out user cannot access protected routes", async ({ page }) => {
   await page.getByRole("button", { name: "Log In" }).click()
 
   await page.waitForURL("/chat")
-
   await expect(page.getByText(/今天想去哪里/)).toBeVisible()
 
   await page.getByTestId("user-menu").click()

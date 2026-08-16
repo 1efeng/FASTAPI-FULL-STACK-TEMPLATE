@@ -18,9 +18,20 @@ OpenAPI.TOKEN = async () => {
   return localStorage.getItem("access_token") || ""
 }
 
+const clearChatStorage = () => {
+  for (const key of [
+    "travel_agent_conversation_id",
+    "travel_agent_request_id",
+    "travel_agent_active_request",
+  ]) {
+    localStorage.removeItem(key)
+  }
+}
+
 const handleApiError = (error: Error) => {
   if (error instanceof ApiError && [401, 403].includes(error.status)) {
     localStorage.removeItem("access_token")
+    clearChatStorage()
     window.location.href = "/login"
   }
 }

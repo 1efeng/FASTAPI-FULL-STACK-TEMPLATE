@@ -33,7 +33,7 @@ from app.modules.chat.runtime import (
     ChatRuntime,
 )
 from app.modules.chat.schema import AgentChatResponse
-from app.modules.conversation.model import Message, MessageRole
+from app.modules.conversation.model import Conversation, Message, MessageRole
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.request_run.model import RequestRun, RequestRunStatus
 from app.modules.request_run.repository import RequestRunRepository
@@ -62,6 +62,20 @@ class ChatExecutionError(Exception):
     retryable: bool
     status_code: int
     request_id: uuid.UUID | None = None
+
+
+@dataclass(slots=True)
+class PreparedTurn:
+    """Committed Product state handed to execution and transport layers."""
+
+    request_id: uuid.UUID
+    user_id: uuid.UUID
+    conversation_id: uuid.UUID
+    message: str
+    deadline_at: datetime | None
+    history: tuple[AgentMessage, ...]
+    admission_lease: ChatAdmissionLease | None = None
+    existing_request: RequestRun | None = None
 
 
 class RequestTerminalTransitionError(RuntimeError):
@@ -208,23 +222,27 @@ class ChatService:
         *,
         request_id: uuid.UUID,
         user_id: uuid.UUID,
-        conversation_id: uuid.UUID,
+        conversation_id: uuid.UUID | None,
         idempotency_key: str,
         message: str,
-    ) -> datetime:
+    ) -> tuple[uuid.UUID, datetime]:
         started_at = datetime.now(UTC)
         deadline_at = started_at + timedelta(seconds=settings.REQUEST_DEADLINE_SECONDS)
         try:
-            conversation = await self.conversation_repo.get_owned_active(
-                conversation_id, user_id
-            )
-            if conversation is None:
-                raise ChatExecutionError(
-                    code="CONVERSATION_NOT_FOUND",
-                    message="会话不存在或已删除。",
-                    retryable=False,
-                    status_code=404,
+            if conversation_id is None:
+                conversation = Conversation(user_id=user_id, title=None)
+                conversation = await self.conversation_repo.create(conversation)
+            else:
+                conversation = await self.conversation_repo.get_owned_active(
+                    conversation_id, user_id
                 )
+                if conversation is None:
+                    raise ChatExecutionError(
+                        code="CONVERSATION_NOT_FOUND",
+                        message="会话不存在或已删除。",
+                        retryable=False,
+                        status_code=404,
+                    )
 
             request_run = RequestRun(
                 id=request_id,
@@ -247,10 +265,139 @@ class ChatService:
             conversation.last_message_at = started_at
             await self.conversation_repo.update(conversation)
             await self.db.commit()
-            return deadline_at
+            return conversation.id, deadline_at
         except Exception:
             await self.db.rollback()
             raise
+
+    async def _admit(
+        self,
+        *,
+        request_id: uuid.UUID,
+        user_id: uuid.UUID,
+        client_ip: str,
+    ) -> ChatAdmissionLease:
+        if self.runtime is None:
+            return ChatAdmissionLease()
+        try:
+            return await self.runtime.admit(client_ip=client_ip, user_id=user_id)
+        except ChatAdmissionRejected as exc:
+            raise ChatExecutionError(
+                code=exc.code,
+                message=exc.message,
+                retryable=exc.retryable,
+                status_code=503 if exc.code == "INTERNAL_ERROR" else 429,
+                request_id=request_id,
+            ) from exc
+
+    async def prepare_turn(
+        self,
+        *,
+        request_id: uuid.UUID,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID | None,
+        idempotency_key: str,
+        message: str,
+        client_ip: str = "unknown",
+    ) -> PreparedTurn:
+        """Own the Product start gate before any stream transport is opened."""
+        existing = await self.request_run_repo.get_by_user_idempotency(
+            user_id, idempotency_key
+        )
+        if existing is not None:
+            resolved_conversation_id = conversation_id or existing.conversation_id
+            await self.assert_conversation_available(
+                conversation_id=resolved_conversation_id,
+                user_id=user_id,
+            )
+            await self._replay_existing(
+                existing,
+                conversation_id=resolved_conversation_id,
+                message=message,
+            )
+            return PreparedTurn(
+                request_id=existing.id,
+                user_id=user_id,
+                conversation_id=resolved_conversation_id,
+                message=message,
+                deadline_at=existing.deadline_at,
+                history=(),
+                existing_request=existing,
+            )
+
+        lease = await self._admit(
+            request_id=request_id,
+            user_id=user_id,
+            client_ip=client_ip,
+        )
+        try:
+            try:
+                resolved_conversation_id, deadline_at = await self._persist_request_start(
+                    request_id=request_id,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    idempotency_key=idempotency_key,
+                    message=message,
+                )
+            except IntegrityError as exc:
+                existing = await self.request_run_repo.get_by_user_idempotency(
+                    user_id, idempotency_key
+                )
+                if existing is not None:
+                    resolved_conversation_id = existing.conversation_id
+                    await self._replay_existing(
+                        existing,
+                        conversation_id=resolved_conversation_id,
+                        message=message,
+                    )
+                    if self.runtime is not None:
+                        await self.runtime.release(lease)
+                    return PreparedTurn(
+                        request_id=existing.id,
+                        user_id=user_id,
+                        conversation_id=resolved_conversation_id,
+                        message=message,
+                        deadline_at=existing.deadline_at,
+                        history=(),
+                        existing_request=existing,
+                    )
+                if conversation_id is not None:
+                    running = await self.request_run_repo.get_running_for_conversation(
+                        conversation_id
+                    )
+                    if running is not None:
+                        raise ChatExecutionError(
+                            code="CONCURRENCY_LIMITED",
+                            message="该会话已有请求正在运行，请稍后重试。",
+                            retryable=True,
+                            status_code=429,
+                            request_id=request_id,
+                        ) from exc
+                raise
+
+            history = await self._project_history(
+                conversation_id=resolved_conversation_id,
+                current_request_id=request_id,
+            )
+            return PreparedTurn(
+                request_id=request_id,
+                user_id=user_id,
+                conversation_id=resolved_conversation_id,
+                message=message,
+                deadline_at=deadline_at,
+                history=history,
+                admission_lease=lease,
+            )
+        except Exception:
+            if self.runtime is not None:
+                await self.runtime.release(lease)
+            raise
+
+    async def _finish_prepared_turn(self, turn: PreparedTurn) -> None:
+        if self.runtime is not None and turn.admission_lease is not None:
+            await self.runtime.release(turn.admission_lease)
+            if turn.existing_request is None:
+                await self.runtime.finish_request(turn.request_id)
 
     async def _persist_request_success(
         self,
@@ -442,88 +589,39 @@ class ChatService:
         *,
         request_id: uuid.UUID,
         user_id: uuid.UUID,
-        conversation_id: uuid.UUID,
+        conversation_id: uuid.UUID | None,
         idempotency_key: str,
         message: str,
         client_ip: str = "unknown",
     ) -> AgentChatResponse:
-        existing = await self.request_run_repo.get_by_user_idempotency(
-            user_id,
-            idempotency_key,
+        turn = await self.prepare_turn(
+            request_id=request_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            idempotency_key=idempotency_key,
+            message=message,
+            client_ip=client_ip,
         )
-        if existing is not None:
+        if turn.existing_request is not None:
             return await self._replay_existing(
-                existing,
-                conversation_id=conversation_id,
-                message=message,
+                turn.existing_request,
+                conversation_id=turn.conversation_id,
+                message=turn.message,
             )
 
-        lease = ChatAdmissionLease()
-        if self.runtime is not None:
-            try:
-                lease = await self.runtime.admit(
-                    client_ip=client_ip,
-                    user_id=user_id,
-                )
-            except ChatAdmissionRejected as exc:
-                raise ChatExecutionError(
-                    code=exc.code,
-                    message=exc.message,
-                    retryable=exc.retryable,
-                    status_code=503 if exc.code == "INTERNAL_ERROR" else 429,
-                    request_id=request_id,
-                ) from exc
-
-        started = False
+        assert turn.deadline_at is not None
         try:
             try:
-                deadline_at = await self._persist_request_start(
-                    request_id=request_id,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    idempotency_key=idempotency_key,
-                    message=message,
-                )
-                started = True
-            except IntegrityError as exc:
-                existing = await self.request_run_repo.get_by_user_idempotency(
-                    user_id,
-                    idempotency_key,
-                )
-                if existing is not None:
-                    return await self._replay_existing(
-                        existing,
-                        conversation_id=conversation_id,
-                        message=message,
-                    )
-                running = await self.request_run_repo.get_running_for_conversation(
-                    conversation_id
-                )
-                if running is not None:
-                    raise ChatExecutionError(
-                        code="CONCURRENCY_LIMITED",
-                        message="该会话已有请求正在运行，请稍后重试。",
-                        retryable=True,
-                        status_code=429,
-                        request_id=request_id,
-                    ) from exc
-                raise
-
-            try:
-                history = await self._project_history(
-                    conversation_id=conversation_id,
-                    current_request_id=request_id,
-                )
                 result = await self._execute_agent(
-                    request_id=request_id,
-                    conversation_id=conversation_id,
-                    deadline_at=deadline_at,
-                    message=message,
-                    history=history,
+                    request_id=turn.request_id,
+                    conversation_id=turn.conversation_id,
+                    deadline_at=turn.deadline_at,
+                    message=turn.message,
+                    history=turn.history,
                 )
                 await self._persist_request_success(
-                    request_id=request_id,
-                    conversation_id=conversation_id,
+                    request_id=turn.request_id,
+                    conversation_id=turn.conversation_id,
                     content=result.content,
                     reasoning_summary=result.reasoning_summary,
                     reasoning_duration_ms=result.reasoning_duration_ms,
@@ -531,7 +629,7 @@ class ChatService:
             except asyncio.CancelledError:
                 await asyncio.shield(
                     self._persist_request_terminal(
-                        request_id=request_id,
+                        request_id=turn.request_id,
                         status=RequestRunStatus.CANCELLED,
                         error_code=None,
                     )
@@ -544,7 +642,7 @@ class ChatService:
                     else RequestRunStatus.FAILED
                 )
                 await self._persist_request_terminal(
-                    request_id=request_id,
+                    request_id=turn.request_id,
                     status=terminal_status,
                     error_code=None
                     if terminal_status is RequestRunStatus.CANCELLED
@@ -553,126 +651,73 @@ class ChatService:
                 raise
             except Exception:
                 await self._persist_request_terminal(
-                    request_id=request_id,
+                    request_id=turn.request_id,
                     status=RequestRunStatus.FAILED,
                     error_code="INTERNAL_ERROR",
                 )
                 raise
 
             return AgentChatResponse(
-                request_id=request_id,
+                request_id=turn.request_id,
                 content=result.content,
                 status=RequestRunStatus.COMPLETED,
             )
         finally:
-            if self.runtime is not None:
-                await self.runtime.release(lease)
-                if started:
-                    await self.runtime.finish_request(request_id)
+            await self._finish_prepared_turn(turn)
 
     async def stream_factory(
         self,
         *,
-        request_id: uuid.UUID,
-        user_id: uuid.UUID,
-        conversation_id: uuid.UUID,
-        idempotency_key: str,
-        message: str,
+        prepared: PreparedTurn | None = None,
+        request_id: uuid.UUID | None = None,
+        user_id: uuid.UUID | None = None,
+        conversation_id: uuid.UUID | None = None,
+        idempotency_key: str | None = None,
+        message: str | None = None,
         client_ip: str = "unknown",
     ) -> StreamFactory:
-        """Build the stream producer for one Product chat request.
-
-        Product lifecycle (admission → idempotency → Start TX → history) runs when
-        the returned factory is first iterated (inside StreamResumeStore's producer
-        task). Text deltas stream live; the ``finish`` terminal is emitted only
-        after ``_persist_request_success`` COMMITs (P0-5 terminal gate).
-        """
+        """Build transport chunks from an already-prepared Product turn."""
+        if prepared is None:
+            if (
+                request_id is None
+                or user_id is None
+                or idempotency_key is None
+                or message is None
+            ):
+                raise TypeError("stream_factory requires a prepared turn or request fields")
+            prepared = await self.prepare_turn(
+                request_id=request_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                idempotency_key=idempotency_key,
+                message=message,
+                client_ip=client_ip,
+            )
+        turn = prepared
 
         async def producer() -> AsyncIterator[str]:
-
-            # #region agent log
-            debug_runtime_log(
-                hypothesis_id="H5",
-                location="chat/service.py:stream_producer.entry",
-                message="stream producer started",
-                data={"request_id": str(request_id)},
-                run_id=str(request_id),
-            )
-            # #endregion agent log
-
-            # Admission
-            lease = ChatAdmissionLease()
-            started = False
-            if self.runtime is not None:
-                try:
-                    lease = await self.runtime.admit(
-                        client_ip=client_ip, user_id=user_id
-                    )
-                except ChatAdmissionRejected as exc:
-                    raise ChatExecutionError(
-                        code=exc.code,
-                        message=exc.message,
-                        retryable=exc.retryable,
-                        status_code=503 if exc.code == "INTERNAL_ERROR" else 429,
-                        request_id=request_id,
-                    ) from exc
-
-            try:
-                # Idempotency
-                existing = await self.request_run_repo.get_by_user_idempotency(
-                    user_id, idempotency_key
+            request_id = turn.request_id
+            conversation_id = turn.conversation_id
+            message = turn.message
+            deadline_at = turn.deadline_at
+            history = turn.history
+            if turn.existing_request is not None:
+                assistant = await self.request_run_repo.get_message(
+                    turn.request_id, MessageRole.ASSISTANT
                 )
-                if existing is not None and existing.status is RequestRunStatus.COMPLETED:
-                    # Replay the durable final as a single finished stream.
-                    yield sse.start_part(str(existing.id))
-                    text_id = uuid.uuid4().hex
-                    assistant = await self.request_run_repo.get_message(
-                        existing.id, MessageRole.ASSISTANT
-                    )
-                    content = assistant.content if assistant else ""
-                    if assistant and assistant.reasoning_summary:
-                        reasoning_id = uuid.uuid4().hex
-                        yield sse.reasoning_start_part(reasoning_id)
-                        yield sse.reasoning_delta_part(
-                            reasoning_id, assistant.reasoning_summary
-                        )
-                        yield sse.reasoning_end_part(reasoning_id)
-                    yield sse.text_start_part(text_id)
-                    yield sse.text_delta_part(text_id, content)
-                    yield sse.text_end_part(text_id)
-                    yield sse.finish_part()
-                    yield sse.done_marker()
+                if assistant is None:
                     return
+                text_id = uuid.uuid4().hex
+                yield sse.start_part(str(turn.request_id))
+                yield sse.text_start_part(text_id)
+                yield sse.text_delta_part(text_id, assistant.content)
+                yield sse.text_end_part(text_id)
+                yield sse.finish_part()
+                yield sse.done_marker()
+                return
 
-                # Start TX
-                try:
-                    deadline_at = await self._persist_request_start(
-                        request_id=request_id,
-                        user_id=user_id,
-                        conversation_id=conversation_id,
-                        idempotency_key=idempotency_key,
-                        message=message,
-                    )
-                    started = True
-                except IntegrityError:
-                    running = await self.request_run_repo.get_running_for_conversation(
-                        conversation_id
-                    )
-                    if running is not None:
-                        raise ChatExecutionError(
-                            code="CONCURRENCY_LIMITED",
-                            message="该会话已有请求正在运行，请稍后重试。",
-                            retryable=True,
-                            status_code=429,
-                            request_id=request_id,
-                        )
-                    raise
-
-                history = await self._project_history(
-                    conversation_id=conversation_id,
-                    current_request_id=request_id,
-                )
-
+            assert deadline_at is not None
+            try:
                 # Terminal gate: COMMIT the durable assistant final *before* the
                 # adapter emits its finish chunk (on_complete runs upstream of
                 # after_stream's FinishChunk in VercelAIAdapter.transform_stream).
@@ -821,9 +866,6 @@ class ChatService:
                         )
                     raise
             finally:
-                if self.runtime is not None:
-                    await self.runtime.release(lease)
-                    if started:
-                        await self.runtime.finish_request(request_id)
+                await self._finish_prepared_turn(turn)
 
         return producer

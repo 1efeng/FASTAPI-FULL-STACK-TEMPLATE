@@ -6,7 +6,7 @@ from app.modules.request_run.model import RequestRunStatus
 
 
 class AgentChatRequest(BaseModel):
-    conversation_id: uuid.UUID
+    conversation_id: uuid.UUID | None = None
     message: str = Field(max_length=20_000)
 
     @field_validator("message")

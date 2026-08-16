@@ -16,6 +16,7 @@ from app.agent.executor import (
 from app.core.config import settings
 from app.infra.database import AsyncSessionLocal
 from app.modules.chat import api as api_module
+from app.modules.chat import service as service_module
 from app.modules.conversation.model import Conversation, Message, MessageRole
 from app.modules.request_run.model import RequestRun, RequestRunStatus
 
@@ -58,6 +59,19 @@ class ReconnectStore:
         return self.stream
 
 
+class StartStore:
+    def __init__(self) -> None:
+        self.start_ids: list[str] = []
+
+    async def start_or_resume(
+        self,
+        stream_id: str,
+        producer: Callable[[], AsyncIterator[str]],
+    ) -> AsyncIterator[str]:
+        self.start_ids.append(stream_id)
+        return producer()
+
+
 @pytest.fixture
 async def normal_user_conversation_id(
     client: AsyncClient,
@@ -80,6 +94,62 @@ async def test_agent_chat_requires_authentication(client: AsyncClient) -> None:
     )
 
     assert response.status_code == 401
+
+
+async def test_stream_start_gate_creates_conversation_and_reuses_request_identity(
+    client: AsyncClient,
+    normal_user_token_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    db: AsyncSession,
+) -> None:
+    executor = CallbackExecutor()
+    store = StartStore()
+    async def fake_stream(
+        request: AgentExecutionRequest,
+        *,
+        on_complete: Callable[[AgentExecutionResult], Awaitable[None]] | None,
+        on_terminal: object,
+    ) -> AsyncIterator[str]:
+        del on_terminal
+        executor.requests.append(request)
+        assert on_complete is not None
+        await on_complete(AgentExecutionResult(content="测试回复"))
+        yield 'data: {"type":"finish"}\n\n'
+
+    monkeypatch.setattr(service_module, "stream_vercel_events", fake_stream)
+    monkeypatch.setattr(api_module, "get_stream_resume_store", lambda: store)
+
+    response = await client.post(
+        f"{settings.API_V1_STR}/chat/stream",
+        headers={
+            **normal_user_token_headers,
+            "Idempotency-Key": "stream-first-turn",
+        },
+        json={
+            "id": "ui-message-1",
+            "messages": [
+                {
+                    "id": "ui-message-1",
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "首条消息"}],
+                }
+            ],
+            "conversation_id": None,
+        },
+    )
+
+    assert response.status_code == 200
+    request_id = response.headers["x-request-id"]
+    conversation_id = uuid.UUID(response.headers["x-conversation-id"])
+    assert store.start_ids == [request_id]
+    assert request_id == str(executor.requests[0].request_id)
+    assert executor.requests[0].conversation_id == conversation_id
+    request_run = await db.get(RequestRun, uuid.UUID(request_id))
+    conversation = await db.get(Conversation, conversation_id)
+    assert request_run is not None
+    assert conversation is not None
+    assert request_run.conversation_id == conversation.id
+    assert request_run.id == uuid.UUID(request_id)
 
 
 async def test_stream_rejects_missing_conversation_before_opening_sse(
