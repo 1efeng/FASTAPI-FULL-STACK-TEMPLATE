@@ -21,7 +21,7 @@ def test_chat_agent_uses_litellm_logical_model() -> None:
     assert agent.model.model_name == settings.LLM_LOGICAL_MODEL
 
 
-def test_chat_agent_enables_planning_and_deep_research_by_default() -> None:
+def test_chat_agent_enables_planning_and_research_agent_by_default() -> None:
     agent = get_chat_agent()
     leaves: list[AbstractCapability[object]] = []
 
@@ -31,8 +31,8 @@ def test_chat_agent_enables_planning_and_deep_research_by_default() -> None:
     assert "travel-budget" in capability_ids
     assert "travel-main-tools" in capability_ids
     assert "travel-planning" in capability_ids
-    assert "deep-research" in capability_ids
-    assert "travel-research-delegation" not in capability_ids
+    assert "travel-research-agent" in capability_ids
+    assert "deep-research" not in capability_ids
 
 
 def test_runtime_clock_is_resolved_fresh_for_each_agent_run() -> None:

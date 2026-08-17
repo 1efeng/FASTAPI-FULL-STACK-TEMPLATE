@@ -5,21 +5,22 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from pathlib import Path
 
-from pydantic_ai import Tool, UsageLimits, WebSearchTool
+from pydantic_ai import Tool, WebSearchTool
 from pydantic_ai.capabilities import AgentCapability, Capability, WebSearch
 from pydantic_ai.models import KnownModelName, Model
-from pydantic_ai_harness.dynamic_workflow import DynamicWorkflow
 from pydantic_ai_harness.skills import Skills
 
-from app.agent.capabilities.research_guard import SingleWorkflowCallGate
-from app.agent.subagents.research_worker import build_research_worker
+from app.agent.capabilities.research_agent import (
+    RESEARCH_AGENT_CAPABILITY_ID,
+    RESEARCH_AGENT_TOOL_NAME,
+    build_research_agent_capability,
+)
+from app.agent.capabilities.research_guard import ResearchAgentCallGate
 from app.agent.tools.budget import calculate_budget
 from app.agent.tools.currency import convert_currency
 from app.agent.tools.research_tools import build_research_tools
-from app.core.config import settings
 
 SKILL_LIBRARY = Path(__file__).resolve().parents[1] / "skills"
-_DEEP_RESEARCH_TOOL_NAME = "run_workflow"
 
 # Skills contain instructions only. Every executable dependency stays explicit and
 # is validated before the capability bundle can reach a model.
@@ -32,7 +33,7 @@ SKILL_TOOL_DEPENDENCIES: Mapping[str, frozenset[str]] = {
             "get_weather",
             "calculate_budget",
             "convert_currency",
-            _DEEP_RESEARCH_TOOL_NAME,
+            RESEARCH_AGENT_TOOL_NAME,
         }
     ),
 }
@@ -65,15 +66,12 @@ def validate_skill_tool_dependencies(
 
 def build_travel_capabilities(
     *,
-    researcher_model: Model | KnownModelName | str | None = None,
+    research_model: Model | KnownModelName | str | None = None,
     enable_planning_core: bool = True,
     enable_web_search: bool = True,
 ) -> tuple[AgentCapability[object], ...]:
-    """Build Main tools, Skills, and the optional parallel Deep Research capability.
+    """Build Main tools, Skills, Native Search, and optional research delegation."""
 
-    ``researcher_model`` is retained as the composition-root argument name for
-    compatibility with the current executor; it now configures ``research_worker``.
-    """
     selected_skills = (
         frozenset(SKILL_TOOL_DEPENDENCIES)
         if enable_planning_core and enable_web_search
@@ -84,7 +82,7 @@ def build_travel_capabilities(
     )
     available_tools = {tool.name for tool in active_tools}
     if enable_planning_core and enable_web_search:
-        available_tools.add(_DEEP_RESEARCH_TOOL_NAME)
+        available_tools.add(RESEARCH_AGENT_TOOL_NAME)
     validate_skill_tool_dependencies(
         selected_skills=selected_skills,
         available_tools=available_tools,
@@ -99,27 +97,14 @@ def build_travel_capabilities(
     if not enable_planning_core:
         return (skill_catalog, native_web_search, main_tools)
 
-    research_worker = build_research_worker(model=researcher_model)
-    workflow_gate = SingleWorkflowCallGate(tool_name=_DEEP_RESEARCH_TOOL_NAME)
-    deep_research = DynamicWorkflow[object](
-        agents=(research_worker,),
-        id="deep-research",
-        description=(
-            "Parallel Deep Research for 2-3 independent travel fact topics; "
-            "returns only compact structured findings to Main."
-        ),
-        defer_loading=True,
-        max_agent_calls=3,
-        # Keep Main's 8/6 UsageLimits independent from child loops. Harness 0.21
-        # uses the parent's shared usage counter when forward_usage=True, which
-        # would make child requests/tool calls consume Main's small role budget.
-        forward_usage=False,
-        inherit_model=False,
-        # Monty CPU guard only; time awaiting sub-agents is intentionally not counted.
-        resource_limits={"max_duration_secs": 5},
-        sub_agent_usage_limits=UsageLimits(
-            request_limit=settings.RESEARCH_WORKER_MODEL_REQUEST_LIMIT,
-            tool_calls_limit=settings.RESEARCH_WORKER_TOOL_CALL_LIMIT,
-        ),
+    research_capability = build_research_agent_capability(model=research_model)
+    if research_capability.id != RESEARCH_AGENT_CAPABILITY_ID:
+        raise RuntimeError("unexpected research capability id")
+    research_gate = ResearchAgentCallGate(tool_name=RESEARCH_AGENT_TOOL_NAME)
+    return (
+        skill_catalog,
+        native_web_search,
+        main_tools,
+        research_gate,
+        research_capability,
     )
-    return (skill_catalog, native_web_search, main_tools, workflow_gate, deep_research)

@@ -1,12 +1,7 @@
-"""H1 trajectory regression suite for Main-as-Leader research routing.
-
-This migrates the old Optional Researcher behavior coverage onto the v8
-DynamicWorkflow architecture. Tests are deterministic and provider-free.
-"""
+"""User-level routing contracts for Candidate Plan First research behavior."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any
 
 from pydantic_ai import Agent
@@ -19,7 +14,6 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.models.test import TestModel
 
 from app.agent.capabilities.travel import build_travel_capabilities
 
@@ -43,333 +37,136 @@ def _tool_returns(messages: list[ModelMessage], name: str) -> list[ToolReturnPar
     ]
 
 
-def _load(skill_id: str, call_id: str) -> ToolCallPart:
-    return ToolCallPart(
-        tool_name="load_capability",
-        args={"id": skill_id},
-        tool_call_id=call_id,
+def _research_final(info: AgentInfo, payload: dict[str, Any]) -> ModelResponse:
+    assert info.output_tools
+    return ModelResponse(
+        parts=[
+            ToolCallPart(
+                tool_name=info.output_tools[0].name,
+                args=payload,
+                tool_call_id="research-final",
+            )
+        ]
     )
 
 
-def _workflow(code: str, call_id: str) -> ToolCallPart:
-    return ToolCallPart(
-        tool_name="run_workflow",
-        args={"code": code},
-        tool_call_id=call_id,
-    )
-
-
-def _deterministic_worker_model(topic: str) -> FunctionModel:
-    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del messages
-        assert info.output_tools
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name=info.output_tools[0].name,
-                    args={
-                        "topic": topic,
-                        "claims": [],
-                        "sources": [],
-                        "media": [],
-                        "unresolved": [],
-                    },
-                    tool_call_id="worker-final",
-                )
-            ]
-        )
-
-    return FunctionModel(model)
-
-def _agent(
-    parent_model: Callable[[list[ModelMessage], AgentInfo], ModelResponse],
-    *,
-    worker_model: Any | None = None,
-) -> Agent[object, str]:
-    worker_model = worker_model or TestModel(
-        custom_output_args={
-            "topic": "unused",
+def _research_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+    del messages
+    return _research_final(
+        info,
+        {
+            "topic": "箱根交通比较",
+            "summary": "当前证据支持方案 A。",
             "claims": [],
             "sources": [],
             "media": [],
             "unresolved": [],
-        }
-    )
-    return Agent(
-        FunctionModel(parent_model),
-        capabilities=build_travel_capabilities(researcher_model=worker_model),
+        },
     )
 
 
-async def test_casual_chat_does_not_load_skill_or_deep_research() -> None:
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del messages, info
-        return ModelResponse(parts=[TextPart("你好！")])
+def _direct_agent(answer: str) -> tuple[Agent[object, str], list[ModelMessage]]:
+    seen: list[ModelMessage] = []
 
-    result = await _agent(parent).run("你好")
-    messages = result.all_messages()
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        seen[:] = messages
+        return ModelResponse(parts=[TextPart(answer)])
 
+    return (
+        Agent(
+            FunctionModel(model),
+            capabilities=build_travel_capabilities(
+                research_model=FunctionModel(_research_model)
+            ),
+        ),
+        seen,
+    )
+
+
+async def test_casual_request_does_not_call_research_agent() -> None:
+    agent, seen = _direct_agent("你好！")
+    result = await agent.run("你好")
     assert result.output == "你好！"
-    assert _tool_calls(messages, "load_capability") == 0
-    assert _tool_calls(messages, "run_workflow") == 0
-    assert _tool_calls(messages, "web_search") == 0
+    assert _tool_calls(seen, "research_agent") == 0
 
 
-async def test_inspiration_can_use_planning_skill_without_workflow() -> None:
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(parts=[TextPart("北京灵感：故宫、胡同、长城三个方向。")])
-        return ModelResponse(parts=[_load("travel-planning", "load-plan")])
-
-    result = await _agent(parent).run("给我一些北京旅行灵感，不用查最新")
-    messages = result.all_messages()
-
-    assert "北京灵感" in result.output
-    assert _tool_calls(messages, "load_capability") == 1
-    assert _tool_calls(messages, "run_workflow") == 0
-    assert _tool_calls(messages, "web_search") == 0
+async def test_rough_plan_does_not_call_research_agent() -> None:
+    agent, seen = _direct_agent("东京三日游框架")
+    result = await agent.run("先给我东京三日游框架，不用查最新")
+    assert "东京三日游" in result.output
+    assert _tool_calls(seen, "research_agent") == 0
 
 
-async def test_complete_plan_without_fresh_fact_dependency_uses_zero_workflow() -> None:
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(parts=[TextPart("# 京都三日慢旅行\n\n按用户给定景点重新排序。")])
-        return ModelResponse(parts=[_load("travel-planning", "load-plan")])
+async def test_simple_current_fact_keeps_research_agent_unused() -> None:
+    available_tools: set[str] = set()
 
-    result = await _agent(parent).run(
-        "用我给你的清水寺、岚山、伏见稻荷排三天；开放时间我自己确认"
-    )
-    messages = result.all_messages()
-
-    assert result.output.startswith("# 京都三日慢旅行")
-    assert _tool_calls(messages, "run_workflow") == 0
-    assert _tool_calls(messages, "web_search") == 0
-
-
-async def test_rough_plan_can_load_travel_skill_without_deep_research() -> None:
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(parts=[TextPart("# 北京三日游草案")])
-        return ModelResponse(parts=[_load("travel-planning", "load-plan")])
-
-    result = await _agent(parent).run("先给我一个北京三日游大概框架，不用查最新")
-    messages = result.all_messages()
-
-    assert result.output == "# 北京三日游草案"
-    assert _tool_calls(messages, "load_capability") == 1
-    assert _tool_calls(messages, "run_workflow") == 0
-
-
-async def test_multi_axis_executable_plan_runs_one_parallel_workflow() -> None:
-    worker_model = _deterministic_worker_model("verified topic")
-
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        if _tool_returns(messages, "run_workflow"):
-            return ModelResponse(parts=[TextPart("# 北京三日可执行方案")])
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(
-                parts=[
-                    _workflow(
-                        "import asyncio\n"
-                        "results = await asyncio.gather(\n"
-                        "    research_worker(task='核实景区开放预约并准备POI图片'),\n"
-                        "    research_worker(task='核实城际与关键市内交通'),\n"
-                        ")\n"
-                        "results",
-                        "workflow-1",
-                    )
-                ]
-            )
-        return ModelResponse(parts=[_load("deep-research", "load-deep")])
-
-    result = await _agent(parent, worker_model=worker_model).run(
-        "按实际情况做北京三日可执行方案，需要核实景区和交通"
-    )
-    messages = result.all_messages()
-
-    assert result.output == "# 北京三日可执行方案"
-    assert _tool_calls(messages, "run_workflow") == 1
-    returns = _tool_returns(messages, "run_workflow")
-    assert len(returns) == 1
-    assert "verified topic" in str(returns[0].content)
-
-
-async def test_multiple_explicit_verification_axes_use_one_workflow() -> None:
-    worker_model = _deterministic_worker_model("axis")
-
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        if _tool_returns(messages, "run_workflow"):
-            return ModelResponse(parts=[TextPart("多轴核实完成。")])
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(
-                parts=[
-                    _workflow(
-                        "import asyncio\n"
-                        "results = await asyncio.gather(\n"
-                        " research_worker(task='核实门票预约开放'),\n"
-                        " research_worker(task='核实交通Pass与运营'),\n"
-                        " research_worker(task='核实酒店区域现实通勤'),\n"
-                        ")\nresults",
-                        "multi-axis",
-                    )
-                ]
-            )
-        return ModelResponse(parts=[_load("deep-research", "load-deep")])
-
-    result = await _agent(parent, worker_model=worker_model).run(
-        "请把门票预约、交通Pass和住宿通勤都按最新情况核实后再规划"
-    )
-    messages = result.all_messages()
-
-    assert result.output == "多轴核实完成。"
-    assert _tool_calls(messages, "run_workflow") == 1
-
-
-async def test_worker_failure_degrades_to_unresolved_without_second_workflow() -> None:
-    worker_calls = 0
-
-    def broken_worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del messages, info
-        nonlocal worker_calls
-        worker_calls += 1
-        raise RuntimeError("synthetic research failure")
-
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        workflow_returns = _tool_returns(messages, "run_workflow")
-        if workflow_returns:
-            assert "unresolved" in str(workflow_returns[-1].content)
-            return ModelResponse(parts=[TextPart("最终计划：该事实 unresolved，执行前再确认。")])
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(
-                parts=[
-                    _workflow(
-                        "async def safe(task):\n"
-                        "    try:\n"
-                        "        return await research_worker(task=task)\n"
-                        "    except RuntimeError:\n"
-                        "        return {'status': 'unresolved', 'task': task}\n"
-                        "await safe('核实临时运营状态')",
-                        "workflow-failure",
-                    )
-                ]
-            )
-        return ModelResponse(parts=[_load("deep-research", "load-deep")])
-
-    result = await _agent(parent, worker_model=FunctionModel(broken_worker)).run(
-        "按最新运营状态规划"
-    )
-    messages = result.all_messages()
-
-    assert "unresolved" in result.output
-    assert _tool_calls(messages, "run_workflow") == 1
-    assert worker_calls == 1
-
-
-async def test_second_workflow_attempt_is_host_rejected() -> None:
-    """max_agent_calls=3 is not this invariant; the host gate is."""
-
-    worker_model_calls = 0
-
-    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         del messages
-        nonlocal worker_model_calls
-        worker_model_calls += 1
-        assert info.output_tools
+        available_tools.update(tool.name for tool in info.function_tools)
+        return ModelResponse(parts=[TextPart("当前规则应由 Main 直接核验")])
+
+    agent = Agent(
+        FunctionModel(model),
+        capabilities=build_travel_capabilities(
+            research_model=FunctionModel(_research_model)
+        ),
+    )
+    result = await agent.run("核对一个景点当前预约规则")
+    assert result.output
+    assert "web_fetch" in available_tools
+    assert "research_agent" in available_tools
+
+
+async def test_normal_full_plan_can_finish_without_research_agent() -> None:
+    agent, seen = _direct_agent("Candidate Plan → 少量事实核验 → Final Plan")
+    result = await agent.run("东京三日游，按正常节奏规划")
+    assert "Final Plan" in result.output
+    assert _tool_calls(seen, "research_agent") == 0
+
+
+async def test_complex_research_delegates_once_then_main_decides() -> None:
+    seen: list[ModelMessage] = []
+
+    def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        seen[:] = messages
+        returns = _tool_returns(messages, "research_agent")
+        if returns:
+            return ModelResponse(parts=[TextPart("Main 最终选择方案 A")])
         return ModelResponse(
             parts=[
                 ToolCallPart(
-                    tool_name=info.output_tools[0].name,
+                    tool_name="research_agent",
                     args={
-                        "topic": "first research",
-                        "claims": [],
-                        "sources": [],
-                        "media": [],
-                        "unresolved": [],
+                        "objective": "比较东京到箱根多种交通 Pass",
+                        "context": "Candidate Plan: Day 2 东京前往箱根",
+                        "constraints": [
+                            "当前价格",
+                            "儿童政策",
+                            "覆盖范围",
+                            "换乘复杂度",
+                        ],
                     },
-                    tool_call_id=f"worker-final-{worker_model_calls}",
+                    tool_call_id="research-complex",
                 )
             ]
         )
 
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        returns = _tool_returns(messages, "run_workflow")
-        if len(returns) >= 2:
-            assert "DEEP_RESEARCH_ALREADY_USED" in str(returns[-1].content)
-            return ModelResponse(parts=[TextPart("使用第一次 Findings 收口。")])
-        if len(returns) == 1:
-            return ModelResponse(
-                parts=[
-                    _workflow(
-                        "await research_worker(task='第二次不应执行')",
-                        "workflow-2",
-                    )
-                ]
-            )
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(
-                parts=[
-                    _workflow(
-                        "await research_worker(task='第一次允许执行')",
-                        "workflow-1",
-                    )
-                ]
-            )
-        return ModelResponse(parts=[_load("deep-research", "load-deep")])
-
-    result = await _agent(parent, worker_model=FunctionModel(worker)).run(
-        "故意尝试两次 Deep Research"
+    agent = Agent(
+        FunctionModel(main_model),
+        capabilities=build_travel_capabilities(
+            research_model=FunctionModel(_research_model)
+        ),
     )
-    messages = result.all_messages()
-
-    assert result.output == "使用第一次 Findings 收口。"
-    assert _tool_calls(messages, "run_workflow") == 2
-    assert len(_tool_returns(messages, "run_workflow")) == 2
-    assert worker_model_calls == 1
+    result = await agent.run("深入比较东京到箱根交通与 Pass")
+    assert result.output == "Main 最终选择方案 A"
+    assert _tool_calls(seen, "research_agent") == 1
+    assert len(_tool_returns(seen, "research_agent")) == 1
 
 
-async def test_simple_modification_of_existing_plan_needs_no_research() -> None:
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del messages, info
-        return ModelResponse(parts=[TextPart("已把 Day 2 和 Day 3 对调，其余约束保持不变。")])
-
-    result = await _agent(parent).run("把刚才计划的第二天和第三天对调")
-    messages = result.all_messages()
-
+async def test_existing_plan_modification_does_not_auto_research() -> None:
+    agent, seen = _direct_agent("已把 Day 2 / Day 3 对调并保持其他安排")
+    result = await agent.run("把 Day 2 / Day 3 对调")
     assert "对调" in result.output
-    assert _tool_calls(messages, "web_search") == 0
-    assert _tool_calls(messages, "run_workflow") == 0
-
-
-async def test_single_workflow_gate_resets_for_each_parent_run() -> None:
-    worker_model = _deterministic_worker_model("per-run")
-
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        if _tool_returns(messages, "run_workflow"):
-            return ModelResponse(parts=[TextPart("done")])
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(
-                parts=[
-                    _workflow(
-                        "await research_worker(task='one allowed workflow this run')",
-                        "workflow-once",
-                    )
-                ]
-            )
-        return ModelResponse(parts=[_load("deep-research", "load-deep")])
-
-    agent = _agent(parent, worker_model=worker_model)
-    first = await agent.run("request one")
-    second = await agent.run("request two")
-
-    assert first.output == "done"
-    assert second.output == "done"
-    assert _tool_calls(first.all_messages(), "run_workflow") == 1
-    assert _tool_calls(second.all_messages(), "run_workflow") == 1
+    assert _tool_calls(seen, "research_agent") == 0

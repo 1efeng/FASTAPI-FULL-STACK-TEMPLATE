@@ -50,8 +50,8 @@ class Settings(BaseSettings):
     LITELLM_CLIENT_TIMEOUT_SECONDS: PositiveFloat = 150.0
     MAIN_MODEL_REQUEST_LIMIT: PositiveInt = 8
     MAIN_TOOL_CALL_LIMIT: PositiveInt = 6
-    RESEARCH_WORKER_MODEL_REQUEST_LIMIT: PositiveInt = 8
-    RESEARCH_WORKER_TOOL_CALL_LIMIT: PositiveInt = 18
+    RESEARCH_AGENT_MODEL_REQUEST_LIMIT: PositiveInt = 8
+    RESEARCH_AGENT_TOOL_CALL_LIMIT: PositiveInt = 18
 
     BACKEND_CORS_ORIGINS: Annotated[
         list[AnyUrl] | str, BeforeValidator(parse_cors)

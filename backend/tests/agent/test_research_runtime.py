@@ -16,18 +16,18 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from app.agent.research_runtime import (
-    ResearchRequestState,
-    WorkerEvidenceTrace,
-    _attest_findings,
-    _record_native_search_response,
-    bind_research_request_state,
-)
-from app.agent.subagents.research_worker import (
+from app.agent.agents.research_agent import (
     EvidenceClaim,
     EvidenceSource,
     ResearchFindings,
-    build_research_worker,
+    build_research_agent,
+)
+from app.agent.research_runtime import (
+    ResearchEvidenceTrace,
+    ResearchRequestState,
+    _attest_findings,
+    _record_native_search_response,
+    bind_research_request_state,
 )
 
 
@@ -90,7 +90,7 @@ async def test_model_cannot_self_certify_invented_source_url() -> None:
             },
         )
 
-    worker = build_research_worker(model=FunctionModel(model))
+    worker = build_research_agent(model=FunctionModel(model))
     state = ResearchRequestState()
     with bind_research_request_state(state):
         result = await worker.run("核实故宫开放")
@@ -99,7 +99,7 @@ async def test_model_cannot_self_certify_invented_source_url() -> None:
     assert result.output.claims[0].source_urls == []
     assert result.output.sources == []
     assert any("Host evidence validation failed" in item for item in result.output.unresolved)
-    assert state.worker_requests == result.usage.requests
+    assert state.research_requests == result.usage.requests
 
 
 async def test_model_cannot_self_certify_tool_name_without_execution() -> None:
@@ -123,7 +123,7 @@ async def test_model_cannot_self_certify_tool_name_without_execution() -> None:
             },
         )
 
-    worker = build_research_worker(model=FunctionModel(model))
+    worker = build_research_agent(model=FunctionModel(model))
     result = await worker.run("核实北京明天天气")
 
     assert result.output.claims[0].status == "unresolved"
@@ -132,7 +132,7 @@ async def test_model_cannot_self_certify_tool_name_without_execution() -> None:
 
 async def test_native_web_search_attests_verified_source() -> None:
     source_url = "https://example.test/search"
-    trace = WorkerEvidenceTrace()
+    trace = ResearchEvidenceTrace()
     _record_native_search_response(
         ModelResponse(
             parts=[
@@ -210,7 +210,7 @@ async def test_failed_weather_execution_cannot_attest_verified_claim(
             ]
         )
 
-    worker = build_research_worker(model=FunctionModel(model))
+    worker = build_research_agent(model=FunctionModel(model))
     result = await worker.run("核实北京天气")
 
     assert result.output.claims[0].status == "unresolved"
@@ -257,7 +257,7 @@ async def test_weather_only_worker_never_calls_image_search(
             ]
         )
 
-    worker = build_research_worker(model=FunctionModel(model))
+    worker = build_research_agent(model=FunctionModel(model))
     result = await worker.run("只核实北京未来三天的天气风险")
 
     assert result.output.claims[0].status == "verified"

@@ -46,15 +46,15 @@ def test_database_url_is_the_database_source_of_truth() -> None:
     )
 
 
-def test_runtime_budget_defaults_match_main_and_worker_contract() -> None:
+def test_runtime_budget_defaults_match_main_and_research_agent_contract() -> None:
     configured = _settings()
 
     assert configured.REQUEST_DEADLINE_SECONDS == 300.0
     assert configured.LITELLM_CLIENT_TIMEOUT_SECONDS == 150.0
     assert configured.MAIN_MODEL_REQUEST_LIMIT == 8
     assert configured.MAIN_TOOL_CALL_LIMIT == 6
-    assert configured.RESEARCH_WORKER_MODEL_REQUEST_LIMIT == 8
-    assert configured.RESEARCH_WORKER_TOOL_CALL_LIMIT == 18
+    assert configured.RESEARCH_AGENT_MODEL_REQUEST_LIMIT == 8
+    assert configured.RESEARCH_AGENT_TOOL_CALL_LIMIT == 18
     assert not hasattr(configured, "TRAVEL_RESEARCHER_TIMEOUT_SECONDS")
     assert not hasattr(configured, "TRAVEL_RESEARCHER_MODEL_REQUEST_LIMIT")
     assert not hasattr(configured, "TRAVEL_RESEARCHER_TOOL_CALL_LIMIT")
@@ -81,22 +81,22 @@ def test_runtime_budget_respects_env_override() -> None:
     configured = _settings(
         REQUEST_DEADLINE_SECONDS=500.0,
         LITELLM_CLIENT_TIMEOUT_SECONDS=300.0,
-        RESEARCH_WORKER_MODEL_REQUEST_LIMIT=7,
-        RESEARCH_WORKER_TOOL_CALL_LIMIT=15,
+        RESEARCH_AGENT_MODEL_REQUEST_LIMIT=7,
+        RESEARCH_AGENT_TOOL_CALL_LIMIT=15,
     )
 
     assert configured.REQUEST_DEADLINE_SECONDS == 500.0
     assert configured.LITELLM_CLIENT_TIMEOUT_SECONDS == 300.0
-    assert configured.RESEARCH_WORKER_MODEL_REQUEST_LIMIT == 7
-    assert configured.RESEARCH_WORKER_TOOL_CALL_LIMIT == 15
+    assert configured.RESEARCH_AGENT_MODEL_REQUEST_LIMIT == 7
+    assert configured.RESEARCH_AGENT_TOOL_CALL_LIMIT == 15
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
         ("LITELLM_CLIENT_TIMEOUT_SECONDS", 0.0),
-        ("RESEARCH_WORKER_MODEL_REQUEST_LIMIT", 0),
-        ("RESEARCH_WORKER_TOOL_CALL_LIMIT", 0),
+        ("RESEARCH_AGENT_MODEL_REQUEST_LIMIT", 0),
+        ("RESEARCH_AGENT_TOOL_CALL_LIMIT", 0),
     ],
 )
 def test_runtime_budget_rejects_non_positive(field: str, value: float | int) -> None:

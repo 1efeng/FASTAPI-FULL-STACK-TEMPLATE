@@ -1,4 +1,4 @@
-"""Host-side invariants for Deep Research workflow invocation."""
+"""Host-side invariant for bounded Research Agent delegation."""
 
 from __future__ import annotations
 
@@ -14,22 +14,17 @@ from app.agent.debug_logging import debug_runtime_log
 
 
 @dataclass
-class SingleWorkflowCallGate(AbstractCapability[object]):
-    """Allow at most one ``run_workflow`` execution per Main Agent run.
+class ResearchAgentCallGate(AbstractCapability[object]):
+    """Allow at most one ``research_agent`` execution per Main Agent run."""
 
-    Harness ``max_agent_calls`` limits child runs, not workflow invocations. This
-    capability owns the separate Product invariant: after the first Deep Research
-    workflow starts, every later attempt is host-rejected without executing Harness.
-    """
-
-    tool_name: str = "run_workflow"
+    tool_name: str = "research_agent"
     _used: bool = field(default=False, init=False, repr=False)
 
     @classmethod
     def get_serialization_name(cls) -> str | None:
         return None
 
-    async def for_run(self, ctx: RunContext[object]) -> SingleWorkflowCallGate:
+    async def for_run(self, ctx: RunContext[object]) -> ResearchAgentCallGate:
         del ctx
         clone = replace(self)
         clone._used = False
@@ -46,25 +41,23 @@ class SingleWorkflowCallGate(AbstractCapability[object]):
         del ctx, tool_def
         if call.tool_name != self.tool_name:
             return args
-        # #region agent log
+
         debug_runtime_log(
             hypothesis_id="H1",
             location="research_guard.py:before_tool_execute",
-            message="main requested deep research workflow",
-            data={"workflow_used_before": self._used},
+            message="main requested research agent",
+            data={"research_used_before": self._used},
         )
-        # #endregion agent log
         if self._used:
             raise SkipToolExecution(
                 {
-                    "error": "DEEP_RESEARCH_ALREADY_USED",
+                    "error": "RESEARCH_AGENT_ALREADY_USED",
                     "message": (
-                        "This request already used its single Deep Research workflow. "
+                        "This request already used its single complex research run. "
                         "Conclude from existing findings and mark remaining facts unresolved."
                     ),
                 }
             )
-        # Suspension-free reservation: if a future core version ever permits two
-        # same-name sequential calls in one model step, the second still loses.
+
         self._used = True
         return args

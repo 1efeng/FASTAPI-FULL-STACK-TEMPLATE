@@ -1,15 +1,15 @@
-"""Request-scoped Deep Research accounting and evidence attestation.
+"""Request-scoped Research Agent accounting and evidence attestation.
 
 Two invariants live here:
 
-1. Research Worker budgets stay isolated from Main (Harness ``forward_usage=False``),
-   while Product accounting still receives every child model/tool call.
-2. A Worker cannot self-certify evidence. ``verified`` claims and media survive only
-   when the referenced evidence was observed from tools that actually executed in
-   that Worker's run.
+1. Research Agent budgets stay isolated from Main while Product accounting still
+   receives every child model/tool call.
+2. A Research Agent cannot self-certify evidence. ``verified`` claims and media
+   survive only when the referenced evidence was observed from tools that actually
+   executed in that Research Agent run.
 
 The collector is intentionally request-scoped via ``ContextVar`` so concurrent
-Product requests and concurrent Workers never share state.
+Product requests never share Research Agent state.
 """
 
 from __future__ import annotations
@@ -52,8 +52,8 @@ _DEDICATED_FACT_TOOLS = frozenset({"get_weather", "search_maps"})
 
 
 @dataclass(frozen=True, slots=True)
-class WorkerUsageObservation:
-    """One isolated Worker run as seen by Product accounting.
+class ResearchUsageObservation:
+    """One isolated Research Agent run as seen by Product accounting.
 
     ``responses`` preserves per-model-call token/provider evidence. ``requests`` can
     be larger than ``len(responses)`` if the framework counted a request for which no
@@ -68,22 +68,22 @@ class WorkerUsageObservation:
 
 @dataclass(slots=True)
 class ResearchRequestState:
-    """Mutable request-local collector inherited by DynamicWorkflow child tasks."""
+    """Mutable request-local collector for Research Agent child execution."""
 
-    worker_runs: list[WorkerUsageObservation] = field(default_factory=list)
+    research_runs: list[ResearchUsageObservation] = field(default_factory=list)
 
-    def record_worker_run(self, observation: WorkerUsageObservation) -> None:
-        # No await here: append is a tiny request-local critical section. Concurrent
-        # Worker completions may choose either ordering, but accounting totals are exact.
-        self.worker_runs.append(observation)
-
-    @property
-    def worker_requests(self) -> int:
-        return sum(run.requests for run in self.worker_runs)
+    def record_research_run(self, observation: ResearchUsageObservation) -> None:
+        # No await here: append is a tiny request-local critical section. Product
+        # accounting totals remain exact for the request-local child execution.
+        self.research_runs.append(observation)
 
     @property
-    def worker_tool_calls(self) -> int:
-        return sum(run.tool_calls for run in self.worker_runs)
+    def research_requests(self) -> int:
+        return sum(run.requests for run in self.research_runs)
+
+    @property
+    def research_tool_calls(self) -> int:
+        return sum(run.tool_calls for run in self.research_runs)
 
 
 _current_request_state: ContextVar[ResearchRequestState | None] = ContextVar(
@@ -108,8 +108,8 @@ def get_research_request_state() -> ResearchRequestState | None:
 
 
 @dataclass(slots=True)
-class WorkerEvidenceTrace:
-    """Actual execution evidence for exactly one Worker Agent.run."""
+class ResearchEvidenceTrace:
+    """Actual execution evidence for exactly one Research Agent.run."""
 
     model_responses: list[ModelResponse] = field(default_factory=list)
     successful_tools: set[str] = field(default_factory=set)
@@ -117,8 +117,8 @@ class WorkerEvidenceTrace:
     image_assets: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
 
 
-_current_worker_trace: ContextVar[WorkerEvidenceTrace | None] = ContextVar(
-    "travel_agent_research_worker_trace",
+_current_research_trace: ContextVar[ResearchEvidenceTrace | None] = ContextVar(
+    "travel_agent_research_agent_trace",
     default=None,
 )
 
@@ -191,7 +191,7 @@ def _extract_image_assets(value: Any) -> dict[tuple[str, str], dict[str, Any]]:
 
 def _record_native_search_response(
     response: ModelResponse,
-    trace: WorkerEvidenceTrace,
+    trace: ResearchEvidenceTrace,
 ) -> None:
     """Capture evidence returned by the provider-native web search tool."""
 
@@ -218,14 +218,10 @@ def _result_is_usable(result: Any) -> bool:
     return True
 
 
-def _attest_findings(output: Any, trace: WorkerEvidenceTrace) -> Any:
-    """Downgrade unsupported model assertions using actual per-Worker tool evidence.
+def _attest_findings(output: Any, trace: ResearchEvidenceTrace) -> Any:
+    """Downgrade unsupported assertions using actual Research Agent tool evidence."""
 
-    Import lazily to avoid a module cycle: ``research_worker`` builds the Agent and
-    imports this capability, while this function only needs its schema at run time.
-    """
-
-    from app.agent.subagents.research_worker import ResearchFindings
+    from app.agent.agents.research_agent import ResearchFindings
 
     if not isinstance(output, ResearchFindings):
         return output
@@ -276,22 +272,22 @@ def _attest_findings(output: Any, trace: WorkerEvidenceTrace) -> Any:
 
 
 @dataclass
-class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
-    """Per-Worker hooks for usage capture and evidence attestation."""
+class ResearchAgentRuntimeCapability(AbstractCapability[object]):
+    """Per-Research-Agent hooks for usage capture and evidence attestation."""
 
     @classmethod
     def get_serialization_name(cls) -> str | None:
         return None
 
     async def wrap_run(self, ctx: RunContext[object], *, handler: Any) -> Any:
-        trace = WorkerEvidenceTrace()
-        token = _current_worker_trace.set(trace)
+        trace = ResearchEvidenceTrace()
+        token = _current_research_trace.set(trace)
         # #region agent log
         debug_runtime_log(
             hypothesis_id="H2",
             location="research_runtime.py:wrap_run.entry",
-            message="research worker started",
-            data={"worker_trace_created": True},
+            message="research agent started",
+            data={"research_trace_created": True},
         )
         # #endregion agent log
         try:
@@ -301,7 +297,7 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
             debug_runtime_log(
                 hypothesis_id="H2",
                 location="research_runtime.py:wrap_run.exit",
-                message="research worker finished",
+                message="research agent finished",
                 data={
                     "model_responses": len(trace.model_responses),
                     "successful_tools": sorted(trace.successful_tools),
@@ -312,14 +308,14 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
             # #endregion agent log
             state = get_research_request_state()
             if state is not None:
-                state.record_worker_run(
-                    WorkerUsageObservation(
+                state.record_research_run(
+                    ResearchUsageObservation(
                         responses=tuple(trace.model_responses),
                         requests=ctx.usage.requests,
                         tool_calls=ctx.usage.tool_calls,
                     )
                 )
-            _current_worker_trace.reset(token)
+            _current_research_trace.reset(token)
 
     async def after_model_request(
         self,
@@ -329,7 +325,7 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
         response: ModelResponse,
     ) -> ModelResponse:
         del ctx, request_context
-        trace = _current_worker_trace.get()
+        trace = _current_research_trace.get()
         if trace is not None:
             trace.model_responses.append(response)
             _record_native_search_response(response, trace)
@@ -348,7 +344,7 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
         debug_runtime_log(
             hypothesis_id="H3",
             location="research_runtime.py:before_tool_execute",
-            message="research worker tool started",
+            message="research agent tool started",
             data={"tool": call.tool_name},
         )
         # #endregion agent log
@@ -364,14 +360,14 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
         result: Any,
     ) -> Any:
         del ctx, tool_def
-        trace = _current_worker_trace.get()
+        trace = _current_research_trace.get()
         tool_name = call.tool_name
         usable = _result_is_usable(result)
         # #region agent log
         debug_runtime_log(
             hypothesis_id="H3",
             location="research_runtime.py:after_tool_execute",
-            message="research worker tool finished",
+            message="research agent tool finished",
             data={"tool": tool_name, "usable": usable},
         )
         # #endregion agent log
@@ -400,5 +396,5 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
         output: Any,
     ) -> Any:
         del ctx, output_context
-        trace = _current_worker_trace.get()
+        trace = _current_research_trace.get()
         return _attest_findings(output, trace) if trace is not None else output

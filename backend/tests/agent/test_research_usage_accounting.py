@@ -1,4 +1,4 @@
-"""Product usage must aggregate isolated Deep Research Worker usage."""
+"""Product usage must aggregate isolated Research Agent usage."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from pydantic_ai.usage import RequestUsage
 from app.agent.capabilities.travel import build_travel_capabilities
 from app.agent.executor import AgentExecutionRequest
 from app.agent.pydantic_executor import PydanticAIExecutor, _to_agent_usage
-from app.agent.research_runtime import ResearchRequestState, WorkerUsageObservation
+from app.agent.research_runtime import ResearchRequestState, ResearchUsageObservation
 from app.core.config import settings
 
 
@@ -39,13 +39,13 @@ def _request() -> AgentExecutionRequest:
     return AgentExecutionRequest(
         request_id=uuid.uuid4(),
         conversation_id=uuid.uuid4(),
-        message="需要多轴核实",
+        message="需要复杂研究核实",
         history=(),
         deadline_at=datetime.now(UTC) + timedelta(seconds=30),
     )
 
 
-async def test_product_usage_merges_main_and_isolated_worker_model_calls() -> None:
+async def test_product_usage_merges_main_and_research_agent_model_calls() -> None:
     def main_model(
         messages: list[ModelMessage], info: AgentInfo
     ) -> ModelResponse:
@@ -57,16 +57,16 @@ async def test_product_usage_merges_main_and_isolated_worker_model_calls() -> No
         )
 
     main_result = await Agent(FunctionModel(main_model)).run("hello")
-    worker_response = ModelResponse(
-        parts=[TextPart("worker finding")],
+    research_response = ModelResponse(
+        parts=[TextPart("research finding")],
         usage=RequestUsage(input_tokens=40, output_tokens=10),
-        model_name="worker-model",
-        provider_response_id="worker-1",
+        model_name="research-model",
+        provider_response_id="research-1",
     )
     state = ResearchRequestState(
-        worker_runs=[
-            WorkerUsageObservation(
-                responses=(worker_response,),
+        research_runs=[
+            ResearchUsageObservation(
+                responses=(research_response,),
                 requests=1,
                 tool_calls=3,
             )
@@ -86,81 +86,70 @@ async def test_product_usage_merges_main_and_isolated_worker_model_calls() -> No
     assert usage.total_tokens == 170
     assert [call.provider_response_id for call in usage.model_calls] == [
         "main-1",
-        "worker-1",
+        "research-1",
     ]
     assert [call.call_index for call in usage.model_calls] == [0, 1]
 
 
-async def test_executor_end_to_end_includes_dynamic_workflow_worker_usage() -> None:
-    """Main limits remain local, but Product AgentUsage sees Main + Worker calls."""
+async def test_executor_end_to_end_includes_research_agent_usage() -> None:
+    research_calls = 0
 
-    worker_calls = 0
-
-    def worker_model(
+    def research_model(
         messages: list[ModelMessage], info: AgentInfo
     ) -> ModelResponse:
         del messages
-        nonlocal worker_calls
-        worker_calls += 1
+        nonlocal research_calls
+        research_calls += 1
         assert info.output_tools
         return ModelResponse(
             parts=[
                 ToolCallPart(
                     tool_name=info.output_tools[0].name,
                     args={
-                        "topic": "worker usage",
+                        "topic": "箱根交通",
+                        "summary": "方案 A 证据更完整",
                         "claims": [],
                         "sources": [],
                         "media": [],
                         "unresolved": [],
                     },
-                    tool_call_id="worker-final",
+                    tool_call_id="research-final",
                 )
             ],
             usage=RequestUsage(input_tokens=40, output_tokens=4),
-            provider_response_id="worker-response",
+            provider_response_id="research-response",
         )
 
     def main_model(
         messages: list[ModelMessage], info: AgentInfo
     ) -> ModelResponse:
         del info
-        if _tool_returns(messages, "run_workflow"):
+        if _tool_returns(messages, "research_agent"):
             return ModelResponse(
                 parts=[TextPart("main final")],
                 usage=RequestUsage(input_tokens=30, output_tokens=3),
                 provider_response_id="main-final",
             )
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="run_workflow",
-                        args={
-                            "code": "await research_worker(task='single worker usage test')"
-                        },
-                        tool_call_id="workflow-1",
-                    )
-                ],
-                usage=RequestUsage(input_tokens=20, output_tokens=2),
-                provider_response_id="main-workflow",
-            )
         return ModelResponse(
             parts=[
                 ToolCallPart(
-                    tool_name="load_capability",
-                    args={"id": "deep-research"},
-                    tool_call_id="load-deep",
+                    tool_name="research_agent",
+                    args={
+                        "objective": "比较东京到箱根交通 Pass",
+                        "context": "Candidate Plan: Day 2 去箱根",
+                        "constraints": ["当前价格", "儿童政策"],
+                    },
+                    tool_call_id="research-1",
                 )
             ],
-            usage=RequestUsage(input_tokens=10, output_tokens=1),
-            provider_response_id="main-load",
+            usage=RequestUsage(input_tokens=20, output_tokens=2),
+            provider_response_id="main-research",
         )
 
     agent = Agent(
         FunctionModel(main_model),
         capabilities=build_travel_capabilities(
-            researcher_model=FunctionModel(worker_model)
+            research_model=FunctionModel(research_model)
         ),
     )
     result = await PydanticAIExecutor(
@@ -169,31 +158,23 @@ async def test_executor_end_to_end_includes_dynamic_workflow_worker_usage() -> N
     ).execute(_request())
 
     assert result.content == "main final"
-    assert worker_calls == 1
-    assert result.usage.model_requests == 4
-    assert result.usage.input_tokens == 100
-    assert result.usage.output_tokens == 10
-    assert result.usage.total_tokens == 110
+    assert research_calls == 1
+    assert result.usage.model_requests == 3
+    assert result.usage.input_tokens == 90
+    assert result.usage.output_tokens == 9
+    assert result.usage.total_tokens == 99
     assert {call.provider_response_id for call in result.usage.model_calls} == {
-        "main-load",
-        "main-workflow",
+        "main-research",
         "main-final",
-        "worker-response",
+        "research-response",
     }
-    # At minimum Main's capability load + run_workflow must be accounted; Worker
-    # research tool calls (if any) are added on top by the request-scoped collector.
-    assert result.usage.tool_calls >= 2
-
+    assert result.usage.tool_calls >= 1
 
 
 async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """3 Main requests + 7 Worker requests may exceed Main 8/6 *in total*.
-
-    The run must still succeed because role limits are independent, while Product
-    AgentUsage must report all ten model requests and all Worker research tools.
-    """
+    """2 Main requests + 7 Research requests may exceed Main limits in total."""
 
     monkeypatch.setattr(settings, "APP_ENV", "test")
 
@@ -201,13 +182,13 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
         return f"{city}: sunny (forecast={forecast})"
 
     monkeypatch.setattr("app.agent.tools.weather._get_weather", fake_weather)
-    worker_model_calls = 0
+    research_model_calls = 0
 
-    def worker_model(
+    def research_model(
         messages: list[ModelMessage], info: AgentInfo
     ) -> ModelResponse:
-        nonlocal worker_model_calls
-        worker_model_calls += 1
+        nonlocal research_model_calls
+        research_model_calls += 1
         completed_searches = len(_tool_returns(messages, "get_weather"))
         if completed_searches < 6:
             return ModelResponse(
@@ -215,14 +196,14 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
                     ToolCallPart(
                         tool_name="get_weather",
                         args={"city": "东京"},
-                        tool_call_id=f"worker-weather-{completed_searches + 1}",
+                        tool_call_id=f"research-weather-{completed_searches + 1}",
                     )
                 ],
                 usage=RequestUsage(
                     input_tokens=10 + completed_searches,
                     output_tokens=1,
                 ),
-                provider_response_id=f"worker-{worker_model_calls}",
+                provider_response_id=f"research-{research_model_calls}",
             )
 
         assert info.output_tools
@@ -231,71 +212,59 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
                 ToolCallPart(
                     tool_name=info.output_tools[0].name,
                     args={
-                        "topic": "bounded worker",
+                        "topic": "bounded research",
+                        "summary": "天气核验完成",
                         "claims": [],
                         "sources": [],
                         "media": [],
                         "unresolved": [],
                     },
-                    tool_call_id="worker-bounded-final",
+                    tool_call_id="research-bounded-final",
                 )
             ],
             usage=RequestUsage(input_tokens=16, output_tokens=1),
-            provider_response_id="worker-7",
+            provider_response_id="research-7",
         )
 
     def main_model(
         messages: list[ModelMessage], info: AgentInfo
     ) -> ModelResponse:
         del info
-        if _tool_returns(messages, "run_workflow"):
+        if _tool_returns(messages, "research_agent"):
             return ModelResponse(
-                parts=[TextPart("main final after isolated worker")],
+                parts=[TextPart("main final after isolated research")],
                 usage=RequestUsage(input_tokens=30, output_tokens=3),
-                provider_response_id="main-3",
-            )
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="run_workflow",
-                        args={"code": "await research_worker(task='use seven model requests')"},
-                        tool_call_id="workflow-heavy-worker",
-                    )
-                ],
-                usage=RequestUsage(input_tokens=20, output_tokens=2),
                 provider_response_id="main-2",
             )
         return ModelResponse(
             parts=[
                 ToolCallPart(
-                    tool_name="load_capability",
-                    args={"id": "deep-research"},
-                    tool_call_id="load-deep-heavy",
+                    tool_name="research_agent",
+                    args={"objective": "核验东京天气", "constraints": []},
+                    tool_call_id="research-heavy",
                 )
             ],
-            usage=RequestUsage(input_tokens=10, output_tokens=1),
+            usage=RequestUsage(input_tokens=20, output_tokens=2),
             provider_response_id="main-1",
         )
 
     agent = Agent(
         FunctionModel(main_model),
         capabilities=build_travel_capabilities(
-            researcher_model=FunctionModel(worker_model)
+            research_model=FunctionModel(research_model)
         ),
     )
     result = await PydanticAIExecutor(agent).execute(_request())
 
-    assert result.content == "main final after isolated worker"
-    assert worker_model_calls == 7
-    assert result.usage.model_requests == 10
-    # Main uses load_capability + run_workflow (2); Worker executes six weather calls.
-    assert result.usage.tool_calls >= 8
-    # This total deliberately exceeds Main's role-local 8 model / 6 tool caps.
+    assert result.content == "main final after isolated research"
+    assert research_model_calls == 7
+    assert result.usage.model_requests == 9
+    assert result.usage.tool_calls >= 7
     assert result.usage.model_requests > settings.MAIN_MODEL_REQUEST_LIMIT
     assert result.usage.tool_calls > settings.MAIN_TOOL_CALL_LIMIT
 
-def test_unobserved_worker_request_remains_unattributed_not_zero() -> None:
+
+def test_unobserved_research_request_remains_unattributed_not_zero() -> None:
     class FakeResult:
         def new_messages(self) -> list[ModelResponse]:
             return []
@@ -307,8 +276,8 @@ def test_unobserved_worker_request_remains_unattributed_not_zero() -> None:
         usage = Usage()
 
     state = ResearchRequestState(
-        worker_runs=[
-            WorkerUsageObservation(responses=(), requests=1, tool_calls=0),
+        research_runs=[
+            ResearchUsageObservation(responses=(), requests=1, tool_calls=0),
         ]
     )
     usage = _to_agent_usage(  # type: ignore[arg-type]

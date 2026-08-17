@@ -180,7 +180,7 @@ def get_chat_agent(enable_web_search: bool = True) -> Agent:
         capabilities=build_travel_capabilities(
             enable_planning_core=settings.TRAVEL_CORE_ENABLED,
             enable_web_search=enable_web_search,
-            researcher_model=model,
+            research_model=model,
         ),
         defer_model_check=True,
     )
@@ -210,11 +210,10 @@ def _to_agent_usage(
     logical_model: str,
     research_state: ResearchRequestState | None = None,
 ) -> AgentUsage:
-    """Map Main + isolated Research Worker usage into one Product contract.
+    """Map Main + optional Research Agent usage into one Product contract.
 
-    Harness keeps Worker budgets isolated with ``forward_usage=False``. Worker
-    responses are therefore captured by request-scoped PydanticAI hooks and merged
-    here explicitly. This preserves Main's 8/6 role limit while Product billing,
+    Research Agent budgets stay role-local. Child responses are captured by
+    request-scoped PydanticAI hooks and merged here explicitly so Product billing,
     quota analysis, and observability still see the complete request tree.
     """
     main_responses = tuple(
@@ -222,10 +221,12 @@ def _to_agent_usage(
         for message in result.new_messages()
         if isinstance(message, ModelResponse)
     )
-    worker_runs = tuple(research_state.worker_runs) if research_state is not None else ()
+    research_runs = (
+        tuple(research_state.research_runs) if research_state is not None else ()
+    )
     all_responses = (
         *main_responses,
-        *(response for run in worker_runs for response in run.responses),
+        *(response for run in research_runs for response in run.responses),
     )
     model_calls = tuple(
         _to_agent_model_call_usage(
@@ -237,15 +238,15 @@ def _to_agent_usage(
     )
 
     main_unattributed = max(0, result.usage.requests - len(main_responses))
-    worker_requests = sum(run.requests for run in worker_runs)
-    worker_attributed = sum(len(run.responses) for run in worker_runs)
-    worker_unattributed = max(0, worker_requests - worker_attributed)
-    worker_tool_calls = sum(run.tool_calls for run in worker_runs)
+    research_requests = sum(run.requests for run in research_runs)
+    research_attributed = sum(len(run.responses) for run in research_runs)
+    research_unattributed = max(0, research_requests - research_attributed)
+    research_tool_calls = sum(run.tool_calls for run in research_runs)
 
     return AgentUsage(
         model_calls=model_calls,
-        tool_calls=result.usage.tool_calls + worker_tool_calls,
-        unattributed_model_requests=main_unattributed + worker_unattributed,
+        tool_calls=result.usage.tool_calls + research_tool_calls,
+        unattributed_model_requests=main_unattributed + research_unattributed,
     )
 
 def _to_reasoning_summary(result: AgentRunResult[Any]) -> str | None:
@@ -463,7 +464,7 @@ class PydanticAIExecutor:
                 data={
                     "output_type": type(result.output).__name__,
                     "main_requests": result.usage.requests,
-                    "worker_runs": len(research_state.worker_runs),
+                    "research_runs": len(research_state.research_runs),
                 },
                 run_id=str(request.request_id),
             )
@@ -564,7 +565,7 @@ async def stream_vercel_events(
             data={
                 "output_type": type(result.output).__name__,
                 "main_requests": result.usage.requests,
-                "worker_runs": len(research_state.worker_runs),
+                "research_runs": len(research_state.research_runs),
                 "source_urls": len(source_urls),
             },
             run_id=str(request.request_id),
@@ -610,7 +611,7 @@ async def stream_vercel_events(
         )
         # #endregion agent log
         # Bind while the native run is actually driven. asyncio child tasks spawned
-        # by DynamicWorkflow inherit this ContextVar, but their usage counters remain
+        # by inline Research Agent execution inherit this ContextVar, while the child
         # independent because Harness still receives ``usage=None`` for Workers.
         with bind_research_request_state(research_state):
             try:
