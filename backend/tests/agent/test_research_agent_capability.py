@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -12,13 +14,17 @@ from pydantic_ai.messages import (
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.settings import ModelSettings
 
 from app.agent.capabilities.research_agent import (
     RESEARCH_AGENT_CAPABILITY_ID,
     RESEARCH_AGENT_TOOL_NAME,
+    RESEARCH_WORKFLOW_CAPABILITY_ID,
     build_research_agent_capability,
+    build_research_workflow_capability,
 )
 from app.agent.research_runtime import (
     ResearchRequestState,
@@ -92,7 +98,14 @@ async def test_main_receives_only_compressed_research_findings() -> None:
     capability = build_research_agent_capability(model=FunctionModel(child_model))
     assert capability.id == RESEARCH_AGENT_CAPABILITY_ID
 
-    main = Agent(FunctionModel(parent_model), capabilities=(capability,))
+    main = Agent(
+        FunctionModel(
+            parent_model,
+            settings=ModelSettings(parallel_tool_calls=True),
+        ),
+        model_settings=ModelSettings(parallel_tool_calls=True),
+        capabilities=(capability,),
+    )
     state = ResearchRequestState()
     with bind_research_request_state(state):
         result = await main.run("做一个候选计划后比较箱根交通")
@@ -112,3 +125,156 @@ async def test_main_receives_only_compressed_research_findings() -> None:
     # folded into Main's own RunUsage counter.
     assert result.usage.requests == 2
     assert state.research_requests == 1
+
+
+async def test_main_can_delegate_multiple_research_topics_sequentially() -> None:
+    child_prompts: list[str] = []
+
+    def child_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = "\n".join(
+            str(part.content)
+            for message in messages
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+        )
+        child_prompts.append(prompt)
+        topic = "景点执行条件" if "景点" in prompt else "交通执行条件"
+        return _final(
+            info,
+            {
+                "topic": topic,
+                "summary": f"{topic}已核验",
+                "claims": [],
+                "sources": [],
+                "media": [],
+                "unresolved": [],
+            },
+        )
+
+    def parent_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        returns = _tool_returns(messages, RESEARCH_AGENT_TOOL_NAME)
+        if not returns:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name=RESEARCH_AGENT_TOOL_NAME,
+                        args={"objective": "核验景点执行条件"},
+                        tool_call_id="topic-a",
+                    )
+                ]
+            )
+        if len(returns) == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name=RESEARCH_AGENT_TOOL_NAME,
+                        args={"objective": "核验交通执行条件"},
+                        tool_call_id="topic-b",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("两个研究主题都已整合")])
+
+    capability = build_research_agent_capability(model=FunctionModel(child_model))
+    main = Agent(
+        FunctionModel(
+            parent_model,
+            settings=ModelSettings(parallel_tool_calls=True),
+        ),
+        model_settings=ModelSettings(parallel_tool_calls=True),
+        capabilities=(capability,),
+    )
+    state = ResearchRequestState()
+    with bind_research_request_state(state):
+        result = await main.run("先做 Candidate Plan，再分阶段核验两个主题")
+
+    assert result.output == "两个研究主题都已整合"
+    assert len(child_prompts) == 2
+    assert len(state.research_runs) == 2
+    assert state.research_requests == 2
+
+
+async def test_recoverable_parallel_research_failure_does_not_cancel_sibling() -> None:
+    failing_started = asyncio.Event()
+    healthy_started = asyncio.Event()
+
+    async def child_model(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> ModelResponse:
+        prompt = "\n".join(
+            str(part.content)
+            for message in messages
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+        )
+        if "失败主题" in prompt:
+            failing_started.set()
+            await asyncio.wait_for(healthy_started.wait(), timeout=1)
+            raise ModelAPIError("research-model", "synthetic provider failure")
+
+        healthy_started.set()
+        await asyncio.wait_for(failing_started.wait(), timeout=1)
+        return _final(
+            info,
+            {
+                "topic": "健康主题",
+                "summary": "健康主题完成",
+                "claims": [],
+                "sources": [],
+                "media": [],
+                "unresolved": [],
+            },
+        )
+
+    captured_returns: list[ToolReturnPart] = []
+
+    def parent_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        returns = _tool_returns(messages, RESEARCH_AGENT_TOOL_NAME)
+        if not returns:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name=RESEARCH_AGENT_TOOL_NAME,
+                        args={"objective": "失败主题"},
+                        tool_call_id="failing-topic",
+                    ),
+                    ToolCallPart(
+                        tool_name=RESEARCH_AGENT_TOOL_NAME,
+                        args={"objective": "健康主题"},
+                        tool_call_id="healthy-topic",
+                    ),
+                ]
+            )
+        captured_returns.extend(returns)
+        return ModelResponse(parts=[TextPart("保留成功主题并标记失败主题 unresolved")])
+
+    capability = build_research_agent_capability(model=FunctionModel(child_model))
+    main = Agent(
+        FunctionModel(parent_model),
+        model_settings=ModelSettings(parallel_tool_calls=True),
+        capabilities=(capability,),
+    )
+    state = ResearchRequestState()
+    with bind_research_request_state(state):
+        result = await main.run("并行研究，其中一个 provider 失败")
+
+    assert result.output == "保留成功主题并标记失败主题 unresolved"
+    assert len(captured_returns) == 2
+    returned_text = "\n".join(str(item.content) for item in captured_returns)
+    assert "当前研究主题暂时无法可靠完成" in returned_text
+    assert "健康主题完成" in returned_text
+    assert len(state.research_runs) == 2
+
+
+def test_research_workflow_is_bounded_and_has_one_leaf_agent() -> None:
+    capability = build_research_workflow_capability(
+        model=FunctionModel(lambda messages, info: ModelResponse(parts=[TextPart("ok")]))
+    )
+
+    assert capability.id == RESEARCH_WORKFLOW_CAPABILITY_ID
+    assert capability.tool_name == "run_workflow"
+    assert capability.max_agent_calls == 2
+    assert len(capability.agents) == 1
+    assert capability.agents[0].name == "research_agent"

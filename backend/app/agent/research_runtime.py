@@ -14,6 +14,8 @@ Product requests never share Research Agent state.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -49,6 +51,12 @@ _FAILURE_MARKERS = (
     "缺少",
 )
 _DEDICATED_FACT_TOOLS = frozenset({"get_weather", "search_maps"})
+_TOOL_PROGRESS_LABELS = {
+    "web_search": "搜索当前来源",
+    "web_fetch": "读取来源正文",
+    "search_maps": "核验路线交通",
+    "get_weather": "核验旅行日期天气",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,11 +79,18 @@ class ResearchRequestState:
     """Mutable request-local collector for Research Agent child execution."""
 
     research_runs: list[ResearchUsageObservation] = field(default_factory=list)
+    progress_queue: asyncio.Queue[dict[str, str]] = field(default_factory=asyncio.Queue)
 
     def record_research_run(self, observation: ResearchUsageObservation) -> None:
         # No await here: append is a tiny request-local critical section. Product
         # accounting totals remain exact for the request-local child execution.
         self.research_runs.append(observation)
+
+    def emit_progress(self, *, topic: str, status: str, label: str) -> None:
+        """Queue a safe product-facing milestone without exposing model reasoning."""
+        self.progress_queue.put_nowait(
+            {"topic": topic, "status": status, "label": label}
+        )
 
     @property
     def research_requests(self) -> int:
@@ -121,6 +136,18 @@ _current_research_trace: ContextVar[ResearchEvidenceTrace | None] = ContextVar(
     "travel_agent_research_agent_trace",
     default=None,
 )
+
+
+def _research_topic(prompt: Any) -> str:
+    """Extract only the bounded objective from a ResearchRequest prompt."""
+    if isinstance(prompt, str):
+        try:
+            value = json.loads(prompt)
+        except json.JSONDecodeError:
+            value = None
+        if isinstance(value, dict) and isinstance(value.get("objective"), str):
+            return value["objective"][:160]
+    return "旅行事实核验"
 
 
 def _iter_plain_values(value: Any) -> Iterator[Any]:
@@ -281,7 +308,12 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
 
     async def wrap_run(self, ctx: RunContext[object], *, handler: Any) -> Any:
         trace = ResearchEvidenceTrace()
+        state = get_research_request_state()
+        topic = _research_topic(ctx.prompt)
+        if state is not None:
+            state.emit_progress(topic=topic, status="started", label="开始核验研究主题")
         token = _current_research_trace.set(trace)
+        succeeded = False
         # #region agent log
         debug_runtime_log(
             hypothesis_id="H2",
@@ -291,7 +323,9 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
         )
         # #endregion agent log
         try:
-            return await handler()
+            result = await handler()
+            succeeded = True
+            return result
         finally:
             # #region agent log
             debug_runtime_log(
@@ -306,7 +340,6 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
                 },
             )
             # #endregion agent log
-            state = get_research_request_state()
             if state is not None:
                 state.record_research_run(
                     ResearchUsageObservation(
@@ -314,6 +347,15 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
                         requests=ctx.usage.requests,
                         tool_calls=ctx.usage.tool_calls,
                     )
+                )
+                state.emit_progress(
+                    topic=topic,
+                    status="completed" if succeeded else "unresolved",
+                    label=(
+                        "研究主题核验完成"
+                        if succeeded
+                        else "研究主题未能可靠完成"
+                    ),
                 )
             _current_research_trace.reset(token)
 
@@ -339,7 +381,15 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
         tool_def: ToolDefinition,
         args: dict[str, Any],
     ) -> dict[str, Any]:
-        del ctx, tool_def
+        del tool_def
+        state = get_research_request_state()
+        if state is not None:
+            label = _TOOL_PROGRESS_LABELS.get(call.tool_name, "核验旅行事实")
+            state.emit_progress(
+                topic=_research_topic(ctx.prompt),
+                status="checking",
+                label=f"正在{label}",
+            )
         # #region agent log
         debug_runtime_log(
             hypothesis_id="H3",
@@ -359,10 +409,18 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
         args: dict[str, Any],
         result: Any,
     ) -> Any:
-        del ctx, tool_def
+        del tool_def
         trace = _current_research_trace.get()
         tool_name = call.tool_name
         usable = _result_is_usable(result)
+        state = get_research_request_state()
+        if state is not None:
+            label = _TOOL_PROGRESS_LABELS.get(tool_name, "旅行事实")
+            state.emit_progress(
+                topic=_research_topic(ctx.prompt),
+                status="checking" if usable else "unresolved",
+                label=f"{label}{'已返回结果' if usable else '未能可靠返回'}",
+            )
         # #region agent log
         debug_runtime_log(
             hypothesis_id="H3",

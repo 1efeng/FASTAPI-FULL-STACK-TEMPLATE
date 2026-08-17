@@ -1,4 +1,4 @@
-import { Check, Copy, Globe } from "lucide-react"
+import { Check, Copy } from "lucide-react"
 
 import {
   Message,
@@ -24,6 +24,12 @@ type ChatMessageProps = {
   onCopy: (messageId: string, text: string) => void
 }
 
+type ResearchProgress = {
+  topic: string
+  status: "started" | "checking" | "completed" | "unresolved"
+  label: string
+}
+
 /**
  * Avatar-free message layout: user bubble on the right, assistant text on the left.
  */
@@ -44,18 +50,24 @@ export function ChatMessage({
   )
   const hasReasoning = reasoningParts.length > 0
   const reasoning = reasoningParts.map((part) => part.text).join("")
-  const sourceParts = message.parts.filter((part) => part.type === "source-url")
+  const researchProgress = message.parts
+    .filter((part) => part.type === "data-research-progress")
+    .map((part) => ("data" in part ? part.data : null))
+    .filter((data): data is ResearchProgress => {
+      if (!data || typeof data !== "object") return false
+      const value = data as Partial<ResearchProgress>
+      return (
+        typeof value.topic === "string" &&
+        typeof value.label === "string" &&
+        typeof value.status === "string"
+      )
+    })
   const isReasoningStreaming =
     isLastAssistant &&
     isStreaming &&
     reasoningParts.some((part) => part.state === "streaming")
   const showStreamingPlaceholder =
-    !isUser &&
-    isLastAssistant &&
-    isStreaming &&
-    !text &&
-    !hasReasoning &&
-    sourceParts.length === 0
+    !isUser && isLastAssistant && isStreaming && !text && !hasReasoning
 
   return (
     <Message
@@ -103,6 +115,23 @@ export function ChatMessage({
               </Reasoning>
             )}
 
+            {researchProgress.length > 0 && (
+              <div className="mb-3 space-y-1 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                {researchProgress.map((progress, index) => (
+                  <div className="flex gap-2" key={`${progress.topic}-${index}`}>
+                    <span aria-hidden="true">
+                      {progress.status === "completed"
+                        ? "✓"
+                        : progress.status === "unresolved"
+                          ? "!"
+                          : "·"}
+                    </span>
+                    <span>{progress.label}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {text && (
               <MessageResponse
                 className={cn(
@@ -112,33 +141,6 @@ export function ChatMessage({
               >
                 {text}
               </MessageResponse>
-            )}
-
-            {sourceParts.length > 0 && (
-              <div className="mt-5 border-t border-border/50 pt-3">
-                <div className="mb-2 text-xs text-muted-foreground">
-                  参考来源（{sourceParts.length}）
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {sourceParts.map((part) => {
-                    if (part.type !== "source-url") return null
-                    return (
-                      <a
-                        className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                        href={part.url}
-                        key={part.sourceId}
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        <Globe className="size-3.5 shrink-0" />
-                        <span className="truncate">
-                          {part.title || part.url}
-                        </span>
-                      </a>
-                    )
-                  })}
-                </div>
-              </div>
             )}
 
             {showStreamingPlaceholder && (

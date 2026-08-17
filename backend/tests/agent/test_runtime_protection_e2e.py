@@ -180,6 +180,65 @@ async def test_parent_cancellation_reaches_research_agent() -> None:
     await asyncio.wait_for(child_cancelled.wait(), timeout=1)
 
 
+async def test_parent_cancellation_reaches_parallel_research_agents() -> None:
+    started = 0
+    cancelled = 0
+    all_started = asyncio.Event()
+    all_cancelled = asyncio.Event()
+
+    async def slow_research(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        del messages, info
+        nonlocal started, cancelled
+        started += 1
+        if started == 2:
+            all_started.set()
+        try:
+            await asyncio.Future[None]()
+        except asyncio.CancelledError:
+            cancelled += 1
+            if cancelled == 2:
+                all_cancelled.set()
+            raise
+
+    def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        if _tool_returns(messages, "research_agent"):
+            return ModelResponse(parts=[TextPart("done")])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="research_agent",
+                    args={"objective": "独立研究主题 A", "constraints": []},
+                    tool_call_id="research-cancel-a",
+                ),
+                ToolCallPart(
+                    tool_name="research_agent",
+                    args={"objective": "独立研究主题 B", "constraints": []},
+                    tool_call_id="research-cancel-b",
+                ),
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(main_model),
+        capabilities=build_travel_capabilities(
+            research_model=FunctionModel(slow_research)
+        ),
+    )
+    run = asyncio.create_task(agent.run("start parallel research"))
+
+    await asyncio.wait_for(all_started.wait(), timeout=1)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    await asyncio.wait_for(all_cancelled.wait(), timeout=1)
+    assert started == 2
+    assert cancelled == 2
+
+
 def test_timeout_ownership_hierarchy_is_stable_without_child_timer() -> None:
     assert (
         0

@@ -11,11 +11,9 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai_harness.skills import Skills
 
 from app.agent.capabilities.research_agent import (
-    RESEARCH_AGENT_CAPABILITY_ID,
-    RESEARCH_AGENT_TOOL_NAME,
-    build_research_agent_capability,
+    RESEARCH_WORKFLOW_CAPABILITY_ID,
+    build_research_workflow_capability,
 )
-from app.agent.capabilities.research_guard import ResearchAgentCallGate
 from app.agent.tools.budget import calculate_budget
 from app.agent.tools.currency import convert_currency
 from app.agent.tools.research_tools import build_research_tools
@@ -33,7 +31,7 @@ SKILL_TOOL_DEPENDENCIES: Mapping[str, frozenset[str]] = {
             "get_weather",
             "calculate_budget",
             "convert_currency",
-            RESEARCH_AGENT_TOOL_NAME,
+            "run_workflow",
         }
     ),
 }
@@ -82,7 +80,7 @@ def build_travel_capabilities(
     )
     available_tools = {tool.name for tool in active_tools}
     if enable_planning_core and enable_web_search:
-        available_tools.add(RESEARCH_AGENT_TOOL_NAME)
+        available_tools.add("run_workflow")
     validate_skill_tool_dependencies(
         selected_skills=selected_skills,
         available_tools=available_tools,
@@ -97,14 +95,12 @@ def build_travel_capabilities(
     if not enable_planning_core:
         return (skill_catalog, native_web_search, main_tools)
 
-    research_capability = build_research_agent_capability(model=research_model)
-    if research_capability.id != RESEARCH_AGENT_CAPABILITY_ID:
+    research_capability = build_research_workflow_capability(model=research_model)
+    if research_capability.id != RESEARCH_WORKFLOW_CAPABILITY_ID:
         raise RuntimeError("unexpected research capability id")
-    research_gate = ResearchAgentCallGate(tool_name=RESEARCH_AGENT_TOOL_NAME)
     return (
         skill_catalog,
         native_web_search,
         main_tools,
-        research_gate,
         research_capability,
     )

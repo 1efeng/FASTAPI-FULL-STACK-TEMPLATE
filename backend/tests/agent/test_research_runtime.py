@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -100,6 +101,119 @@ async def test_model_cannot_self_certify_invented_source_url() -> None:
     assert result.output.sources == []
     assert any("Host evidence validation failed" in item for item in result.output.unresolved)
     assert state.research_requests == result.usage.requests
+
+
+async def test_research_progress_is_safe_and_request_scoped() -> None:
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del messages
+        return _final(
+            info,
+            {
+                "topic": "预约",
+                "claims": [],
+                "sources": [],
+                "media": [],
+                "unresolved": [],
+            },
+        )
+
+    worker = build_research_agent(model=FunctionModel(model))
+    state = ResearchRequestState()
+    prompt = '{"objective":"核验故宫预约规则","constraints":["2人"]}'
+    with bind_research_request_state(state):
+        await worker.run(prompt)
+
+    events = []
+    while not state.progress_queue.empty():
+        events.append(state.progress_queue.get_nowait())
+
+    assert events[0] == {
+        "topic": "核验故宫预约规则",
+        "status": "started",
+        "label": "开始核验研究主题",
+    }
+    assert events[-1]["status"] == "completed"
+    assert all(set(event) == {"topic", "status", "label"} for event in events)
+
+
+async def test_parallel_research_runs_keep_evidence_traces_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_weather(city: str, forecast: bool = False) -> str:
+        return f"{city}: sunny (forecast={forecast})"
+
+    async def fake_maps(
+        origin: str,
+        destination: str,
+        mode: str = "driving",
+    ) -> str:
+        return f"{origin} -> {destination} ({mode})"
+
+    fake_weather.__name__ = "get_weather"
+    fake_maps.__name__ = "search_maps"
+    monkeypatch.setattr("app.agent.tools.research_tools.get_weather", fake_weather)
+    monkeypatch.setattr("app.agent.tools.research_tools.search_maps", fake_maps)
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = str(messages[0])
+        weather_topic = "天气主题" in prompt
+        actual_tool = "get_weather" if weather_topic else "search_maps"
+        if not _tool_returns(messages, actual_tool):
+            if weather_topic:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="get_weather",
+                            args={"city": "北京"},
+                            tool_call_id="weather-evidence",
+                        )
+                    ]
+                )
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="search_maps",
+                        args={
+                            "origin": "北京站",
+                            "destination": "八达岭",
+                            "mode": "transit",
+                        },
+                        tool_call_id="maps-evidence",
+                    )
+                ]
+            )
+
+        return _final(
+            info,
+            {
+                "topic": "天气" if weather_topic else "交通",
+                "claims": [
+                    {
+                        "claim": "主题事实已核验",
+                        "status": "verified",
+                        "source_urls": [],
+                        # Deliberately claim both tokens. Host attestation must keep
+                        # only the tool that executed in this specific child run.
+                        "tool_evidence": ["get_weather", "search_maps"],
+                    }
+                ],
+                "sources": [],
+                "media": [],
+                "unresolved": [],
+            },
+        )
+
+    agent = build_research_agent(model=FunctionModel(model))
+    state = ResearchRequestState()
+    with bind_research_request_state(state):
+        weather_result, maps_result = await asyncio.gather(
+            agent.run("天气主题"),
+            agent.run("交通主题"),
+        )
+
+    assert weather_result.output.claims[0].tool_evidence == ["get_weather"]
+    assert maps_result.output.claims[0].tool_evidence == ["search_maps"]
+    assert len(state.research_runs) == 2
 
 
 async def test_model_cannot_self_certify_tool_name_without_execution() -> None:

@@ -18,6 +18,7 @@ Reference:
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
@@ -43,7 +44,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.ui.vercel_ai import VercelAIAdapter
+from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage, TextUIPart, UIMessage
 
 from app.agent.capabilities.travel import build_travel_capabilities
@@ -57,7 +58,7 @@ from app.agent.executor import (
     AgentExecutor,
     AgentStreamTerminalKind,
 )
-from app.agent.prompts import MAIN_TRAVEL_INSTRUCTIONS
+from app.agent.prompts import MAIN_AGENT_INSTRUCTIONS
 from app.agent.research_runtime import (
     ResearchRequestState,
     bind_research_request_state,
@@ -66,14 +67,28 @@ from app.agent.usage import AgentModelCallUsage, AgentTokenUsage, AgentUsage
 from app.core.config import settings
 from app.infra.vercel_protocol import decode_event, encode_event
 
-_GENERIC_CHAT_INSTRUCTIONS = (
-    "你是「行伴」，一位专业的旅行规划助手。"
-    "用用户使用的语言简洁、准确地回答问题；不编造实时信息。"
-    "对于问候和简单问题直接简短回答，不展开冗长推理。"
-    "如果公开 reasoning，必须使用用户的语言；中文用户使用简洁自然的中文，不输出英文思考片段。"
-    "隐藏工具、搜索、模型和框架的内部执行细节，不向用户复述工具名、参数、"
-    "原始查询、provider、重试或内部错误；只输出自然语言的结果、必要的不确定性和来源。"
-)
+logger = logging.getLogger(__name__)
+
+
+class _ProductVercelAIEventStream(VercelAIEventStream):
+    async def on_error(self, error: Exception) -> AsyncIterator[Any]:
+        logger.error(
+            "vercel ai event stream failed: %s: %s",
+            type(error).__name__,
+            error,
+        )
+        async for chunk in super().on_error(error):
+            yield chunk
+
+
+class _ProductVercelAIAdapter(VercelAIAdapter):
+    def build_event_stream(self) -> VercelAIEventStream:
+        return _ProductVercelAIEventStream(
+            self.run_input,
+            accept=self.accept,
+            sdk_version=self.sdk_version,
+            server_message_id=self.server_message_id,
+        )
 
 _MODEL_TIMEOUT_STATUS_CODES = frozenset({408, 504})
 
@@ -104,6 +119,7 @@ def _model_rpc_settings(*, enable_thinking: bool = True) -> ModelSettings:
     return ModelSettings(
         timeout=settings.LITELLM_CLIENT_TIMEOUT_SECONDS,
         thinking=True if enable_thinking else False,
+        parallel_tool_calls=True,
     )
 
 
@@ -172,9 +188,7 @@ def get_chat_agent(enable_web_search: bool = True) -> Agent:
         # Literal guidance remains a cache-stable prefix. The callable is resolved
         # at run time, so a cached Agent never freezes the process-start clock.
         instructions=(
-            MAIN_TRAVEL_INSTRUCTIONS
-            if settings.TRAVEL_CORE_ENABLED
-            else _GENERIC_CHAT_INSTRUCTIONS,
+            MAIN_AGENT_INSTRUCTIONS,
             _runtime_clock_instructions,
         ),
         capabilities=build_travel_capabilities(
@@ -531,7 +545,7 @@ async def stream_vercel_events(
     adapter emits its ``finish`` chunk — so the Product layer can COMMIT the durable
     assistant message there (terminal gate: finish never precedes Product COMMIT).
     """
-    adapter = VercelAIAdapter(
+    adapter = _ProductVercelAIAdapter(
         agent=get_chat_agent(request.enable_web_search),
         run_input=SubmitMessage(
             id=str(request.request_id),
@@ -555,38 +569,45 @@ async def stream_vercel_events(
     native_event_count = 0
 
     async def _on_complete(result: AgentRunResult[Any]) -> None:
-        nonlocal source_urls
-        source_urls = _source_urls(result)
-        # #region agent log
-        debug_runtime_log(
-            hypothesis_id="H4",
-            location="pydantic_executor.py:_on_complete",
-            message="adapter received completed agent result",
-            data={
-                "output_type": type(result.output).__name__,
-                "main_requests": result.usage.requests,
-                "research_runs": len(research_state.research_runs),
-                "source_urls": len(source_urls),
-            },
-            run_id=str(request.request_id),
-        )
-        # #endregion agent log
-        if on_complete is None:
-            return
-        output = result.output
-        if isinstance(output, str) and output.strip():
-            await on_complete(
-                AgentExecutionResult(
-                    content=output,
-                    reasoning_summary=_to_reasoning_summary(result),
-                    source_urls=source_urls,
-                    usage=_to_agent_usage(
-                        result,
-                        logical_model=settings.LLM_LOGICAL_MODEL,
-                        research_state=research_state,
-                    ),
-                )
+        try:
+            nonlocal source_urls
+            source_urls = _source_urls(result)
+            # #region agent log
+            debug_runtime_log(
+                hypothesis_id="H4",
+                location="pydantic_executor.py:_on_complete",
+                message="adapter received completed agent result",
+                data={
+                    "output_type": type(result.output).__name__,
+                    "main_requests": result.usage.requests,
+                    "research_runs": len(research_state.research_runs),
+                    "source_urls": len(source_urls),
+                },
+                run_id=str(request.request_id),
             )
+            # #endregion agent log
+            if on_complete is None:
+                return
+            output = result.output
+            if isinstance(output, str) and output.strip():
+                await on_complete(
+                    AgentExecutionResult(
+                        content=output,
+                        reasoning_summary=_to_reasoning_summary(result),
+                        source_urls=source_urls,
+                        usage=_to_agent_usage(
+                            result,
+                            logical_model=settings.LLM_LOGICAL_MODEL,
+                            research_state=research_state,
+                        ),
+                    )
+                )
+        except Exception:
+            logger.exception(
+                "chat stream completion callback failed",
+                extra={"request_id": str(request.request_id)},
+            )
+            raise
 
     native_events = _project_raw_reasoning(
         adapter.run_stream_native(
@@ -684,20 +705,52 @@ async def stream_vercel_events(
         on_complete=_on_complete,
     )
 
-    async for chunk in adapter.encode_stream(events):
-        payload = decode_event(chunk)
-        if payload is not None and payload.get("type") == "finish":
-            for url in source_urls:
-                yield encode_event("source-url", sourceId=url, url=url)
-        if on_terminal is not None:
-            if payload is not None and payload.get("type") in {"abort", "error"}:
-                kind = payload["type"]
-                reason = (
-                    stream_error_code
-                    if kind == "error"
-                    else payload.get("reason")
+    chunk_iterator = adapter.encode_stream(events).__aiter__()
+    chunk_task: asyncio.Task[str] | None = asyncio.create_task(chunk_iterator.__anext__())
+    progress_task: asyncio.Task[dict[str, str]] = asyncio.create_task(
+        research_state.progress_queue.get()
+    )
+    try:
+        while chunk_task is not None:
+            done, _ = await asyncio.wait(
+                {chunk_task, progress_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if progress_task in done:
+                yield encode_event(
+                    "data-research-progress",
+                    data=progress_task.result(),
                 )
-                replacement = await on_terminal(kind, reason)
-                yield replacement
-                continue
-        yield chunk
+                progress_task = asyncio.create_task(research_state.progress_queue.get())
+
+            if chunk_task in done:
+                try:
+                    chunk = chunk_task.result()
+                except StopAsyncIteration:
+                    chunk_task = None
+                    continue
+                chunk_task = asyncio.create_task(chunk_iterator.__anext__())
+                payload = decode_event(chunk)
+                if payload is not None and payload.get("type") == "finish":
+                    for url in source_urls:
+                        yield encode_event("source-url", sourceId=url, url=url)
+                if on_terminal is not None:
+                    if payload is not None and payload.get("type") in {"abort", "error"}:
+                        kind = payload["type"]
+                        reason = (
+                            stream_error_code
+                            if kind == "error"
+                            else payload.get("reason")
+                        )
+                        replacement = await on_terminal(kind, reason)
+                        yield replacement
+                        continue
+                yield chunk
+    finally:
+        if chunk_task is not None:
+            chunk_task.cancel()
+        progress_task.cancel()
+        await asyncio.gather(
+            *(task for task in (chunk_task, progress_task) if task is not None),
+            return_exceptions=True,
+        )

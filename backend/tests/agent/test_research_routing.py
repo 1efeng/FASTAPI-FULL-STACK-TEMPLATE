@@ -125,7 +125,70 @@ async def test_normal_full_plan_can_finish_without_research_agent() -> None:
     assert _tool_calls(seen, "research_agent") == 0
 
 
-async def test_complex_research_delegates_once_then_main_decides() -> None:
+async def test_beijing_three_day_plan_can_delegate_independent_topics_together() -> None:
+    seen: list[ModelMessage] = []
+
+    def research_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = str(messages[0])
+        topic = "景点预约开放" if "景点" in prompt else "城际与八达岭交通"
+        return _research_final(
+            info,
+            {
+                "topic": topic,
+                "summary": f"{topic}核验完成",
+                "claims": [],
+                "sources": [],
+                "media": [],
+                "unresolved": [],
+            },
+        )
+
+    def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        seen[:] = messages
+        returns = _tool_returns(messages, "research_agent")
+        if returns:
+            assert len(returns) == 2
+            return ModelResponse(parts=[TextPart("Main 根据两个 Findings 修订北京三日计划")])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="research_agent",
+                    args={
+                        "objective": "核验北京核心景点预约、开放和参观执行条件",
+                        "context": "Candidate Plan: D1 天坛前门；D2 故宫景山",
+                        "constraints": ["2026-08-26 至 2026-08-28", "2 人"],
+                    },
+                    tool_call_id="beijing-attractions",
+                ),
+                ToolCallPart(
+                    tool_name="research_agent",
+                    args={
+                        "objective": "核验郑州往返北京及八达岭当天交通执行条件",
+                        "context": "Candidate Plan: D3 八达岭后返郑州",
+                        "constraints": ["总预算 RMB 5000"],
+                    },
+                    tool_call_id="beijing-transport",
+                ),
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(main_model),
+        capabilities=build_travel_capabilities(
+            research_model=FunctionModel(research_model)
+        ),
+    )
+    result = await agent.run(
+        "2026-08-26 郑州出发，两个人，北京三日经典景点，总预算 RMB 5000"
+    )
+
+    assert "修订北京三日计划" in result.output
+    assert _tool_calls(seen, "research_agent") == 2
+    assert len(_tool_returns(seen, "research_agent")) == 2
+
+
+async def test_one_coherent_pass_topic_uses_one_research_agent() -> None:
     seen: list[ModelMessage] = []
 
     def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -163,6 +226,51 @@ async def test_complex_research_delegates_once_then_main_decides() -> None:
     assert result.output == "Main 最终选择方案 A"
     assert _tool_calls(seen, "research_agent") == 1
     assert len(_tool_returns(seen, "research_agent")) == 1
+
+
+async def test_dependent_research_topic_is_delegated_after_first_result() -> None:
+    seen: list[ModelMessage] = []
+
+    def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        seen[:] = messages
+        returns = _tool_returns(messages, "research_agent")
+        if not returns:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="research_agent",
+                        args={"objective": "核验故宫当日是否可预约"},
+                        tool_call_id="dependency-a",
+                    )
+                ]
+            )
+        if len(returns) == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="research_agent",
+                        args={
+                            "objective": "研究故宫不可预约时的同区域替代方案",
+                            "context": "第一阶段 Findings 显示故宫不可预约",
+                        },
+                        tool_call_id="dependency-b",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("Main 根据两阶段 Findings 完成替代计划")])
+
+    agent = Agent(
+        FunctionModel(main_model),
+        capabilities=build_travel_capabilities(
+            research_model=FunctionModel(_research_model)
+        ),
+    )
+    result = await agent.run("如果故宫订不到就给我同区域替代方案")
+
+    assert "替代计划" in result.output
+    assert _tool_calls(seen, "research_agent") == 2
+    assert len(_tool_returns(seen, "research_agent")) == 2
 
 
 async def test_existing_plan_modification_does_not_auto_research() -> None:

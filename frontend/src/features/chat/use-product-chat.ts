@@ -203,7 +203,7 @@ export function useProductChat({
       })
     }
   }, [queryClient, stopChat])
-  const { resumeStream, setMessages, status } = chat
+  const { messages, resumeStream, setMessages, status } = chat
 
   useEffect(() => {
     const previousConversationId = reconcileRef.current.previousConversationId
@@ -225,7 +225,8 @@ export function useProductChat({
 
     if (
       reconcileRef.current.hydratedConversationId !== conversationId &&
-      status === "ready"
+      status === "ready" &&
+      conversationQuery.data.messages.length >= messages.length
     ) {
       setMessages(toUIMessages(conversationQuery.data.messages))
       reconcileRef.current.hydratedConversationId = conversationId
@@ -283,6 +284,7 @@ export function useProductChat({
     conversationQuery.data,
     queryClient,
     resumeStream,
+    messages.length,
     setMessages,
     status,
   ])

@@ -91,6 +91,61 @@ async def test_product_usage_merges_main_and_research_agent_model_calls() -> Non
     assert [call.call_index for call in usage.model_calls] == [0, 1]
 
 
+async def test_product_usage_merges_multiple_research_agent_runs() -> None:
+    def main_model(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> ModelResponse:
+        del messages, info
+        return ModelResponse(
+            parts=[TextPart("main final")],
+            usage=RequestUsage(input_tokens=100, output_tokens=20),
+            provider_response_id="main-multi",
+        )
+
+    main_result = await Agent(FunctionModel(main_model)).run("hello")
+    research_a = ModelResponse(
+        parts=[TextPart("research A")],
+        usage=RequestUsage(input_tokens=30, output_tokens=5),
+        provider_response_id="research-a",
+    )
+    research_b = ModelResponse(
+        parts=[TextPart("research B")],
+        usage=RequestUsage(input_tokens=40, output_tokens=6),
+        provider_response_id="research-b",
+    )
+    state = ResearchRequestState(
+        research_runs=[
+            ResearchUsageObservation(
+                responses=(research_a,),
+                requests=1,
+                tool_calls=2,
+            ),
+            ResearchUsageObservation(
+                responses=(research_b,),
+                requests=1,
+                tool_calls=3,
+            ),
+        ]
+    )
+
+    usage = _to_agent_usage(
+        main_result,
+        logical_model="travel-agent-llm",
+        research_state=state,
+    )
+
+    assert usage.model_requests == 3
+    assert usage.tool_calls == main_result.usage.tool_calls + 5
+    assert usage.input_tokens == 170
+    assert usage.output_tokens == 31
+    assert usage.total_tokens == 201
+    assert {call.provider_response_id for call in usage.model_calls} == {
+        "main-multi",
+        "research-a",
+        "research-b",
+    }
+
+
 async def test_executor_end_to_end_includes_research_agent_usage() -> None:
     research_calls = 0
 

@@ -4,8 +4,8 @@ model_list:
       model: openai/deepseek-v4-flash
       api_base: os.environ/DEEPSEEK_BASE_URL
       api_key: os.environ/DEEPSEEK_API_KEY
-      timeout: 60
-      stream_timeout: 60
+      timeout: 120
+      stream_timeout: 120
       rpm: 600
       tpm: 1000000
       max_parallel_requests: 100
@@ -25,8 +25,9 @@ model_list:
       model: openai/doubao-seed-2-0-lite-260428
       api_base: os.environ/DOUBAO_BASE_URL
       api_key: os.environ/DOUBAO_API_KEY
-      timeout: 60
-      stream_timeout: 60
+      additional_drop_params: ["metadata"]
+      timeout: 120
+      stream_timeout: 120
       rpm: 600
       tpm: 1000000
       max_parallel_requests: 100
@@ -50,7 +51,7 @@ router_settings:
 
 litellm_settings:
   drop_params: true
-  request_timeout: 60
+  request_timeout: 120
   set_verbose: false
 
 general_settings:

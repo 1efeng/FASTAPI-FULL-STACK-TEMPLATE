@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -38,6 +39,8 @@ from app.modules.conversation.model import Conversation, Message, MessageRole
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.request_run.model import RequestRun, RequestRunStatus
 from app.modules.request_run.repository import RequestRunRepository
+
+logger = logging.getLogger(__name__)
 
 ChatErrorCode = Literal[
     "CONVERSATION_NOT_FOUND",
@@ -850,6 +853,10 @@ class ChatService:
                 except TimeoutError:
                     await events.put(_StreamingDeadlineExceeded())
                 except BaseException as exc:
+                    logger.exception(
+                        "chat stream execution failed after request admission",
+                        extra={"request_id": str(request_id), "error_type": type(exc).__name__},
+                    )
                     await events.put(exc)
                 finally:
                     # #region agent log

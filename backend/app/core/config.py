@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     REQUEST_DEADLINE_SECONDS: PositiveFloat = 300.0
     # Runtime protection hierarchy: tool/provider bounds are tighter than the
     # model RPC bound, which is tighter than the Product request deadline.
-    LITELLM_CLIENT_TIMEOUT_SECONDS: PositiveFloat = 150.0
+    LITELLM_CLIENT_TIMEOUT_SECONDS: PositiveFloat = 240.0
     MAIN_MODEL_REQUEST_LIMIT: PositiveInt = 8
     MAIN_TOOL_CALL_LIMIT: PositiveInt = 6
     RESEARCH_AGENT_MODEL_REQUEST_LIMIT: PositiveInt = 8

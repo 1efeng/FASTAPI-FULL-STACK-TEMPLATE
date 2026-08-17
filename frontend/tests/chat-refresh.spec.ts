@@ -251,6 +251,8 @@ test.describe("Chat conversation refresh", () => {
       new RegExp(`/chat\\?conversation=${conversationId}$`),
     )
     await expect(page.getByText("首条回复")).toBeVisible()
+    await page.waitForTimeout(500)
+    await expect(page.getByText("首条回复")).toBeVisible()
     await expect.poll(() => conversationPostCalls).toBe(0)
     await expect.poll(() => requestBody?.conversation_id).toBeNull()
   })
