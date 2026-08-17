@@ -12,8 +12,6 @@ import { handleError } from "@/utils"
 import useCustomToast from "./useCustomToast"
 
 const CHAT_STORAGE_KEYS = [
-  "travel_agent_conversation_id",
-  "travel_agent_request_id",
   "travel_agent_active_request",
 ] as const
 

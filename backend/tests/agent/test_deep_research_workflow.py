@@ -77,9 +77,7 @@ def test_production_deep_research_config_is_bounded_and_deferred() -> None:
 def test_research_worker_uses_only_shared_research_tools() -> None:
     names = {tool.name for tool in build_research_tools()}
     assert names == {
-        "web_search",
         "web_fetch",
-        "image_search",
         "search_maps",
         "get_weather",
     }

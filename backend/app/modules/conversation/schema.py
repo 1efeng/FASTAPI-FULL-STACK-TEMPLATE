@@ -33,7 +33,7 @@ class MessagePublic(BaseModel):
     role: str
     content: str
     reasoning_summary: str | None
-    reasoning_duration_ms: int | None
+    source_urls: list[str] = Field(default_factory=list)
     created_at: datetime
 
 

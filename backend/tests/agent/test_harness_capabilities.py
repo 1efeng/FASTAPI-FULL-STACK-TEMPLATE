@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic_ai import Tool
-from pydantic_ai.capabilities import AbstractCapability, Capability
+from pydantic_ai.capabilities import AbstractCapability, Capability, WebSearch
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
@@ -46,6 +46,8 @@ def test_travel_bundle_contains_skills_main_tools_and_deep_research() -> None:
     )
     workflow = next(item for item in capabilities if isinstance(item, DynamicWorkflow))
     gate = next(item for item in capabilities if isinstance(item, SingleWorkflowCallGate))
+    native_web_search = next(item for item in capabilities if isinstance(item, WebSearch))
+    assert native_web_search.native is not False
 
     skill_leaves = _leaf_capabilities(skills)
     assert {leaf.id for leaf in skill_leaves} == {
@@ -57,9 +59,7 @@ def test_travel_bundle_contains_skills_main_tools_and_deep_research() -> None:
 
     registered = {tool.name for tool in main_tools.tools if isinstance(tool, Tool)}
     assert registered == {
-        "web_search",
         "web_fetch",
-        "image_search",
         "search_maps",
         "get_weather",
         "calculate_budget",
@@ -96,9 +96,7 @@ def test_skill_tool_dependency_validation_fails_closed() -> None:
         validate_skill_tool_dependencies(
             selected_skills={"travel-planning"},
             available_tools={
-                "web_search",
                 "web_fetch",
-                "image_search",
                 "search_maps",
                 "get_weather",
                 "calculate_budget",

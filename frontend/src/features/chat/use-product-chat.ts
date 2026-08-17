@@ -2,172 +2,35 @@ import { useChat } from "@ai-sdk/react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { DefaultChatTransport, type UIMessage } from "ai"
 import { useCallback, useEffect, useMemo, useRef } from "react"
+import { apiFetch } from "@/lib/auth"
+import {
+  clearActiveRequest,
+  clearActiveRequestForConversation,
+  readActiveRequest,
+  saveActiveRequest,
+} from "./active-request-storage"
+import {
+  type ConversationDetail,
+  ConversationLoadError,
+  loadConversation,
+  toUIMessages,
+} from "./conversation-api"
 
-const CONVERSATION_KEY = "travel_agent_conversation_id"
-const REQUEST_KEY = "travel_agent_request_id"
-const ACTIVE_REQUEST_KEY = "travel_agent_active_request"
-const TOKEN_KEY = "access_token"
-
-type DurableMessage = {
-  id: string
-  role: "user" | "assistant"
-  content: string
-  reasoning_summary: string | null
-  reasoning_duration_ms: number | null
-  created_at: string
-}
-
-export type ProductUIMessage = UIMessage<{
-  reasoningDurationMs?: number
-}>
-
-type ConversationDetail = {
-  id: string
-  title: string | null
-  last_message_at: string | null
-  created_at: string
-  updated_at: string
-  messages: DurableMessage[]
-}
-
-type RequestRun = {
-  request_id: string
-  conversation_id: string
-  status: "running" | "completed" | "failed" | "cancelled"
-}
-
-type ActiveRequest = {
-  requestId: string
-  conversationId: string
-}
-
-class ConversationLoadError extends Error {
-  constructor(readonly status: number) {
-    super(`failed to load conversation: ${status}`)
-  }
-}
+export type ProductUIMessage = UIMessage
 
 type UseProductChatOptions = {
   conversationId?: string
+  enableWebSearch?: boolean
+  enableThinking?: boolean
   onConversationChange?: (conversationId: string) => void
   onConversationUnavailable?: () => void
 }
 
-function bearerToken(): string {
-  return localStorage.getItem(TOKEN_KEY) ?? ""
-}
-
-async function loadConversation(
-  conversationId: string,
-): Promise<ConversationDetail> {
-  const response = await fetch(`/api/v1/conversations/${conversationId}`, {
-    headers: { Authorization: `Bearer ${bearerToken()}` },
-  })
-  if (!response.ok) {
-    throw new ConversationLoadError(response.status)
-  }
-  return (await response.json()) as ConversationDetail
-}
-
-function toUIMessages(messages: DurableMessage[]): ProductUIMessage[] {
-  return messages.map((message) => ({
-    id: message.id,
-    role: message.role,
-    ...(typeof message.reasoning_duration_ms === "number"
-      ? { metadata: { reasoningDurationMs: message.reasoning_duration_ms } }
-      : {}),
-    parts: [
-      ...(message.role === "assistant" && message.reasoning_summary
-        ? ([
-            {
-              type: "reasoning",
-              text: message.reasoning_summary,
-              state: "done",
-            },
-          ] as const)
-        : []),
-      { type: "text", text: message.content, state: "done" } as const,
-    ],
-  }))
-}
-
-function mergeDurableReasoningMetadata(
-  messages: ProductUIMessage[],
-  durableMessages: DurableMessage[],
-): ProductUIMessage[] {
-  const durableAssistants = durableMessages.filter(
-    (message) => message.role === "assistant",
-  )
-  let assistantIndex = 0
-
-  return messages.map((message) => {
-    if (message.role !== "assistant") return message
-
-    const durableMessage = durableAssistants[assistantIndex]
-    assistantIndex += 1
-    if (typeof durableMessage?.reasoning_duration_ms !== "number") {
-      return message
-    }
-
-    return {
-      ...message,
-      metadata: {
-        ...message.metadata,
-        reasoningDurationMs: durableMessage.reasoning_duration_ms,
-      },
-    }
-  })
-}
-
-function saveActiveRequest(requestId: string, conversationId: string): void {
-  const activeRequest: ActiveRequest = { requestId, conversationId }
-  localStorage.setItem(ACTIVE_REQUEST_KEY, JSON.stringify(activeRequest))
-  // Keep the old key during the M8 spike so an already-open tab can still be
-  // refreshed after deploying this version.
-  localStorage.setItem(REQUEST_KEY, requestId)
-}
-
-function readActiveRequest(conversationId: string): ActiveRequest | null {
-  const encoded = localStorage.getItem(ACTIVE_REQUEST_KEY)
-  if (encoded) {
-    try {
-      const activeRequest = JSON.parse(encoded) as Partial<ActiveRequest>
-      if (
-        activeRequest.conversationId === conversationId &&
-        typeof activeRequest.requestId === "string"
-      ) {
-        return {
-          requestId: activeRequest.requestId,
-          conversationId,
-        }
-      }
-      return null
-    } catch {
-      localStorage.removeItem(ACTIVE_REQUEST_KEY)
-    }
-  }
-
-  return null
-}
-
-function clearActiveRequest(activeRequest: ActiveRequest): void {
-  const current = readActiveRequest(activeRequest.conversationId)
-  if (current?.requestId !== activeRequest.requestId) return
-  localStorage.removeItem(ACTIVE_REQUEST_KEY)
-  if (localStorage.getItem(REQUEST_KEY) === activeRequest.requestId) {
-    localStorage.removeItem(REQUEST_KEY)
-  }
-}
-
-async function loadRequestRun(requestId: string): Promise<RequestRun | null> {
-  const response = await fetch(`/api/v1/chat/requests/${requestId}`, {
-    headers: { Authorization: `Bearer ${bearerToken()}` },
-  })
-  if (response.status === 404) return null
-  if (!response.ok) {
-    throw new Error(`failed to load request status: ${response.status}`)
-  }
-  return (await response.json()) as RequestRun
+type ReconcileState = {
+  hydratedConversationId: string | null
+  attemptedRequestKey: string | null
+  unavailableRequestId: string | null
+  previousConversationId: string | undefined
 }
 
 function productChatFetch(
@@ -177,7 +40,7 @@ function productChatFetch(
   onReconnectUnavailable?: () => void,
 ): typeof globalThis.fetch {
   return async (input, init) => {
-    const response = await fetch(input, init)
+    const response = await apiFetch(input, init)
     if (init?.method === "GET" && response.status === 204) {
       onReconnectUnavailable?.()
     }
@@ -202,17 +65,20 @@ function productChatFetch(
  */
 export function useProductChat({
   conversationId,
+  enableWebSearch = true,
+  enableThinking = true,
   onConversationChange,
   onConversationUnavailable,
 }: UseProductChatOptions = {}) {
   const queryClient = useQueryClient()
   const requestIdRef = useRef<string | null>(null)
   const conversationIdRef = useRef(conversationId)
-  const hydratedConversationRef = useRef<string | null>(null)
-  const resumeAttemptedRef = useRef<string | null>(null)
-  const unavailableReconnectRef = useRef<string | null>(null)
-  const reconcileConversationRef = useRef<string | null>(null)
-  const previousConversationIdRef = useRef(conversationId)
+  const reconcileRef = useRef<ReconcileState>({
+    hydratedConversationId: null,
+    attemptedRequestKey: null,
+    unavailableRequestId: null,
+    previousConversationId: conversationId,
+  })
 
   conversationIdRef.current = conversationId
 
@@ -234,7 +100,8 @@ export function useProductChat({
           (resolvedConversationId) => {
             if (resolvedConversationId !== conversationIdRef.current) {
               conversationIdRef.current = resolvedConversationId
-              hydratedConversationRef.current = resolvedConversationId
+              reconcileRef.current.hydratedConversationId =
+                resolvedConversationId
               onConversationChange?.(resolvedConversationId)
               void queryClient.invalidateQueries({
                 queryKey: ["conversations"],
@@ -245,12 +112,9 @@ export function useProductChat({
             requestIdRef.current = requestId
           },
           () => {
-            unavailableReconnectRef.current = requestIdRef.current
+            reconcileRef.current.unavailableRequestId = requestIdRef.current
           },
         ),
-        headers: () => ({
-          Authorization: `Bearer ${bearerToken()}`,
-        }),
         prepareSendMessagesRequest: async ({ body, headers, messages, id }) => {
           const resolvedConversationId = conversationIdRef.current ?? null
           const idempotencyKey =
@@ -264,6 +128,8 @@ export function useProductChat({
               id,
               messages,
               conversation_id: resolvedConversationId,
+              enable_web_search: enableWebSearch,
+              enable_thinking: enableThinking,
             },
             headers: {
               ...(headers as Record<string, string> | undefined),
@@ -284,26 +150,23 @@ export function useProductChat({
               : "/api/v1/chat/stream",
             headers: {
               ...(headers as Record<string, string> | undefined),
-              Authorization: `Bearer ${bearerToken()}`,
             },
           }
         },
       }),
-    [onConversationChange, queryClient],
+    [enableThinking, enableWebSearch, onConversationChange, queryClient],
   )
 
   const chat = useChat<ProductUIMessage>({
     transport,
-    onFinish: ({ isAbort, isDisconnect, isError }) => {
+    onFinish: ({ isAbort, isDisconnect }) => {
       const currentConversationId = conversationIdRef.current
       // Browser refresh/navigation aborts only the subscriber. Preserve the
       // active request hint so the next page instance can reconnect.
       if (!currentConversationId || isAbort || isDisconnect) return
       const activeRequest = readActiveRequest(currentConversationId)
       if (activeRequest) clearActiveRequest(activeRequest)
-      if (!isError) {
-        reconcileConversationRef.current = currentConversationId
-      }
+      requestIdRef.current = null
       void queryClient.invalidateQueries({
         queryKey: ["conversation", currentConversationId],
       })
@@ -319,10 +182,12 @@ export function useProductChat({
     const requestId = requestIdRef.current ?? activeRequest?.requestId ?? null
     if (!requestId) return
 
-    const response = await fetch(`/api/v1/chat/requests/${requestId}/cancel`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${bearerToken()}` },
-    })
+    const response = await apiFetch(
+      `/api/v1/chat/requests/${requestId}/cancel`,
+      {
+        method: "POST",
+      },
+    )
     if (!response.ok) {
       throw new Error(`failed to cancel request: ${response.status}`)
     }
@@ -341,60 +206,29 @@ export function useProductChat({
   const { resumeStream, setMessages, status } = chat
 
   useEffect(() => {
-    if (
-      previousConversationIdRef.current !== conversationId &&
-      conversationId === undefined
-    ) {
-      hydratedConversationRef.current = null
-      resumeAttemptedRef.current = null
+    const previousConversationId = reconcileRef.current.previousConversationId
+    if (previousConversationId !== conversationId) {
+      if (previousConversationId) {
+        clearActiveRequestForConversation(previousConversationId)
+      }
+      reconcileRef.current.hydratedConversationId = null
+      reconcileRef.current.attemptedRequestKey = null
+      reconcileRef.current.unavailableRequestId = null
       requestIdRef.current = null
-      setMessages([])
+      if (conversationId === undefined) setMessages([])
     }
-    previousConversationIdRef.current = conversationId
+    reconcileRef.current.previousConversationId = conversationId
   }, [conversationId, setMessages])
-
-  useEffect(() => {
-    if (
-      !conversationId ||
-      reconcileConversationRef.current !== conversationId ||
-      !conversationQuery.data ||
-      conversationQuery.isFetching ||
-      status !== "ready"
-    ) {
-      return
-    }
-
-    const durableAssistantCount = conversationQuery.data.messages.filter(
-      (message) => message.role === "assistant",
-    ).length
-    const uiAssistantCount = chat.messages.filter(
-      (message) => message.role === "assistant",
-    ).length
-    if (durableAssistantCount < uiAssistantCount) return
-
-    setMessages((messages) =>
-      mergeDurableReasoningMetadata(messages, conversationQuery.data.messages),
-    )
-    reconcileConversationRef.current = null
-  }, [
-    chat.messages,
-    conversationId,
-    conversationQuery.data,
-    conversationQuery.isFetching,
-    setMessages,
-    status,
-  ])
 
   useEffect(() => {
     if (!conversationId || !conversationQuery.data) return
 
-    localStorage.setItem(CONVERSATION_KEY, conversationId)
     if (
-      hydratedConversationRef.current !== conversationId &&
+      reconcileRef.current.hydratedConversationId !== conversationId &&
       status === "ready"
     ) {
       setMessages(toUIMessages(conversationQuery.data.messages))
-      hydratedConversationRef.current = conversationId
+      reconcileRef.current.hydratedConversationId = conversationId
     }
 
     const activeRequest = readActiveRequest(conversationId)
@@ -402,52 +236,46 @@ export function useProductChat({
 
     const attemptKey = `${conversationId}:${activeRequest.requestId}`
     if (
-      resumeAttemptedRef.current === attemptKey ||
-      hydratedConversationRef.current !== conversationId ||
+      reconcileRef.current.attemptedRequestKey === attemptKey ||
+      reconcileRef.current.hydratedConversationId !== conversationId ||
       status !== "ready"
     ) {
       return
     }
-    resumeAttemptedRef.current = attemptKey
+    reconcileRef.current.attemptedRequestKey = attemptKey
     requestIdRef.current = activeRequest.requestId
-    unavailableReconnectRef.current = null
+    reconcileRef.current.unavailableRequestId = null
 
     void (async () => {
+      const reconcileDurable = async () => {
+        const durableConversation = await loadConversation(conversationId)
+        clearActiveRequest(activeRequest)
+        requestIdRef.current = null
+        reconcileRef.current.unavailableRequestId = null
+        queryClient.setQueryData(
+          ["conversation", conversationId],
+          durableConversation,
+        )
+        setMessages(toUIMessages(durableConversation.messages))
+      }
       try {
         await resumeStream()
-        if (unavailableReconnectRef.current === activeRequest.requestId) {
-          const [reconciledRequestRun, durableConversation] = await Promise.all(
-            [
-              loadRequestRun(activeRequest.requestId),
-              loadConversation(conversationId),
-            ],
-          )
-          if (
-            reconciledRequestRun &&
-            reconciledRequestRun.conversation_id !== conversationId
-          ) {
-            return
-          }
-
+        if (
+          reconcileRef.current.unavailableRequestId === activeRequest.requestId
+        ) {
           // A 204 means there is no active transport to reattach to. Product
-          // state and durable history are authoritative even when a terminal
-          // stream event was lost or the producer disappeared.
-          clearActiveRequest(activeRequest)
-          requestIdRef.current = null
-          unavailableReconnectRef.current = null
-          queryClient.setQueryData(
-            ["conversation", conversationId],
-            durableConversation,
-          )
-          setMessages(toUIMessages(durableConversation.messages))
+          // state and durable history are authoritative when the stream ended
+          // before the browser received its terminal event.
+          await reconcileDurable()
           return
         }
         await queryClient.invalidateQueries({
           queryKey: ["conversation", conversationId],
         })
       } catch {
-        // useChat owns reconnect transport errors. Status/history refetch on a
-        // later visit remains the durable fallback for validation failures.
+        // Reconnect failures fall back to durable history so the UI never stays
+        // half-hydrated with a stale active-request hint.
+        await reconcileDurable()
       }
     })()
   }, [
@@ -468,12 +296,8 @@ export function useProductChat({
       return
     }
 
-    if (localStorage.getItem(CONVERSATION_KEY) === conversationId) {
-      localStorage.removeItem(CONVERSATION_KEY)
-    }
-    localStorage.removeItem(REQUEST_KEY)
-    localStorage.removeItem(ACTIVE_REQUEST_KEY)
-    hydratedConversationRef.current = null
+    clearActiveRequestForConversation(conversationId)
+    reconcileRef.current.hydratedConversationId = null
     if (status === "ready") setMessages([])
     onConversationUnavailable?.()
   }, [

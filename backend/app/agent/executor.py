@@ -2,7 +2,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from app.agent.usage import AgentUsage
 
@@ -38,13 +38,15 @@ class AgentExecutionRequest:
     message: str
     history: tuple[AgentMessage, ...]
     deadline_at: datetime
+    enable_web_search: bool = True
+    enable_thinking: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class AgentExecutionResult:
     content: str
     reasoning_summary: str | None = None
-    reasoning_duration_ms: int | None = None
+    source_urls: tuple[str, ...] = ()
     usage: AgentUsage = field(default_factory=AgentUsage)
 
 
@@ -87,7 +89,12 @@ def stream_vercel_events(
     ]
     | None = None,
 ) -> AsyncIterator[str]:
-    """Stream Vercel AI SDK data-stream SSE strings (framework-neutral port).
+    """Stream a chat turn as Vercel AI UI protocol SSE strings.
+
+    This is a UI protocol adapter, not a framework-neutral domain event port.
+    The framework-neutral boundary between Product Runtime and Agent execution
+    is ``AgentExecutor.execute``; this function binds the additional streaming
+    contract to the Vercel AI SDK data stream format.
 
     Delegates to the PydanticAI ``VercelAIAdapter``; ``on_complete`` receives the
     framework-neutral final plus an optional Product-visible reasoning summary and
@@ -96,14 +103,3 @@ def stream_vercel_events(
     from app.agent.pydantic_executor import stream_vercel_events as _stream
 
     return _stream(request, on_complete=on_complete, on_terminal=on_terminal)
-
-
-async def dispatch_vercel_spike(request: Any) -> Any:
-    """Dispatch the temporary UI protocol spike without leaking Agent types.
-
-    This is not the production Product lifecycle path. The lazy import keeps
-    PydanticAI out of Product modules and out of this framework-neutral port.
-    """
-    from app.agent.pydantic_executor import dispatch_vercel_spike as _dispatch
-
-    return await _dispatch(request)

@@ -8,8 +8,6 @@ import {
   useState,
 } from "react"
 
-const CONVERSATION_KEY = "travel_agent_conversation_id"
-const REQUEST_KEY = "travel_agent_request_id"
 const ACTIVE_REQUEST_KEY = "travel_agent_active_request"
 
 type ChatNavigationContextValue = {
@@ -27,8 +25,6 @@ export function ChatNavigationProvider({ children }: { children: ReactNode }) {
   const [isNavigationLocked, setNavigationLocked] = useState(false)
 
   const startNewConversation = useCallback(() => {
-    localStorage.removeItem(CONVERSATION_KEY)
-    localStorage.removeItem(REQUEST_KEY)
     localStorage.removeItem(ACTIVE_REQUEST_KEY)
     void navigate({ to: "/chat", search: {}, replace: true })
   }, [navigate])

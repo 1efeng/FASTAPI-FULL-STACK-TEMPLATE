@@ -5,6 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     CheckConstraint,
     DateTime,
@@ -84,10 +85,10 @@ class Message(BaseModel):
         default=None,
         comment="可公开展示的模型 reasoning summary；仅 assistant 可写",
     )
-    reasoning_duration_ms: Mapped[int | None] = mapped_column(
-        BigInteger,
-        default=None,
-        comment="公开 reasoning 流片段的累计活跃时长（毫秒）；仅 assistant 可写",
+    source_urls: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+        comment="assistant 实际使用的公开来源 URL 列表",
     )
 
     __table_args__ = (
@@ -98,12 +99,6 @@ class Message(BaseModel):
         CheckConstraint(
             "role = 'assistant' OR reasoning_summary IS NULL",
             name="ck_message_reasoning_summary_assistant_only",
-        ),
-        CheckConstraint(
-            "reasoning_duration_ms IS NULL OR "
-            "(role = 'assistant' AND reasoning_summary IS NOT NULL "
-            "AND reasoning_duration_ms >= 0)",
-            name="ck_message_reasoning_duration",
         ),
         UniqueConstraint("seq", name="uq_message_seq"),
         UniqueConstraint("request_id", "role", name="uq_message_request_role"),

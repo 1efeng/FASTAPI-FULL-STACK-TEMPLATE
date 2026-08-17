@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelMessage,
@@ -23,7 +22,6 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from app.agent.capabilities.travel import build_travel_capabilities
-from app.core.config import settings
 
 
 def _tool_calls(messages: list[ModelMessage], name: str) -> int:
@@ -60,6 +58,28 @@ def _workflow(code: str, call_id: str) -> ToolCallPart:
         tool_call_id=call_id,
     )
 
+
+def _deterministic_worker_model(topic: str) -> FunctionModel:
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del messages
+        assert info.output_tools
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name=info.output_tools[0].name,
+                    args={
+                        "topic": topic,
+                        "claims": [],
+                        "sources": [],
+                        "media": [],
+                        "unresolved": [],
+                    },
+                    tool_call_id="worker-final",
+                )
+            ]
+        )
+
+    return FunctionModel(model)
 
 def _agent(
     parent_model: Callable[[list[ModelMessage], AgentInfo], ModelResponse],
@@ -128,151 +148,6 @@ async def test_complete_plan_without_fresh_fact_dependency_uses_zero_workflow() 
     assert _tool_calls(messages, "web_search") == 0
 
 
-async def test_single_current_fact_uses_main_web_search_without_workflow(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "APP_ENV", "test")
-
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        if _tool_returns(messages, "web_search"):
-            return ModelResponse(parts=[TextPart("已根据当前搜索结果回答。")])
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="web_search",
-                    args={"query": "故宫 当前 预约 官方"},
-                    tool_call_id="search-1",
-                )
-            ]
-        )
-
-    result = await _agent(parent).run("故宫现在怎么预约？")
-    messages = result.all_messages()
-
-    assert result.output == "已根据当前搜索结果回答。"
-    assert _tool_calls(messages, "web_search") == 1
-    assert _tool_calls(messages, "run_workflow") == 0
-
-
-async def test_quick_news_uses_host_search_without_repeated_main_search(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[int] = []
-
-    class _FakeResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict[str, object]:
-            return {
-                "results": [
-                    {
-                        "title": "北京今日新闻",
-                        "url": "https://example.test/beijing-news",
-                        "content": "北京今日新闻摘要",
-                    }
-                ]
-            }
-
-    class _FakeClient:
-        async def __aenter__(self) -> _FakeClient:
-            return self
-
-        async def __aexit__(self, *args: object) -> None:
-            return None
-
-        async def get(self, *args: object, **kwargs: object) -> _FakeResponse:
-            calls.append(1)
-            return _FakeResponse()
-
-    monkeypatch.setattr(settings, "APP_ENV", "local")
-    monkeypatch.setattr(
-        "app.agent.tools.search.httpx.AsyncClient", lambda **_: _FakeClient()
-    )
-
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        returns = _tool_returns(messages, "web_search")
-        if returns:
-            content = str(returns[-1].content)
-            assert "北京今日新闻" in content
-            return ModelResponse(parts=[TextPart("北京今天的最新新闻如下：北京今日新闻摘要")])
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="web_search",
-                    args={"query": "北京今天有什么最新新闻"},
-                    tool_call_id="beijing-news",
-                )
-            ]
-        )
-
-    result = await _agent(parent).run("北京今天有什么最新新闻？")
-    messages = result.all_messages()
-
-    assert result.output == "北京今天的最新新闻如下：北京今日新闻摘要"
-    assert _tool_calls(messages, "web_search") == 1
-    assert _tool_calls(messages, "run_workflow") == 0
-    assert calls == [1]
-    assert "网络访问出现临时超时" not in result.output
-
-async def test_explicit_verification_of_one_fact_stays_quick_research(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "APP_ENV", "test")
-
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        if _tool_returns(messages, "web_search"):
-            return ModelResponse(parts=[TextPart("已核实单一预约事实。")])
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="web_search",
-                    args={"query": "浅草寺 当前 预约 官方"},
-                    tool_call_id="quick-verify",
-                )
-            ]
-        )
-
-    result = await _agent(parent).run("帮我查官方确认一下浅草寺现在是否需要预约")
-    messages = result.all_messages()
-
-    assert result.output == "已核实单一预约事实。"
-    assert _tool_calls(messages, "web_search") == 1
-    assert _tool_calls(messages, "run_workflow") == 0
-
-
-async def test_one_successful_web_search_is_enough_no_near_duplicate_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "APP_ENV", "test")
-
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        returns = _tool_returns(messages, "web_search")
-        if returns:
-            assert "https://example.test/search" in str(returns[0].content)
-            return ModelResponse(parts=[TextPart("一个有效搜索已经足够。")])
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="web_search",
-                    args={"query": "东京站 行李寄存 当前 官方"},
-                    tool_call_id="search-once",
-                )
-            ]
-        )
-
-    result = await _agent(parent).run("核实东京站现在有没有行李寄存")
-    messages = result.all_messages()
-
-    assert result.output == "一个有效搜索已经足够。"
-    assert _tool_calls(messages, "web_search") == 1
-    assert _tool_calls(messages, "run_workflow") == 0
-
-
 async def test_rough_plan_can_load_travel_skill_without_deep_research() -> None:
     def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         del info
@@ -289,15 +164,7 @@ async def test_rough_plan_can_load_travel_skill_without_deep_research() -> None:
 
 
 async def test_multi_axis_executable_plan_runs_one_parallel_workflow() -> None:
-    worker_model = TestModel(
-        custom_output_args={
-            "topic": "verified topic",
-            "claims": [],
-            "sources": [],
-            "media": [],
-            "unresolved": [],
-        }
-    )
+    worker_model = _deterministic_worker_model("verified topic")
 
     def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         del info
@@ -332,15 +199,7 @@ async def test_multi_axis_executable_plan_runs_one_parallel_workflow() -> None:
 
 
 async def test_multiple_explicit_verification_axes_use_one_workflow() -> None:
-    worker_model = TestModel(
-        custom_output_args={
-            "topic": "axis",
-            "claims": [],
-            "sources": [],
-            "media": [],
-            "unresolved": [],
-        }
-    )
+    worker_model = _deterministic_worker_model("axis")
 
     def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         del info
@@ -488,117 +347,8 @@ async def test_simple_modification_of_existing_plan_needs_no_research() -> None:
     assert _tool_calls(messages, "run_workflow") == 0
 
 
-async def test_modification_with_one_fresh_fact_uses_quick_research(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "APP_ENV", "test")
-
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        if _tool_returns(messages, "web_search"):
-            return ModelResponse(parts=[TextPart("已按刚核实的当前预约规则修改 Day 2。")])
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="web_search",
-                    args={"query": "故宫 当前 预约规则 官方"},
-                    tool_call_id="modify-search",
-                )
-            ]
-        )
-
-    result = await _agent(parent).run("把第二天换成故宫，但先确认现在的预约规则")
-    messages = result.all_messages()
-
-    assert "预约规则" in result.output
-    assert _tool_calls(messages, "web_search") == 1
-    assert _tool_calls(messages, "run_workflow") == 0
-
-
-async def test_poi_image_media_flows_from_worker_through_workflow_to_main(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """POI Worker image_search -> ResearchFindings.media -> Main workflow result."""
-
-    monkeypatch.setattr(settings, "APP_ENV", "test")
-
-    def worker(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if _tool_returns(messages, "image_search"):
-            assert info.output_tools
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name=info.output_tools[0].name,
-                        args={
-                            "topic": "故宫媒体",
-                            "claims": [],
-                            "sources": [],
-                            "media": [
-                                {
-                                    "place_name": "故宫",
-                                    "image_url": "https://images.example.test/poi.jpg",
-                                    "thumbnail_url": "https://images.example.test/poi-thumb.jpg",
-                                    "source_page_url": "https://example.test/poi",
-                                    "title": "model copy",
-                                    "width": 1,
-                                    "height": 1,
-                                    "source": "model",
-                                }
-                            ],
-                            "unresolved": [],
-                        },
-                        tool_call_id="worker-media-final",
-                    )
-                ]
-            )
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="image_search",
-                    args={"query": "故宫"},
-                    tool_call_id="worker-image-search",
-                )
-            ]
-        )
-
-    def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        workflow_returns = _tool_returns(messages, "run_workflow")
-        if workflow_returns:
-            rendered = str(workflow_returns[0].content)
-            assert "https://images.example.test/poi.jpg" in rendered
-            assert "https://example.test/poi" in rendered
-            return ModelResponse(parts=[TextPart("Main 已收到故宫媒体候选。")])
-        if _tool_returns(messages, "load_capability"):
-            return ModelResponse(
-                parts=[
-                    _workflow(
-                        "await research_worker(task='为故宫准备一个展示图片候选')",
-                        "workflow-media",
-                    )
-                ]
-            )
-        return ModelResponse(parts=[_load("deep-research", "load-deep")])
-
-    result = await _agent(parent, worker_model=FunctionModel(worker)).run(
-        "做故宫计划并准备图片"
-    )
-    messages = result.all_messages()
-
-    assert result.output == "Main 已收到故宫媒体候选。"
-    assert _tool_calls(messages, "run_workflow") == 1
-
-
 async def test_single_workflow_gate_resets_for_each_parent_run() -> None:
-    worker_model = TestModel(
-        custom_output_args={
-            "topic": "per-run",
-            "claims": [],
-            "sources": [],
-            "media": [],
-            "unresolved": [],
-        }
-    )
+    worker_model = _deterministic_worker_model("per-run")
 
     def parent(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         del info

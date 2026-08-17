@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from pathlib import Path
 
-from pydantic_ai import Tool, UsageLimits
-from pydantic_ai.capabilities import AgentCapability, Capability
+from pydantic_ai import Tool, UsageLimits, WebSearchTool
+from pydantic_ai.capabilities import AgentCapability, Capability, WebSearch
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai_harness.dynamic_workflow import DynamicWorkflow
 from pydantic_ai_harness.skills import Skills
@@ -27,9 +27,7 @@ SKILL_TOOL_DEPENDENCIES: Mapping[str, frozenset[str]] = {
     "travel-budget": frozenset({"calculate_budget"}),
     "travel-planning": frozenset(
         {
-            "web_search",
             "web_fetch",
-            "image_search",
             "search_maps",
             "get_weather",
             "calculate_budget",
@@ -69,6 +67,7 @@ def build_travel_capabilities(
     *,
     researcher_model: Model | KnownModelName | str | None = None,
     enable_planning_core: bool = True,
+    enable_web_search: bool = True,
 ) -> tuple[AgentCapability[object], ...]:
     """Build Main tools, Skills, and the optional parallel Deep Research capability.
 
@@ -77,12 +76,14 @@ def build_travel_capabilities(
     """
     selected_skills = (
         frozenset(SKILL_TOOL_DEPENDENCIES)
-        if enable_planning_core
+        if enable_planning_core and enable_web_search
         else frozenset({"travel-budget"})
     )
-    active_tools = _MAIN_TOOLS if enable_planning_core else (_BUDGET_TOOL,)
+    active_tools = (
+        _MAIN_TOOLS if enable_planning_core and enable_web_search else (_BUDGET_TOOL,)
+    )
     available_tools = {tool.name for tool in active_tools}
-    if enable_planning_core:
+    if enable_planning_core and enable_web_search:
         available_tools.add(_DEEP_RESEARCH_TOOL_NAME)
     validate_skill_tool_dependencies(
         selected_skills=selected_skills,
@@ -91,8 +92,12 @@ def build_travel_capabilities(
 
     skill_catalog = Skills[object](SKILL_LIBRARY, include=selected_skills)
     main_tools = Capability[object](id="travel-main-tools", tools=active_tools)
-    if not enable_planning_core:
+    if not enable_web_search:
         return (skill_catalog, main_tools)
+
+    native_web_search = WebSearch(native=WebSearchTool(optional=True))
+    if not enable_planning_core:
+        return (skill_catalog, native_web_search, main_tools)
 
     research_worker = build_research_worker(model=researcher_model)
     workflow_gate = SingleWorkflowCallGate(tool_name=_DEEP_RESEARCH_TOOL_NAME)
@@ -117,4 +122,4 @@ def build_travel_capabilities(
             tool_calls_limit=settings.RESEARCH_WORKER_TOOL_CALL_LIMIT,
         ),
     )
-    return (skill_catalog, main_tools, workflow_gate, deep_research)
+    return (skill_catalog, native_web_search, main_tools, workflow_gate, deep_research)

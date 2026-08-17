@@ -6,7 +6,7 @@ from pydantic_ai import Agent
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from app.agent.pydantic_executor import _litellm_openai_base_url, get_chat_agent
@@ -17,7 +17,7 @@ def test_chat_agent_uses_litellm_logical_model() -> None:
     agent = get_chat_agent()
 
     assert isinstance(agent, Agent)
-    assert isinstance(agent.model, OpenAIChatModel)
+    assert isinstance(agent.model, OpenAIResponsesModel)
     assert agent.model.model_name == settings.LLM_LOGICAL_MODEL
 
 
@@ -66,7 +66,7 @@ def test_chat_agent_provider_points_at_litellm_gateway() -> None:
     agent = get_chat_agent()
     model = agent.model
 
-    assert isinstance(model, OpenAIChatModel)
+    assert isinstance(model, OpenAIResponsesModel)
     assert isinstance(model.provider, OpenAIProvider)
     assert (model.provider.base_url or "").rstrip("/").endswith("/v1")
 

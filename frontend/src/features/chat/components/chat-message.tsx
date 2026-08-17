@@ -1,4 +1,4 @@
-﻿import { Check, Copy, Globe } from "lucide-react"
+import { Check, Copy, Globe } from "lucide-react"
 
 import {
   Message,
@@ -42,17 +42,20 @@ export function ChatMessage({
   const reasoningParts = message.parts.filter(
     (part) => part.type === "reasoning",
   )
+  const hasReasoning = reasoningParts.length > 0
   const reasoning = reasoningParts.map((part) => part.text).join("")
-  const sourceParts = message.parts.filter(
-    (part) => part.type === "source-url",
-  )
+  const sourceParts = message.parts.filter((part) => part.type === "source-url")
   const isReasoningStreaming =
     isLastAssistant &&
     isStreaming &&
     reasoningParts.some((part) => part.state === "streaming")
-  const reasoningDurationMs = message.metadata?.reasoningDurationMs
   const showStreamingPlaceholder =
-    !isUser && isLastAssistant && isStreaming && !text
+    !isUser &&
+    isLastAssistant &&
+    isStreaming &&
+    !text &&
+    !hasReasoning &&
+    sourceParts.length === 0
 
   return (
     <Message
@@ -76,26 +79,19 @@ export function ChatMessage({
                 : "w-full bg-transparent px-0 py-0 text-foreground",
             )}
           >
-            {(reasoningParts.length > 0 || sourceParts.length > 0) && (
+            {hasReasoning && (
               <Reasoning
                 className="w-full"
-                duration={
-                  reasoningDurationMs === undefined
-                    ? undefined
-                    : Math.max(1, Math.ceil(reasoningDurationMs / 1000))
-                }
-                isStreaming={isReasoningStreaming}
+                isReasoningStreaming={isReasoningStreaming}
+                isStreaming={isStreaming}
               >
                 <ReasoningTrigger
                   className="gap-2.5 text-base [&_svg]:size-5"
-                  getThinkingMessage={(streaming, duration) =>
+                  getThinkingMessage={(streaming) =>
                     streaming ? (
                       <Shimmer duration={1}>正在思考...</Shimmer>
                     ) : (
-                      <span>
-                        已思考
-                        {duration ? `（用时 ${duration} 秒）` : ""}
-                      </span>
+                      <span>已思考</span>
                     )
                   }
                 />
@@ -103,27 +99,6 @@ export function ChatMessage({
                   <ReasoningContent className="mt-3 border-l-2 border-primary/15 pl-4 leading-7">
                     {reasoning}
                   </ReasoningContent>
-                )}
-                {sourceParts.length > 0 && (
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    {sourceParts.map((part) => {
-                      if (part.type !== "source-url") return null
-                      return (
-                        <a
-                          className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                          href={part.url}
-                          key={part.sourceId}
-                          rel="noreferrer"
-                          target="_blank"
-                        >
-                          <Globe className="size-3.5 shrink-0" />
-                          <span className="truncate">
-                            {part.title || part.url}
-                          </span>
-                        </a>
-                      )
-                    })}
-                  </div>
                 )}
               </Reasoning>
             )}
@@ -137,6 +112,33 @@ export function ChatMessage({
               >
                 {text}
               </MessageResponse>
+            )}
+
+            {sourceParts.length > 0 && (
+              <div className="mt-5 border-t border-border/50 pt-3">
+                <div className="mb-2 text-xs text-muted-foreground">
+                  参考来源（{sourceParts.length}）
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {sourceParts.map((part) => {
+                    if (part.type !== "source-url") return null
+                    return (
+                      <a
+                        className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        href={part.url}
+                        key={part.sourceId}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        <Globe className="size-3.5 shrink-0" />
+                        <span className="truncate">
+                          {part.title || part.url}
+                        </span>
+                      </a>
+                    )
+                  })}
+                </div>
+              </div>
             )}
 
             {showStreamingPlaceholder && (

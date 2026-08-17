@@ -18,10 +18,9 @@ Reference:
 from __future__ import annotations
 
 import asyncio
-import json
-import time
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import replace
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -31,11 +30,17 @@ from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExce
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
+    PartDeltaEvent,
+    PartStartEvent,
     TextPart,
     ThinkingPart,
+    ThinkingPartDelta,
+    ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
@@ -59,10 +64,15 @@ from app.agent.research_runtime import (
 )
 from app.agent.usage import AgentModelCallUsage, AgentTokenUsage, AgentUsage
 from app.core.config import settings
+from app.infra.vercel_protocol import decode_event, encode_event
 
 _GENERIC_CHAT_INSTRUCTIONS = (
     "你是「行伴」，一位专业的旅行规划助手。"
     "用用户使用的语言简洁、准确地回答问题；不编造实时信息。"
+    "对于问候和简单问题直接简短回答，不展开冗长推理。"
+    "如果公开 reasoning，必须使用用户的语言；中文用户使用简洁自然的中文，不输出英文思考片段。"
+    "隐藏工具、搜索、模型和框架的内部执行细节，不向用户复述工具名、参数、"
+    "原始查询、provider、重试或内部错误；只输出自然语言的结果、必要的不确定性和来源。"
 )
 
 _MODEL_TIMEOUT_STATUS_CODES = frozenset({408, 504})
@@ -70,6 +80,7 @@ _MODEL_TIMEOUT_STATUS_CODES = frozenset({408, 504})
 # Must stay paired with the exact ``ai`` / ``@ai-sdk/react`` versions in the
 # frontend manifest and the protocol fixture in the backend test suite.
 VERCEL_AI_SDK_VERSION: Literal[7] = 7
+_URL_RE = re.compile(r"https?://[^\s<>\]\[\"']+")
 
 
 def _runtime_clock_instructions() -> str:
@@ -81,15 +92,19 @@ def _litellm_openai_base_url() -> str:
     """Return the OpenAI-compatible base URL of the LiteLLM gateway.
 
     ``LITELLM_BASE_URL`` is the gateway root (e.g. ``http://litellm:4000``); the
-    OpenAI client appends ``/chat/completions``, so the path must end in ``/v1``.
+    OpenAI-compatible client appends the Responses endpoint path, so the path must
+    end in ``/v1``.
     """
     base = settings.LITELLM_BASE_URL.rstrip("/")
     return base if base.endswith("/v1") else f"{base}/v1"
 
 
-def _model_rpc_settings() -> ModelSettings:
+def _model_rpc_settings(*, enable_thinking: bool = True) -> ModelSettings:
     """Return the timeout applied independently to every model request."""
-    return ModelSettings(timeout=settings.LITELLM_CLIENT_TIMEOUT_SECONDS)
+    return ModelSettings(
+        timeout=settings.LITELLM_CLIENT_TIMEOUT_SECONDS,
+        thinking=True if enable_thinking else False,
+    )
 
 
 def _main_usage_limits() -> UsageLimits:
@@ -134,8 +149,8 @@ def _product_safe_model_error(exc: ModelAPIError) -> AgentExecutionError:
     return AgentExecutionError(code="MODEL_UNAVAILABLE", retryable=True)
 
 
-@lru_cache(maxsize=1)
-def get_chat_agent() -> Agent:
+@lru_cache(maxsize=2)
+def get_chat_agent(enable_web_search: bool = True) -> Agent:
     """Return the configured PydanticAI chat :class:`Agent`.
 
     The model is routed through LiteLLM using its logical model name, so provider
@@ -147,7 +162,7 @@ def get_chat_agent() -> Agent:
         api_key=settings.LITELLM_SERVICE_KEY,
         max_retries=0,
     )
-    model = OpenAIChatModel(
+    model = OpenAIResponsesModel(
         settings.LLM_LOGICAL_MODEL,
         provider=OpenAIProvider(openai_client=client),
     )
@@ -164,6 +179,7 @@ def get_chat_agent() -> Agent:
         ),
         capabilities=build_travel_capabilities(
             enable_planning_core=settings.TRAVEL_CORE_ENABLED,
+            enable_web_search=enable_web_search,
             researcher_model=model,
         ),
         defer_model_check=True,
@@ -233,48 +249,127 @@ def _to_agent_usage(
     )
 
 def _to_reasoning_summary(result: AgentRunResult[Any]) -> str | None:
-    """Collect only textual thinking already projected to the public UI stream.
-
-    Provider signatures/details and framework scratchpad are deliberately omitted.
-    The Product contract stores this as an optional display summary, never as agent
-    history and never as a provider round-trip artifact.
-    """
-    summaries = [
-        part.content.strip()
-        for message in result.new_messages()
-        if isinstance(message, ModelResponse)
-        for part in message.parts
-        if isinstance(part, ThinkingPart) and part.content.strip()
-    ]
+    """Collect textual reasoning for the public UI, excluding provider metadata."""
+    summaries: list[str] = []
+    for message in result.new_messages():
+        if not isinstance(message, ModelResponse):
+            continue
+        for part in message.parts:
+            if not isinstance(part, ThinkingPart):
+                continue
+            content = part.content.strip()
+            if not content and part.provider_details:
+                raw_content = part.provider_details.get("raw_content")
+                if isinstance(raw_content, list):
+                    content = "".join(str(item) for item in raw_content).strip()
+            if content:
+                summaries.append(content)
     summary = "\n\n".join(summaries).strip()
     return summary or None
 
 
-@dataclass(slots=True)
-class _ReasoningDurationTracker:
-    """Measure only intervals bracketed by public Vercel reasoning chunks."""
+def _raw_content_text(details: dict[str, Any] | None) -> str:
+    """Join the raw chain-of-thought fragments stored by the Responses API."""
+    if not details:
+        return ""
+    raw_content = details.get("raw_content")
+    if not isinstance(raw_content, list):
+        return ""
+    return "".join(str(item) for item in raw_content)
 
-    active_parts: dict[str, int] = field(default_factory=dict)
-    elapsed_ns: int = 0
 
-    def observe(self, payload: dict[str, Any], *, now_ns: int | None = None) -> None:
-        event_type = payload.get("type")
-        part_id = payload.get("id")
-        if not isinstance(part_id, str):
-            return
-        observed_at = time.monotonic_ns() if now_ns is None else now_ns
-        if event_type == "reasoning-start":
-            self.active_parts.setdefault(part_id, observed_at)
-        elif event_type == "reasoning-end":
-            started_at = self.active_parts.pop(part_id, None)
-            if started_at is not None:
-                self.elapsed_ns += max(0, observed_at - started_at)
+def _urls_from_value(value: Any) -> set[str]:
+    """Collect URLs from structured tool results without inspecting final prose."""
+    if isinstance(value, str):
+        return {
+            match.rstrip(".,);")
+            for match in _URL_RE.findall(value)
+        }
+    if isinstance(value, dict):
+        urls: set[str] = set()
+        for child in value.values():
+            urls.update(_urls_from_value(child))
+        return urls
+    if isinstance(value, (list, tuple, set, frozenset)):
+        urls: set[str] = set()
+        for child in value:
+            urls.update(_urls_from_value(child))
+        return urls
+    if hasattr(value, "model_dump"):
+        return _urls_from_value(value.model_dump(mode="python"))
+    for attribute in ("url", "href", "source_page_url"):
+        candidate = getattr(value, attribute, None)
+        if isinstance(candidate, str):
+            return _urls_from_value(candidate)
+    return set()
 
-    @property
-    def duration_ms(self) -> int | None:
-        if self.elapsed_ns <= 0:
-            return None
-        return max(1, (self.elapsed_ns + 999_999) // 1_000_000)
+
+def _source_urls(result: AgentRunResult[Any]) -> tuple[str, ...]:
+    """Return URLs observed in this run's tool call/return parts."""
+    urls: set[str] = set()
+    for message in result.new_messages():
+        for part in getattr(message, "parts", ()):
+            if isinstance(part, (NativeToolCallPart, NativeToolReturnPart, ToolReturnPart)):
+                value = getattr(part, "args", None)
+                if value is None:
+                    value = getattr(part, "content", None)
+                urls.update(_urls_from_value(value))
+    return tuple(sorted(urls))
+
+
+async def _project_raw_reasoning(
+    events: AsyncIterator[Any],
+) -> AsyncIterator[Any]:
+    """Project DeepSeek's raw chain-of-thought into the live reasoning stream.
+
+    DeepSeek (routed through LiteLLM's Responses API) streams its chain of thought
+    as raw ``reasoning_text`` deltas, which PydanticAI keeps under
+    ``ThinkingPart.provider_details["raw_content"]`` while leaving
+    ``ThinkingPart.content`` empty. The Vercel AI adapter only emits live reasoning
+    text from ``content`` / ``content_delta``, so without this projection the browser
+    shows an empty thinking area until the turn finishes and the persisted summary is
+    reloaded. We rewrite raw-only thinking parts so the accumulated CoT rides the
+    public channel, preserving ``provider_details`` for provider round-trips.
+    """
+    raw_details_by_index: dict[int, dict[str, Any]] = {}
+
+    async for event in events:
+        if isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart):
+            part = event.part
+            if not part.content:
+                details = part.provider_details or {}
+                if text := _raw_content_text(details):
+                    raw_details_by_index[event.index] = details
+                    yield replace(event, part=replace(part, content=text))
+                    continue
+        elif isinstance(event, PartDeltaEvent) and isinstance(
+            event.delta, ThinkingPartDelta
+        ):
+            delta = event.delta
+            if not delta.content_delta:
+                details = delta.provider_details
+                previous = raw_details_by_index.get(event.index, {})
+                if callable(details):
+                    resolved = details(previous)
+                elif isinstance(details, dict):
+                    resolved = {**previous, **details}
+                else:
+                    resolved = None
+                if resolved is not None:
+                    previous_text = _raw_content_text(previous)
+                    increment = _raw_content_text(resolved)[len(previous_text):]
+                    raw_details_by_index[event.index] = resolved
+                    if increment:
+                        yield replace(
+                            event,
+                            delta=replace(
+                                delta,
+                                content_delta=increment,
+                                provider_details=resolved,
+                            ),
+                        )
+                        continue
+        yield event
 
 
 def _to_agent_model_call_usage(
@@ -326,6 +421,7 @@ class PydanticAIExecutor:
         logical_model: str | None = None,
     ) -> None:
         self._agent = agent or get_chat_agent()
+        self._uses_configured_agent = agent is not None
         self._logical_model = logical_model or settings.LLM_LOGICAL_MODEL
 
     async def execute(
@@ -344,11 +440,19 @@ class PydanticAIExecutor:
         )
         # #endregion agent log
         try:
+            agent = (
+                self._agent
+                if self._uses_configured_agent
+                else get_chat_agent(request.enable_web_search)
+            )
             with bind_research_request_state(research_state):
-                result = await self._agent.run(
+                result = await agent.run(
                     request.message,
                     message_history=message_history,
                     run_id=str(request.request_id),
+                    model_settings=_model_rpc_settings(
+                        enable_thinking=request.enable_thinking,
+                    ),
                     usage_limits=_main_usage_limits(),
                 )
             # #region agent log
@@ -391,9 +495,10 @@ class PydanticAIExecutor:
         return AgentExecutionResult(
             content=content,
             reasoning_summary=_to_reasoning_summary(result),
+            source_urls=_source_urls(result),
             usage=_to_agent_usage(
                 result,
-                logical_model=self._logical_model,
+                    logical_model=self._logical_model,
                 research_state=research_state,
             ),
         )
@@ -406,15 +511,6 @@ def get_agent_executor() -> AgentExecutor:
     defined in ``app.agent.executor``.
     """
     return PydanticAIExecutor()
-
-
-async def dispatch_vercel_spike(request: Any) -> Any:
-    """Serve the temporary raw adapter compatibility endpoint."""
-    return await VercelAIAdapter.dispatch_request(
-        request,
-        agent=get_chat_agent(),
-        sdk_version=VERCEL_AI_SDK_VERSION,
-    )
 
 
 async def stream_vercel_events(
@@ -435,7 +531,7 @@ async def stream_vercel_events(
     assistant message there (terminal gate: finish never precedes Product COMMIT).
     """
     adapter = VercelAIAdapter(
-        agent=get_chat_agent(),
+        agent=get_chat_agent(request.enable_web_search),
         run_input=SubmitMessage(
             id=str(request.request_id),
             messages=[
@@ -452,12 +548,14 @@ async def stream_vercel_events(
     )
 
     message_history = _to_model_messages(request)
-    reasoning_timer = _ReasoningDurationTracker()
     stream_error_code: AgentExecutionErrorCode | None = None
     research_state = ResearchRequestState()
+    source_urls: tuple[str, ...] = ()
     native_event_count = 0
 
     async def _on_complete(result: AgentRunResult[Any]) -> None:
+        nonlocal source_urls
+        source_urls = _source_urls(result)
         # #region agent log
         debug_runtime_log(
             hypothesis_id="H4",
@@ -467,6 +565,7 @@ async def stream_vercel_events(
                 "output_type": type(result.output).__name__,
                 "main_requests": result.usage.requests,
                 "worker_runs": len(research_state.worker_runs),
+                "source_urls": len(source_urls),
             },
             run_id=str(request.request_id),
         )
@@ -479,7 +578,7 @@ async def stream_vercel_events(
                 AgentExecutionResult(
                     content=output,
                     reasoning_summary=_to_reasoning_summary(result),
-                    reasoning_duration_ms=reasoning_timer.duration_ms,
+                    source_urls=source_urls,
                     usage=_to_agent_usage(
                         result,
                         logical_model=settings.LLM_LOGICAL_MODEL,
@@ -488,11 +587,15 @@ async def stream_vercel_events(
                 )
             )
 
-    native_events = adapter.run_stream_native(
-        message_history=message_history,
-        run_id=str(request.request_id),
-        model_settings=_model_rpc_settings(),
-        usage_limits=_main_usage_limits(),
+    native_events = _project_raw_reasoning(
+        adapter.run_stream_native(
+            message_history=message_history,
+            run_id=str(request.request_id),
+            model_settings=_model_rpc_settings(
+                enable_thinking=request.enable_thinking,
+            ),
+            usage_limits=_main_usage_limits(),
+        )
     )
 
     async def _classified_native_events() -> AsyncIterator[Any]:
@@ -581,15 +684,12 @@ async def stream_vercel_events(
     )
 
     async for chunk in adapter.encode_stream(events):
-        try:
-            data = chunk.removeprefix("data: ").removesuffix("\n\n")
-            payload = json.loads(data)
-        except (json.JSONDecodeError, TypeError):
-            payload = None
-        if isinstance(payload, dict):
-            reasoning_timer.observe(payload)
+        payload = decode_event(chunk)
+        if payload is not None and payload.get("type") == "finish":
+            for url in source_urls:
+                yield encode_event("source-url", sourceId=url, url=url)
         if on_terminal is not None:
-            if isinstance(payload, dict) and payload.get("type") in {"abort", "error"}:
+            if payload is not None and payload.get("type") in {"abort", "error"}:
                 kind = payload["type"]
                 reason = (
                     stream_error_code

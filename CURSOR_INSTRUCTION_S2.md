@@ -1,8 +1,6 @@
 # Cursor 施工指令 — Travel Agent v8 S2 Final
 
-基于 `travel_agent_v8` commit `ab0738def24828b71c5c9ff60bf39bd2042414c2` 应用本 ZIP。
-
-1. 从仓库根目录解压本包。
+基于 `travel_agent_v8` commit `ab0738def24828b71c5c9ff60bf39bd2042414c2` 
 2. 执行 `python scripts/apply_travel_agent_s2.py`；若 baseline 校验失败，不要绕过，先报告 drift。
 3. 执行 `uv lock`，确认 lock 中 Tavily 已移除、PydanticAI 2.28.0 / Harness 0.21.0 / DDGS 9.x 正确解析。
 4. 运行 README 中 focused tests。

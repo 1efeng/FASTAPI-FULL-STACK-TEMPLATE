@@ -23,7 +23,12 @@ from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.messages import (
+    ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
+    ToolCallPart,
+)
 from pydantic_ai.tools import RunContext, ToolDefinition
 
 from app.agent.debug_logging import debug_runtime_log
@@ -143,7 +148,7 @@ def _iter_plain_values(value: Any) -> Iterator[Any]:
             yield from _iter_plain_values(getattr(value, attr))
     if hasattr(value, "url"):
         yielded_attr = True
-        yield {"url": getattr(value, "url")}
+        yield {"url": value.url}
     if not yielded_attr:
         yield value
 
@@ -162,7 +167,7 @@ def _extract_urls(value: Any) -> set[str]:
 
 
 def _extract_image_assets(value: Any) -> dict[tuple[str, str], dict[str, Any]]:
-    """Index actual normalized image-search rows by stable image/source identity."""
+    """Index media rows returned inside provider-native search evidence."""
 
     assets: dict[tuple[str, str], dict[str, Any]] = {}
     for item in _iter_plain_values(value):
@@ -182,6 +187,22 @@ def _extract_image_assets(value: Any) -> dict[tuple[str, str], dict[str, Any]]:
             "source": item.get("source"),
         }
     return assets
+
+
+def _record_native_search_response(
+    response: ModelResponse,
+    trace: WorkerEvidenceTrace,
+) -> None:
+    """Capture evidence returned by the provider-native web search tool."""
+
+    for part in response.parts:
+        if isinstance(part, NativeToolCallPart) and part.tool_name == "web_search":
+            trace.web_urls.update(_extract_urls(part.args))
+        elif isinstance(part, NativeToolReturnPart) and part.tool_name == "web_search":
+            if part.outcome == "success":
+                trace.successful_tools.add("web_search")
+                trace.web_urls.update(_extract_urls(part.content))
+                trace.image_assets.update(_extract_image_assets(part.content))
 
 
 def _result_is_usable(result: Any) -> bool:
@@ -239,7 +260,7 @@ def _attest_findings(output: Any, trace: WorkerEvidenceTrace) -> Any:
             continue
 
         # Preserve the model's semantic place_name, but overwrite transport/media
-        # metadata with the values returned by the actual image_search execution.
+        # metadata with the values returned by the provider-native search evidence.
         asset.image_url = str(observed["image_url"])
         asset.source_page_url = str(observed["source_page_url"])
         asset.thumbnail_url = (
@@ -311,6 +332,7 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
         trace = _current_worker_trace.get()
         if trace is not None:
             trace.model_responses.append(response)
+            _record_native_search_response(response, trace)
         return response
 
     async def before_tool_execute(
@@ -358,16 +380,12 @@ class ResearchWorkerRuntimeCapability(AbstractCapability[object]):
 
         trace.successful_tools.add(tool_name)
 
-        if tool_name == "web_search":
-            trace.web_urls.update(_extract_urls(result))
-        elif tool_name == "web_fetch":
+        if tool_name == "web_fetch":
             # A successful official fetch attests the URL supplied to the actual tool.
             requested_url = args.get("url")
             if isinstance(requested_url, str) and requested_url.startswith(("http://", "https://")):
                 trace.web_urls.add(requested_url)
             trace.web_urls.update(_extract_urls(result))
-        elif tool_name == "image_search":
-            trace.image_assets.update(_extract_image_assets(result))
         elif tool_name in _DEDICATED_FACT_TOOLS:
             # Presence in ``successful_tools`` is sufficient for the dedicated
             # evidence token because the claim schema already restricts names.

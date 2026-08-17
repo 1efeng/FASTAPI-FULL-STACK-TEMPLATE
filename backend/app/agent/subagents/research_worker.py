@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
-from pydantic_ai import Agent
+from pydantic_ai import Agent, WebSearchTool
+from pydantic_ai.capabilities import WebSearch
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.settings import ModelSettings
 
 from app.agent.context.runtime_clock import runtime_clock_context
-from app.agent.debug_logging import debug_runtime_log
 from app.agent.research_runtime import ResearchWorkerRuntimeCapability
 from app.agent.tools.research_tools import build_research_tools
 from app.core.config import settings
@@ -113,7 +113,7 @@ RESEARCH_WORKER_INSTRUCTIONS = """\
 4. 搜索 snippet 只是 discovery，不自动等于“官方已核验事实”。
 5. `search_maps` 只用于路线、距离、空间关系和现实交通时间。
 6. `get_weather` 仅在 task 包含实际相关旅行日期时使用。
-7. `image_search` 仅用于最终可能展示的景区、POI、地标、酒店或体验的视觉素材；纯天气、纯交通、纯政策 task 不要无意义搜图。
+7. 图片素材仅能通过模型原生联网搜索发现；它不属于事实验证，且不能假设原生搜索返回了可直接展示的图片 URL。
 8. 图片属于 Media Discovery，不属于 Fact Verification；图片来源页不能单独证明开放、预约、价格、政策、交通或天气。
 9. 已有足够信息支持 Main 决策时立即停止；不要围绕同一事实反复做近义搜索。
 10. 非关键事实无法确认时写入 unresolved，不要阻塞整个 Findings。
@@ -126,7 +126,7 @@ RESEARCH_WORKER_INSTRUCTIONS = """\
   - 你不能通过自己填写 URL 或 Tool 名称来“自证”；Host 会把无法对上真实执行证据的 `verified` 自动降级为 `unresolved`。
 - `conflicting`：可靠来源存在冲突；保留冲突来源，不自行拍板伪装成 verified。
 - `unresolved`：当前无法可靠确认。
-- `image_search` 永远不能作为 verified 的事实证据。
+- 原生联网搜索只能作为事实发现与来源线索；图片来源不能单独证明开放、预约、价格、政策、交通或天气。
 
 # 来源优先级
 
@@ -178,7 +178,10 @@ def build_research_worker(
         description=RESEARCH_WORKER_DESCRIPTION,
         instructions=(RESEARCH_WORKER_INSTRUCTIONS, _runtime_clock_instructions),
         tools=build_research_tools(),
-        capabilities=(ResearchWorkerRuntimeCapability(),),
+        capabilities=(
+            WebSearch(native=WebSearchTool(optional=True)),
+            ResearchWorkerRuntimeCapability(),
+        ),
         output_type=ResearchFindings,
         defer_model_check=True,
     )

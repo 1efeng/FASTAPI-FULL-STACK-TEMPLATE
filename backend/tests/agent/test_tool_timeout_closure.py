@@ -12,9 +12,7 @@ from pydantic_ai.common_tools.web_fetch import WebFetchLocalTool, web_fetch_tool
 
 from app.agent.tools import _timeout
 from app.agent.tools.currency import CurrencyAmount, convert_currency
-from app.agent.tools.image_search import _TIMEOUT_SECONDS as IMAGE_SEARCH_TIMEOUT_SECONDS
 from app.agent.tools.route import search_maps
-from app.agent.tools.search import _TIMEOUT_SECONDS as WEB_SEARCH_TIMEOUT_SECONDS
 from app.agent.tools.weather import get_weather
 from app.core.config import settings
 
@@ -26,11 +24,6 @@ def test_runtime_timeout_hierarchy_is_bounded() -> None:
     assert _timeout.TOOL_EXECUTION_TIMEOUT_SECONDS == 30
     assert settings.LITELLM_CLIENT_TIMEOUT_SECONDS == 150
     assert settings.REQUEST_DEADLINE_SECONDS == 300
-
-
-def test_search_timeouts_are_tighter_than_model_rpc_bound() -> None:
-    assert 0 < WEB_SEARCH_TIMEOUT_SECONDS < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
-    assert 0 < IMAGE_SEARCH_TIMEOUT_SECONDS < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
 
 
 def test_official_web_fetch_keeps_its_internal_30_second_bound() -> None:

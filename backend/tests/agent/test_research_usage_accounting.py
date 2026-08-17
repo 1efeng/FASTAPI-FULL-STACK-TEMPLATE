@@ -196,6 +196,11 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
     """
 
     monkeypatch.setattr(settings, "APP_ENV", "test")
+
+    async def fake_weather(city: str, forecast: bool = False) -> str:
+        return f"{city}: sunny (forecast={forecast})"
+
+    monkeypatch.setattr("app.agent.tools.weather._get_weather", fake_weather)
     worker_model_calls = 0
 
     def worker_model(
@@ -203,14 +208,14 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
     ) -> ModelResponse:
         nonlocal worker_model_calls
         worker_model_calls += 1
-        completed_searches = len(_tool_returns(messages, "web_search"))
+        completed_searches = len(_tool_returns(messages, "get_weather"))
         if completed_searches < 6:
             return ModelResponse(
                 parts=[
                     ToolCallPart(
-                        tool_name="web_search",
-                        args={"query": f"independent worker query {completed_searches + 1}"},
-                        tool_call_id=f"worker-search-{completed_searches + 1}",
+                        tool_name="get_weather",
+                        args={"city": "东京"},
+                        tool_call_id=f"worker-weather-{completed_searches + 1}",
                     )
                 ],
                 usage=RequestUsage(
@@ -284,7 +289,7 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
     assert result.content == "main final after isolated worker"
     assert worker_model_calls == 7
     assert result.usage.model_requests == 10
-    # Main uses load_capability + run_workflow (2); Worker executes six web searches.
+    # Main uses load_capability + run_workflow (2); Worker executes six weather calls.
     assert result.usage.tool_calls >= 8
     # This total deliberately exceeds Main's role-local 8 model / 6 tool caps.
     assert result.usage.model_requests > settings.MAIN_MODEL_REQUEST_LIMIT

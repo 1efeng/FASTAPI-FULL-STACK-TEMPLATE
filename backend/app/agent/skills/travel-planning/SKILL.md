@@ -55,8 +55,7 @@ Research Need YES 不代表一定启动 Deep Research。
 
 ### Quick Research
 
-只有一个清晰研究轴时，Main 直接调用需要的 Tool：
-`web_search`、`web_fetch`、`search_maps`、`get_weather`、`image_search`。
+只有一个清晰研究轴时，Main 直接使用模型原生 `WebSearch` 能力，以及需要的 `web_fetch`、`search_maps`、`get_weather`。
 
 例如：
 - 一个景点的最新预约规则；
@@ -120,7 +119,7 @@ Worker 失败后 Main 不启动第二个 workflow，不用模型记忆补当前�
 - 以 Runtime 时间为基准；
 - 优先 latest / current / official；
 - 重要动态事实优先 official / primary source；
-- `web_search` 用于 discovery，关键事实尽量 `web_fetch` 页面正文；
+- 模型原生 `WebSearch` 用于 discovery，关键事实尽量用 `web_fetch` 页面正文；
 - 第三方旅行平台主要用于比较、评论和补充；
 - 旧资料不能直接当当前事实；
 - 无法可靠确认则 unresolved；
@@ -130,15 +129,13 @@ Worker 失败后 Main 不启动第二个 workflow，不用模型记忆补当前�
 
 ## 7. 图片 / Media
 
-景区、POI、地标、酒店或特色体验需要最终展示素材时，Main 或相关 Research Worker 可以调用 `image_search`。
+模型原生 `WebSearch` 可以发现与景区、POI、地标、酒店或特色体验相关的网页和来源；当前不再提供独立的 SearXNG 图片搜索工具。
 
 规则：
-- 图片用于 presentation / itinerary card；
-- 不用于证明开放、预约、门票、交通政策、价格或天气；
-- 每个关键 POI 优先保留 1 张主候选、最多 2 张；
-- 保留 `source_page_url`；
-- 纯天气、纯交通、纯政策 Research 不要无意义搜图；
-- 本阶段不做下载、CDN、转存或版权授权判断。
+- 搜索来源可用于辅助展示素材发现，但不保证返回可直接展示的图片 URL；
+- 图片来源不能证明开放、预约、门票、交通政策、价格或天气；
+- 纯天气、纯交通、纯政策 Research 不要无意义搜索图片；
+- 不做图片下载、CDN、转存或版权授权判断。
 
 ## 8. 路线可执行性
 
@@ -181,6 +178,14 @@ Worker 失败后 Main 不启动第二个 workflow，不用模型记忆补当前�
 11. 严格按 Markdown Contract 输出完整计划。
 
 如果 Research 部分失败：使用成功 Findings + 用户事实 + 稳定常识 + 明确假设继续；动态未核验项必须标记，不得编造精确事实。
+
+## 10.1 对外表达边界
+
+最终回答不得暴露内部执行过程。不要提及或复述 Skill、Capability、SubAgent、Worker、workflow、Tool 名称、工具参数、原始搜索词、模型 / provider、重试或预算限制。
+
+不要逐步播报工具调用。需要表达进展时，只使用自然产品语义，例如“正在核对最新规则”“正在比较路线”“正在整理方案”。
+
+最终只输出用户需要的结论、必要依据、来源和不确定性，不输出内部调试信息或框架事件。
 
 ## 11. 修改已有计划
 

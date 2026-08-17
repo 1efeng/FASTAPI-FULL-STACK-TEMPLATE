@@ -9,14 +9,26 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     ToolCallPart,
     ToolReturnPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from app.agent.research_runtime import ResearchRequestState, bind_research_request_state
-from app.agent.subagents.research_worker import build_research_worker
-from app.core.config import settings
+from app.agent.research_runtime import (
+    ResearchRequestState,
+    WorkerEvidenceTrace,
+    _attest_findings,
+    _record_native_search_response,
+    bind_research_request_state,
+)
+from app.agent.subagents.research_worker import (
+    EvidenceClaim,
+    EvidenceSource,
+    ResearchFindings,
+    build_research_worker,
+)
 
 
 def _tool_returns(messages: list[ModelMessage], name: str) -> list[ToolReturnPart]:
@@ -118,112 +130,46 @@ async def test_model_cannot_self_certify_tool_name_without_execution() -> None:
     assert result.output.claims[0].tool_evidence == []
 
 
-async def test_actual_web_search_attests_verified_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "APP_ENV", "test")
-
-    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if _tool_returns(messages, "web_search"):
-            return _final(
-                info,
-                {
-                    "topic": "预约",
-                    "claims": [
-                        {
-                            "claim": "当前预约规则已核实",
-                            "status": "verified",
-                            "source_urls": ["https://example.test/search"],
-                            "tool_evidence": [],
-                        }
-                    ],
-                    "sources": [
-                        {
-                            "title": "Test official result",
-                            "url": "https://example.test/search",
-                            "source_type": "official",
-                        }
-                    ],
-                    "media": [],
-                    "unresolved": [],
-                },
-            )
-        return ModelResponse(
+async def test_native_web_search_attests_verified_source() -> None:
+    source_url = "https://example.test/search"
+    trace = WorkerEvidenceTrace()
+    _record_native_search_response(
+        ModelResponse(
             parts=[
-                ToolCallPart(
+                NativeToolCallPart(
                     tool_name="web_search",
-                    args={"query": "故宫 当前 预约 官方"},
+                    args={"open_page": {"url": source_url}},
                     tool_call_id="web-search-1",
-                )
+                ),
+                NativeToolReturnPart(
+                    tool_name="web_search",
+                    content={"sources": [{"url": source_url}]},
+                    tool_call_id="web-search-1",
+                ),
             ]
-        )
+        ),
+        trace,
+    )
 
-    worker = build_research_worker(model=FunctionModel(model))
-    result = await worker.run("核实故宫预约")
-
-    assert result.output.claims[0].status == "verified"
-    assert result.output.claims[0].source_urls == ["https://example.test/search"]
-    assert [source.url for source in result.output.sources] == ["https://example.test/search"]
-    assert _tool_calls(result.all_messages(), "web_search") == 1
-
-
-async def test_poi_worker_image_search_trajectory_preserves_attested_media(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """POI Worker -> image_search -> SearXNG-normalized result -> Findings.media."""
-
-    monkeypatch.setattr(settings, "APP_ENV", "test")
-
-    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if _tool_returns(messages, "image_search"):
-            return _final(
-                info,
-                {
-                    "topic": "故宫 POI 图片",
-                    "claims": [],
-                    "sources": [],
-                    "media": [
-                        {
-                            "place_name": "故宫",
-                            "image_url": "https://images.example.test/poi.jpg",
-                            "thumbnail_url": "https://images.example.test/poi-thumb.jpg",
-                            "source_page_url": "https://example.test/poi",
-                            # Deliberately wrong model-declared metadata: Host must
-                            # replace it from the actual normalized image_search row.
-                            "title": "invented title",
-                            "width": 1,
-                            "height": 2,
-                            "source": "invented.example",
-                        }
-                    ],
-                    "unresolved": [],
-                },
-            )
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="image_search",
-                    args={"query": "故宫"},
-                    tool_call_id="image-search-1",
+    findings = _attest_findings(
+        ResearchFindings(
+            topic="预约",
+            claims=[
+                EvidenceClaim(
+                    claim="当前预约规则已核实",
+                    status="verified",
+                    source_urls=[source_url],
                 )
-            ]
-        )
+            ],
+            sources=[EvidenceSource(title="Test official result", url=source_url)],
+        ),
+        trace,
+    )
 
-    state = ResearchRequestState()
-    worker = build_research_worker(model=FunctionModel(model))
-    with bind_research_request_state(state):
-        result = await worker.run("为最终方案中的故宫寻找展示图片")
-
-    assert _tool_calls(result.all_messages(), "image_search") == 1
-    assert len(result.output.media) == 1
-    assert result.output.media[0].place_name == "故宫"
-    assert result.output.media[0].image_url == "https://images.example.test/poi.jpg"
-    assert result.output.media[0].source_page_url == "https://example.test/poi"
-    assert result.output.media[0].title == "[FAKE IMAGE] 故宫"
-    assert result.output.media[0].width == 1200
-    assert result.output.media[0].height == 800
-    assert result.output.media[0].source == "example.test"
-    assert state.worker_tool_calls >= 1
+    assert findings.claims[0].status == "verified"
+    assert findings.claims[0].source_urls == [source_url]
+    assert [source.url for source in findings.sources] == [source_url]
+    assert "web_search" in trace.successful_tools
 
 
 async def test_failed_weather_execution_cannot_attest_verified_claim(
@@ -231,9 +177,9 @@ async def test_failed_weather_execution_cannot_attest_verified_claim(
 ) -> None:
     async def failed_weather(city: str, forecast: bool = False) -> str:
         del city, forecast
-        return "天气查询暂时失败：RuntimeError"
+        raise RuntimeError("synthetic weather failure")
 
-    monkeypatch.setattr("app.agent.tools.research_tools.get_weather", failed_weather)
+    monkeypatch.setattr("app.agent.tools.weather._get_weather", failed_weather)
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if _tool_returns(messages, "get_weather"):
@@ -274,14 +220,13 @@ async def test_failed_weather_execution_cannot_attest_verified_claim(
 async def test_weather_only_worker_never_calls_image_search(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pure weather research must not spend a media search."""
+    """Pure weather research must not create media findings."""
 
     async def fake_weather(city: str, forecast: bool = False) -> str:
         del forecast
         return f"{city}：晴，20℃"
 
-    # build_research_tools resolves this module global when the Worker is built.
-    monkeypatch.setattr("app.agent.tools.research_tools.get_weather", fake_weather)
+    monkeypatch.setattr("app.agent.tools.weather._get_weather", fake_weather)
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if _tool_returns(messages, "get_weather"):
@@ -319,4 +264,3 @@ async def test_weather_only_worker_never_calls_image_search(
     assert result.output.claims[0].tool_evidence == ["get_weather"]
     assert result.output.media == []
     assert _tool_calls(result.all_messages(), "get_weather") == 1
-    assert _tool_calls(result.all_messages(), "image_search") == 0

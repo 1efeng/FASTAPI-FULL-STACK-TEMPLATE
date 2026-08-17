@@ -21,6 +21,7 @@ from app.agent.executor import (
     stream_vercel_events,
 )
 from app.core.config import settings
+from app.infra.database import AsyncSessionLocal
 from app.infra.stream_resume import StreamFactory
 from app.modules.chat import streaming as sse
 from app.modules.chat.execution import (
@@ -74,12 +75,48 @@ class PreparedTurn:
     message: str
     deadline_at: datetime | None
     history: tuple[AgentMessage, ...]
+    enable_web_search: bool = True
+    enable_thinking: bool = True
     admission_lease: ChatAdmissionLease | None = None
     existing_request: RequestRun | None = None
+    replayed_response: AgentChatResponse | None = None
 
 
 class RequestTerminalTransitionError(RuntimeError):
     pass
+
+
+async def _finalize_stream_terminal(
+    producer_service: ChatService,
+    *,
+    request_id: uuid.UUID,
+    kind: AgentStreamTerminalKind,
+    reason: str | None = None,
+) -> str:
+    """Persist the Product terminal and return the matching UI terminal chunk."""
+    if kind == "abort":
+        await producer_service._persist_request_terminal(
+            request_id=request_id,
+            status=RequestRunStatus.CANCELLED,
+            error_code=None,
+        )
+        return sse.abort_part("请求已取消。")
+
+    if reason in _EXECUTOR_ERROR_MAP:
+        error_code = reason
+        error_message = _EXECUTOR_ERROR_MAP[error_code][0]
+    elif reason == "REQUEST_DEADLINE_EXCEEDED":
+        error_code = "REQUEST_DEADLINE_EXCEEDED"
+        error_message = "请求处理超时，请稍后重试。"
+    else:
+        error_code = "INTERNAL_ERROR"
+        error_message = "请求处理失败，请稍后重试。"
+    await producer_service._persist_request_terminal(
+        request_id=request_id,
+        status=RequestRunStatus.FAILED,
+        error_code=error_code,
+    )
+    return sse.error_part(error_message)
 
 
 class _StreamingCancellation(Exception):
@@ -88,6 +125,19 @@ class _StreamingCancellation(Exception):
 
 class _StreamingDeadlineExceeded(Exception):
     """Internal signal used to gate a streaming deadline terminal."""
+
+
+_TITLE_MAX_CHARS = 30
+
+
+def _derive_conversation_title(message: str) -> str | None:
+    """Derive a conversation title from its first user message."""
+    normalized = " ".join(message.split())
+    if not normalized:
+        return None
+    if len(normalized) <= _TITLE_MAX_CHARS:
+        return normalized
+    return f"{normalized[:_TITLE_MAX_CHARS]}…"
 
 
 # AgentExecutionError → Product error contract 映射。错误文案不泄露 provider 细节。
@@ -230,7 +280,10 @@ class ChatService:
         deadline_at = started_at + timedelta(seconds=settings.REQUEST_DEADLINE_SECONDS)
         try:
             if conversation_id is None:
-                conversation = Conversation(user_id=user_id, title=None)
+                conversation = Conversation(
+                    user_id=user_id,
+                    title=_derive_conversation_title(message),
+                )
                 conversation = await self.conversation_repo.create(conversation)
             else:
                 conversation = await self.conversation_repo.get_owned_active(
@@ -298,6 +351,8 @@ class ChatService:
         conversation_id: uuid.UUID | None,
         idempotency_key: str,
         message: str,
+        enable_web_search: bool = True,
+        enable_thinking: bool = True,
         client_ip: str = "unknown",
     ) -> PreparedTurn:
         """Own the Product start gate before any stream transport is opened."""
@@ -310,7 +365,7 @@ class ChatService:
                 conversation_id=resolved_conversation_id,
                 user_id=user_id,
             )
-            await self._replay_existing(
+            replayed_response = await self._replay_existing(
                 existing,
                 conversation_id=resolved_conversation_id,
                 message=message,
@@ -322,7 +377,10 @@ class ChatService:
                 message=message,
                 deadline_at=existing.deadline_at,
                 history=(),
+                enable_web_search=enable_web_search,
+                enable_thinking=enable_thinking,
                 existing_request=existing,
+                replayed_response=replayed_response,
             )
 
         lease = await self._admit(
@@ -345,7 +403,7 @@ class ChatService:
                 )
                 if existing is not None:
                     resolved_conversation_id = existing.conversation_id
-                    await self._replay_existing(
+                    replayed_response = await self._replay_existing(
                         existing,
                         conversation_id=resolved_conversation_id,
                         message=message,
@@ -359,7 +417,10 @@ class ChatService:
                         message=message,
                         deadline_at=existing.deadline_at,
                         history=(),
+                        enable_web_search=enable_web_search,
+                        enable_thinking=enable_thinking,
                         existing_request=existing,
+                        replayed_response=replayed_response,
                     )
                 if conversation_id is not None:
                     running = await self.request_run_repo.get_running_for_conversation(
@@ -386,6 +447,8 @@ class ChatService:
                 message=message,
                 deadline_at=deadline_at,
                 history=history,
+                enable_web_search=enable_web_search,
+                enable_thinking=enable_thinking,
                 admission_lease=lease,
             )
         except Exception:
@@ -406,7 +469,7 @@ class ChatService:
         conversation_id: uuid.UUID,
         content: str,
         reasoning_summary: str | None = None,
-        reasoning_duration_ms: int | None = None,
+        source_urls: tuple[str, ...] = (),
     ) -> None:
         finished_at = datetime.now(UTC)
         try:
@@ -416,7 +479,7 @@ class ChatService:
                 role=MessageRole.ASSISTANT,
                 content=content,
                 reasoning_summary=reasoning_summary,
-                reasoning_duration_ms=reasoning_duration_ms,
+                source_urls=list(source_urls),
             )
             await self.conversation_repo.create_message(assistant_message)
             transitioned = await self.request_run_repo.transition_from_running(
@@ -508,6 +571,8 @@ class ChatService:
         deadline_at: datetime,
         message: str,
         history: tuple[AgentMessage, ...],
+        enable_web_search: bool,
+        enable_thinking: bool,
     ) -> AgentExecutionResult:
         execute_task = self.supervisor.start(
             request_id,
@@ -518,6 +583,8 @@ class ChatService:
                     message=message,
                     history=history,
                     deadline_at=deadline_at,
+                    enable_web_search=enable_web_search,
+                    enable_thinking=enable_thinking,
                 )
             )
         )
@@ -592,6 +659,8 @@ class ChatService:
         conversation_id: uuid.UUID | None,
         idempotency_key: str,
         message: str,
+        enable_web_search: bool = True,
+        enable_thinking: bool = True,
         client_ip: str = "unknown",
     ) -> AgentChatResponse:
         turn = await self.prepare_turn(
@@ -600,14 +669,13 @@ class ChatService:
             conversation_id=conversation_id,
             idempotency_key=idempotency_key,
             message=message,
+            enable_web_search=enable_web_search,
+            enable_thinking=enable_thinking,
             client_ip=client_ip,
         )
         if turn.existing_request is not None:
-            return await self._replay_existing(
-                turn.existing_request,
-                conversation_id=turn.conversation_id,
-                message=turn.message,
-            )
+            assert turn.replayed_response is not None
+            return turn.replayed_response
 
         assert turn.deadline_at is not None
         try:
@@ -618,13 +686,15 @@ class ChatService:
                     deadline_at=turn.deadline_at,
                     message=turn.message,
                     history=turn.history,
+                    enable_web_search=turn.enable_web_search,
+                    enable_thinking=turn.enable_thinking,
                 )
                 await self._persist_request_success(
                     request_id=turn.request_id,
                     conversation_id=turn.conversation_id,
                     content=result.content,
                     reasoning_summary=result.reasoning_summary,
-                    reasoning_duration_ms=result.reasoning_duration_ms,
+                    source_urls=result.source_urls,
                 )
             except asyncio.CancelledError:
                 await asyncio.shield(
@@ -665,207 +735,205 @@ class ChatService:
         finally:
             await self._finish_prepared_turn(turn)
 
-    async def stream_factory(
+    async def _stream_replay_chunks(
         self,
-        *,
-        prepared: PreparedTurn | None = None,
-        request_id: uuid.UUID | None = None,
-        user_id: uuid.UUID | None = None,
-        conversation_id: uuid.UUID | None = None,
-        idempotency_key: str | None = None,
-        message: str | None = None,
-        client_ip: str = "unknown",
-    ) -> StreamFactory:
-        """Build transport chunks from an already-prepared Product turn."""
-        if prepared is None:
-            if (
-                request_id is None
-                or user_id is None
-                or idempotency_key is None
-                or message is None
-            ):
-                raise TypeError("stream_factory requires a prepared turn or request fields")
-            prepared = await self.prepare_turn(
-                request_id=request_id,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                idempotency_key=idempotency_key,
-                message=message,
-                client_ip=client_ip,
-            )
-        turn = prepared
+        producer_service: ChatService,
+        turn: PreparedTurn,
+    ) -> AsyncIterator[str]:
+        """Replay an already-persisted assistant reply as a one-shot stream."""
+        assistant = await producer_service.request_run_repo.get_message(
+            turn.request_id, MessageRole.ASSISTANT
+        )
+        if assistant is None:
+            return
+        text_id = uuid.uuid4().hex
+        yield sse.start_part(str(turn.request_id))
+        yield sse.text_start_part(text_id)
+        yield sse.text_delta_part(text_id, assistant.content)
+        yield sse.text_end_part(text_id)
+        for url in assistant.source_urls:
+            yield sse.source_url_part(url)
+        yield sse.finish_part()
+        yield sse.done_marker()
 
-        async def producer() -> AsyncIterator[str]:
-            request_id = turn.request_id
-            conversation_id = turn.conversation_id
-            message = turn.message
-            deadline_at = turn.deadline_at
-            history = turn.history
-            if turn.existing_request is not None:
-                assistant = await self.request_run_repo.get_message(
-                    turn.request_id, MessageRole.ASSISTANT
+    async def _stream_execution_chunks(
+        self,
+        producer_service: ChatService,
+        turn: PreparedTurn,
+    ) -> AsyncIterator[str]:
+        """Run one Agent turn and drain its stream events to UI chunks."""
+        request_id = turn.request_id
+        conversation_id = turn.conversation_id
+        message = turn.message
+        deadline_at = turn.deadline_at
+        history = turn.history
+        assert deadline_at is not None
+
+        try:
+            # Terminal gate: COMMIT the durable assistant final *before* the
+            # adapter emits its finish chunk (on_complete runs upstream of
+            # after_stream's FinishChunk in VercelAIAdapter.transform_stream).
+            async def commit_final(result: AgentExecutionResult) -> None:
+                # #region agent log
+                debug_runtime_log(
+                    hypothesis_id="H5",
+                    location="chat/service.py:commit_final.before",
+                    message="stream final commit started",
+                    data={"request_id": str(request_id)},
+                    run_id=str(request_id),
                 )
-                if assistant is None:
-                    return
-                text_id = uuid.uuid4().hex
-                yield sse.start_part(str(turn.request_id))
-                yield sse.text_start_part(text_id)
-                yield sse.text_delta_part(text_id, assistant.content)
-                yield sse.text_end_part(text_id)
-                yield sse.finish_part()
-                yield sse.done_marker()
-                return
+                # #endregion agent log
+                await producer_service._persist_request_success(
+                    request_id=request_id,
+                    conversation_id=conversation_id,
+                    content=result.content,
+                    reasoning_summary=result.reasoning_summary,
+                    source_urls=result.source_urls,
+                )
+                # #region agent log
+                debug_runtime_log(
+                    hypothesis_id="H5",
+                    location="chat/service.py:commit_final.after",
+                    message="stream final commit finished",
+                    data={"request_id": str(request_id)},
+                    run_id=str(request_id),
+                )
+                # #endregion agent log
 
-            assert deadline_at is not None
-            try:
-                # Terminal gate: COMMIT the durable assistant final *before* the
-                # adapter emits its finish chunk (on_complete runs upstream of
-                # after_stream's FinishChunk in VercelAIAdapter.transform_stream).
-                async def commit_final(result: AgentExecutionResult) -> None:
-                    # #region agent log
-                    debug_runtime_log(
-                        hypothesis_id="H5",
-                        location="chat/service.py:commit_final.before",
-                        message="stream final commit started",
-                        data={"request_id": str(request_id)},
-                        run_id=str(request_id),
-                    )
-                    # #endregion agent log
-                    await self._persist_request_success(
-                        request_id=request_id,
-                        conversation_id=conversation_id,
-                        content=result.content,
-                        reasoning_summary=result.reasoning_summary,
-                        reasoning_duration_ms=result.reasoning_duration_ms,
-                    )
-                    # #region agent log
-                    debug_runtime_log(
-                        hypothesis_id="H5",
-                        location="chat/service.py:commit_final.after",
-                        message="stream final commit finished",
-                        data={"request_id": str(request_id)},
-                        run_id=str(request_id),
-                    )
-                    # #endregion agent log
+            async def commit_stream_terminal(
+                kind: AgentStreamTerminalKind,
+                _reason: str | None,
+            ) -> str:
+                return await _finalize_stream_terminal(
+                    producer_service,
+                    request_id=request_id,
+                    kind=kind,
+                    reason=_reason,
+                )
 
-                async def commit_stream_terminal(
-                    kind: AgentStreamTerminalKind,
-                    _reason: str | None,
-                ) -> str:
-                    if kind == "abort":
-                        await self._persist_request_terminal(
-                            request_id=request_id,
-                            status=RequestRunStatus.CANCELLED,
-                            error_code=None,
-                        )
-                        return sse.abort_part("请求已取消。")
+            # The supervisor owns the Agent/adapter execution. The
+            # StreamResumeStore producer only drains this channel and may
+            # be detached/re-attached independently of the execution task.
+            events: asyncio.Queue[str | BaseException | None] = asyncio.Queue()
 
-                    if _reason in _EXECUTOR_ERROR_MAP:
-                        error_code = _reason
-                        error_message = _EXECUTOR_ERROR_MAP[error_code][0]
+            async def run_execution() -> None:
+                # #region agent log
+                debug_runtime_log(
+                    hypothesis_id="H4",
+                    location="chat/service.py:run_execution.entry",
+                    message="stream agent execution started",
+                    data={"request_id": str(request_id)},
+                    run_id=str(request_id),
+                )
+                # #endregion agent log
+                try:
+                    async with _execution_timeout(deadline_at):
+                        async for chunk in stream_vercel_events(
+                            AgentExecutionRequest(
+                                request_id=request_id,
+                                conversation_id=conversation_id,
+                                message=message,
+                                history=history,
+                                deadline_at=deadline_at,
+                                enable_web_search=turn.enable_web_search,
+                                enable_thinking=turn.enable_thinking,
+                            ),
+                            on_complete=commit_final,
+                            on_terminal=commit_stream_terminal,
+                        ):
+                            await events.put(chunk)
+                except asyncio.CancelledError:
+                    if self.supervisor.cancellation_requested(request_id):
+                        await events.put(_StreamingCancellation())
                     else:
-                        error_code = "INTERNAL_ERROR"
-                        error_message = "请求处理失败，请稍后重试。"
-                    await self._persist_request_terminal(
-                        request_id=request_id,
-                        status=RequestRunStatus.FAILED,
-                        error_code=error_code,
-                    )
-                    return sse.error_part(error_message)
-
-                # The supervisor owns the Agent/adapter execution. The
-                # StreamResumeStore producer only drains this channel and may
-                # be detached/re-attached independently of the execution task.
-                events: asyncio.Queue[str | BaseException | None] = asyncio.Queue()
-
-                async def run_execution() -> None:
+                        raise
+                except TimeoutError:
+                    await events.put(_StreamingDeadlineExceeded())
+                except BaseException as exc:
+                    await events.put(exc)
+                finally:
                     # #region agent log
                     debug_runtime_log(
                         hypothesis_id="H4",
-                        location="chat/service.py:run_execution.entry",
-                        message="stream agent execution started",
+                        location="chat/service.py:run_execution.exit",
+                        message="stream agent execution ended",
                         data={"request_id": str(request_id)},
                         run_id=str(request_id),
                     )
                     # #endregion agent log
-                    try:
-                        async with _execution_timeout(deadline_at):
-                            async for chunk in stream_vercel_events(
-                                AgentExecutionRequest(
-                                    request_id=request_id,
-                                    conversation_id=conversation_id,
-                                    message=message,
-                                    history=history,
-                                    deadline_at=deadline_at,
-                                ),
-                                on_complete=commit_final,
-                                on_terminal=commit_stream_terminal,
-                            ):
-                                await events.put(chunk)
-                    except asyncio.CancelledError:
-                        if self.supervisor.cancellation_requested(request_id):
-                            await events.put(_StreamingCancellation())
-                        else:
-                            raise
-                    except TimeoutError:
-                        await events.put(_StreamingDeadlineExceeded())
-                    except BaseException as exc:
-                        await events.put(exc)
-                    finally:
-                        # #region agent log
-                        debug_runtime_log(
-                            hypothesis_id="H4",
-                            location="chat/service.py:run_execution.exit",
-                            message="stream agent execution ended",
-                            data={"request_id": str(request_id)},
-                            run_id=str(request_id),
-                        )
-                        # #endregion agent log
-                        await events.put(None)
+                    await events.put(None)
 
-                execution_task = self.supervisor.start(request_id, run_execution())
-                try:
-                    while True:
-                        chunk = await events.get()
-                        if chunk is None:
-                            break
-                        if isinstance(chunk, BaseException):
-                            if isinstance(chunk, _StreamingCancellation) or self.supervisor.cancellation_requested(
-                                request_id
-                            ):
-                                await self._persist_request_terminal(
-                                    request_id=request_id,
-                                    status=RequestRunStatus.CANCELLED,
-                                    error_code=None,
-                                )
-                                yield sse.abort_part("请求已取消。")
-                            elif isinstance(chunk, _StreamingDeadlineExceeded):
-                                await self._persist_request_terminal(
-                                    request_id=request_id,
-                                    status=RequestRunStatus.FAILED,
-                                    error_code="REQUEST_DEADLINE_EXCEEDED",
-                                )
-                                yield sse.error_part("请求处理超时，请稍后重试。")
-                            else:
-                                await self._persist_request_terminal(
-                                    request_id=request_id,
-                                    status=RequestRunStatus.FAILED,
-                                    error_code="INTERNAL_ERROR",
-                                )
-                                yield sse.error_part("请求处理失败，请稍后重试。")
-                            yield sse.done_marker()
-                            break
+            execution_task = self.supervisor.start(request_id, run_execution())
+            try:
+                while True:
+                    chunk = await events.get()
+                    if chunk is None:
+                        break
+                    if isinstance(chunk, BaseException):
+                        if isinstance(chunk, _StreamingCancellation) or self.supervisor.cancellation_requested(
+                            request_id
+                        ):
+                            yield await _finalize_stream_terminal(
+                                producer_service,
+                                request_id=request_id,
+                                kind="abort",
+                            )
+                        elif isinstance(chunk, _StreamingDeadlineExceeded):
+                            yield await _finalize_stream_terminal(
+                                producer_service,
+                                request_id=request_id,
+                                kind="error",
+                                reason="REQUEST_DEADLINE_EXCEEDED",
+                            )
+                        else:
+                            yield await _finalize_stream_terminal(
+                                producer_service,
+                                request_id=request_id,
+                                kind="error",
+                            )
+                        yield sse.done_marker()
+                        break
+                    yield chunk
+                await execution_task
+            except Exception:
+                if not self.supervisor.cancellation_requested(request_id):
+                    await producer_service._persist_request_terminal(
+                        request_id=request_id,
+                        status=RequestRunStatus.FAILED,
+                        error_code="INTERNAL_ERROR",
+                    )
+                raise
+        finally:
+            await producer_service._finish_prepared_turn(turn)
+
+    async def stream_factory(
+        self,
+        *,
+        prepared: PreparedTurn,
+    ) -> StreamFactory:
+        """Build transport chunks from an already-prepared Product turn."""
+        turn = prepared
+
+        async def producer() -> AsyncIterator[str]:
+            producer_db = AsyncSessionLocal()
+            producer_service = ChatService(
+                producer_db,
+                executor=self.executor,
+                runtime=self.runtime,
+                supervisor=self.supervisor,
+            )
+            try:
+                if turn.existing_request is not None:
+                    async for chunk in self._stream_replay_chunks(
+                        producer_service, turn
+                    ):
                         yield chunk
-                    await execution_task
-                except Exception:
-                    if not self.supervisor.cancellation_requested(request_id):
-                        await self._persist_request_terminal(
-                            request_id=request_id,
-                            status=RequestRunStatus.FAILED,
-                            error_code="INTERNAL_ERROR",
-                        )
-                    raise
+                    return
+                async for chunk in self._stream_execution_chunks(
+                    producer_service, turn
+                ):
+                    yield chunk
             finally:
-                await self._finish_prepared_turn(turn)
+                await producer_db.close()
 
         return producer

@@ -1,11 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import {
-  MessageSquareText,
-  MoreHorizontal,
-  Pencil,
-  Plus,
-  Trash2,
-} from "lucide-react"
+import { MoreHorizontal, Pencil, Trash2 } from "lucide-react"
 import { useMemo, useState } from "react"
 
 import { Button } from "@/components/ui/button"
@@ -25,9 +19,8 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import { apiFetch } from "@/lib/auth"
 import { cn } from "@/lib/utils"
-
-const TOKEN_KEY = "access_token"
 
 export type ConversationSummary = {
   id: string
@@ -50,11 +43,7 @@ type ConversationHistoryProps = {
 }
 
 async function loadConversations(): Promise<ConversationsResponse> {
-  const response = await fetch("/api/v1/conversations/?limit=100", {
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY) ?? ""}`,
-    },
-  })
+  const response = await apiFetch("/api/v1/conversations/?limit=100", {})
   if (!response.ok) {
     throw new Error(`failed to load conversations: ${response.status}`)
   }
@@ -65,12 +54,9 @@ async function renameConversation(
   conversationId: string,
   title: string,
 ): Promise<void> {
-  const response = await fetch(`/api/v1/conversations/${conversationId}`, {
+  const response = await apiFetch(`/api/v1/conversations/${conversationId}`, {
     method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY) ?? ""}`,
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
   })
   if (!response.ok) {
@@ -79,11 +65,8 @@ async function renameConversation(
 }
 
 async function deleteConversation(conversationId: string): Promise<void> {
-  const response = await fetch(`/api/v1/conversations/${conversationId}`, {
+  const response = await apiFetch(`/api/v1/conversations/${conversationId}`, {
     method: "DELETE",
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY) ?? ""}`,
-    },
   })
   if (!response.ok) {
     throw new Error(`failed to delete conversation: ${response.status}`)
@@ -174,13 +157,27 @@ export function ConversationHistory({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-sidebar">
-      <div className="px-3 pb-2 pt-3">
+      <div className="px-2 pb-2 pt-3">
         <Button
-          className="h-10 w-full justify-center gap-1.5 rounded-[16px] border bg-background font-normal text-foreground shadow-sm hover:bg-muted/60 hover:text-foreground"
+          className="h-10 w-full justify-start gap-2 rounded-lg px-2.5 text-left text-sm font-normal text-sidebar-foreground/80 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
           disabled={disabled}
           onClick={onNewConversation}
+          variant="ghost"
         >
-          <Plus className="size-4" />
+          <span
+            aria-hidden="true"
+            className="size-4 shrink-0 bg-current"
+            style={{
+              maskImage: "url(/assets/images/new_conversation.svg)",
+              maskRepeat: "no-repeat",
+              maskSize: "contain",
+              maskPosition: "center",
+              WebkitMaskImage: "url(/assets/images/new_conversation.svg)",
+              WebkitMaskRepeat: "no-repeat",
+              WebkitMaskSize: "contain",
+              WebkitMaskPosition: "center",
+            }}
+          />
           新对话
         </Button>
       </div>
@@ -212,8 +209,7 @@ export function ConversationHistory({
           !conversations.isError &&
           filteredConversations.length === 0 && (
             <div className="flex flex-col items-center px-4 py-10 text-center">
-              <MessageSquareText className="size-5 text-muted-foreground/60" />
-              <p className="mt-2 text-sm text-muted-foreground">还没有对话</p>
+              <p className="text-sm text-muted-foreground">还没有对话</p>
               <p className="mt-0.5 text-xs text-muted-foreground/80">
                 从一次新的旅行咨询开始
               </p>

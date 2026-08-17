@@ -151,6 +151,78 @@ async def test_stream_start_gate_creates_conversation_and_reuses_request_identit
     assert request_run.conversation_id == conversation.id
     assert request_run.id == uuid.UUID(request_id)
 
+    detail_response = await client.get(
+        f"{settings.API_V1_STR}/conversations/{conversation_id}",
+        headers=normal_user_token_headers,
+    )
+    assert detail_response.status_code == 200
+    detail_messages = detail_response.json()["messages"]
+    assert [message["role"] for message in detail_messages] == ["user", "assistant"]
+    assert detail_messages[-1]["content"] == "测试回复"
+
+
+async def test_stream_persists_assistant_when_reasoning_lacks_public_summary(
+    client: AsyncClient,
+    normal_user_token_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raw-CoT turn has no public summary yet the assistant must persist."""
+
+    executor = CallbackExecutor()
+    store = StartStore()
+
+    async def fake_stream(
+        request: AgentExecutionRequest,
+        *,
+        on_complete: Callable[[AgentExecutionResult], Awaitable[None]] | None,
+        on_terminal: object,
+    ) -> AsyncIterator[str]:
+        del on_terminal
+        executor.requests.append(request)
+        assert on_complete is not None
+        await on_complete(
+            AgentExecutionResult(
+                content="测试回复",
+                reasoning_summary=None,
+            )
+        )
+        yield 'data: {"type":"finish"}\n\n'
+
+    monkeypatch.setattr(service_module, "stream_vercel_events", fake_stream)
+    monkeypatch.setattr(api_module, "get_stream_resume_store", lambda: store)
+
+    response = await client.post(
+        f"{settings.API_V1_STR}/chat/stream",
+        headers={
+            **normal_user_token_headers,
+            "Idempotency-Key": "stream-reasoning-no-summary",
+        },
+        json={
+            "id": "ui-message-1",
+            "messages": [
+                {
+                    "id": "ui-message-1",
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "你好"}],
+                }
+            ],
+            "conversation_id": None,
+        },
+    )
+
+    assert response.status_code == 200
+    conversation_id = uuid.UUID(response.headers["x-conversation-id"])
+
+    detail_response = await client.get(
+        f"{settings.API_V1_STR}/conversations/{conversation_id}",
+        headers=normal_user_token_headers,
+    )
+    assert detail_response.status_code == 200
+    detail_messages = detail_response.json()["messages"]
+    assert [message["role"] for message in detail_messages] == ["user", "assistant"]
+    assert detail_messages[-1]["content"] == "测试回复"
+    assert detail_messages[-1]["reasoning_summary"] is None
+
 
 async def test_stream_rejects_missing_conversation_before_opening_sse(
     client: AsyncClient,

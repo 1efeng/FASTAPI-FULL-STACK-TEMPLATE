@@ -10,11 +10,13 @@ only after the corresponding Product transaction COMMITs.
 
 from __future__ import annotations
 
-import json
+from app.infra.vercel_protocol import done_marker as _done_marker
+from app.infra.vercel_protocol import encode_event
 
 
 def sse_part(payload: dict[str, object]) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    event_type = payload.pop("type")
+    return encode_event(event_type, **payload)
 
 
 def start_part(message_id: str) -> str:
@@ -33,18 +35,6 @@ def text_end_part(part_id: str) -> str:
     return sse_part({"type": "text-end", "id": part_id})
 
 
-def reasoning_start_part(part_id: str) -> str:
-    return sse_part({"type": "reasoning-start", "id": part_id})
-
-
-def reasoning_delta_part(part_id: str, delta: str) -> str:
-    return sse_part({"type": "reasoning-delta", "id": part_id, "delta": delta})
-
-
-def reasoning_end_part(part_id: str) -> str:
-    return sse_part({"type": "reasoning-end", "id": part_id})
-
-
 def finish_part() -> str:
     return sse_part({"type": "finish"})
 
@@ -60,5 +50,9 @@ def abort_part(reason: str | None = None) -> str:
     return sse_part(payload)
 
 
+def source_url_part(url: str) -> str:
+    return sse_part({"type": "source-url", "sourceId": url, "url": url})
+
+
 def done_marker() -> str:
-    return "data: [DONE]\n\n"
+    return _done_marker()

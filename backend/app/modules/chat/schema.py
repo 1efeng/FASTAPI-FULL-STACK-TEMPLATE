@@ -8,6 +8,8 @@ from app.modules.request_run.model import RequestRunStatus
 class AgentChatRequest(BaseModel):
     conversation_id: uuid.UUID | None = None
     message: str = Field(max_length=20_000)
+    enable_web_search: bool = True
+    enable_thinking: bool = True
 
     @field_validator("message")
     @classmethod

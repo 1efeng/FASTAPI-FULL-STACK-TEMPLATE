@@ -79,33 +79,6 @@ services:
       - traefik.http.routers.${STACK_NAME?Variable not set}-adminer-https.tls.certresolver=le
       - traefik.http.services.${STACK_NAME?Variable not set}-adminer.loadbalancer.server.port=8080
 
-  searxng:
-    image: searxng/searxng:latest
-    restart: always
-    # Host network: WSL2 dev box can only reach the internet through a
-    # loopback proxy (127.0.0.1:7897), which bridge networking cannot see.
-    network_mode: host
-    env_file:
-      - .env
-    environment:
-      - SEARXNG_SECRET=${SEARXNG_SECRET?Variable not set}
-      # Granian listens on 8080 by default; host 8080 is taken locally.
-      - SEARXNG_PORT=8888
-      # Outbound proxy for engine requests; set in .env when the host needs a
-      # local proxy to reach the internet.
-      - HTTP_PROXY=${SEARXNG_HTTP_PROXY:-}
-      - HTTPS_PROXY=${SEARXNG_HTTP_PROXY:-}
-      - NO_PROXY=localhost,127.0.0.1
-    volumes:
-      - ./infra/searxng/settings.yml:/etc/searxng/settings.yml:ro
-      - searxng-data:/var/cache/searxng
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8888/search?q=test&format=json', timeout=5)\""]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
 
   prestart:
     image: '${DOCKER_IMAGE_BACKEND?Variable not set}:${TAG-latest}'
@@ -141,10 +114,6 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?Variable not set}
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
       - SENTRY_DSN=${SENTRY_DSN}
-      # SearXNG runs on host networking; reach it via the host gateway.
-      - SEARXNG_BASE_URL=http://host.docker.internal:8888
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   backend:
     image: '${DOCKER_IMAGE_BACKEND?Variable not set}:${TAG-latest}'
@@ -180,10 +149,6 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT}/${POSTGRES_DB}
       - FORWARDED_ALLOW_IPS=*
       - SENTRY_DSN=${SENTRY_DSN}
-      # SearXNG runs on host networking; reach it via the host gateway.
-      - SEARXNG_BASE_URL=http://host.docker.internal:8888
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/utils/health/ready"]
@@ -214,7 +179,6 @@ services:
 volumes:
   app-db-data:
   redis-data:
-  searxng-data:
 
 networks:
   traefik-public:

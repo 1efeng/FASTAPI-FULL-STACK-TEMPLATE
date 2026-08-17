@@ -97,7 +97,8 @@ services:
     image: schickling/mailcatcher
     ports:
       - "1080:1080"
-      - "1025:1025"
+      # Host 1025 is taken locally (e.g. another SMTP service); bind 1125 instead.
+      - "1125:1025"
 
   playwright:
     build:

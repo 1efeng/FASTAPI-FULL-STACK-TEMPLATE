@@ -57,7 +57,8 @@ def test_main_agent_uses_rpc_timeout_and_disables_sdk_retries() -> None:
     provider = model.provider
 
     assert agent.model_settings == {
-        "timeout": settings.LITELLM_CLIENT_TIMEOUT_SECONDS
+        "timeout": settings.LITELLM_CLIENT_TIMEOUT_SECONDS,
+        "thinking": True,
     }
     assert provider.client.max_retries == 0
 
@@ -144,7 +145,8 @@ async def test_stream_model_requests_receive_same_rpc_timeout() -> None:
 
     assert chunks == ["data: [DONE]\n\n"]
     assert captured_agent_settings == {
-        "timeout": settings.LITELLM_CLIENT_TIMEOUT_SECONDS
+        "timeout": settings.LITELLM_CLIENT_TIMEOUT_SECONDS,
+        "thinking": True,
     }
 
 

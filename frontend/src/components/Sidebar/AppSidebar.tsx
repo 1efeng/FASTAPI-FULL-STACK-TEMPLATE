@@ -1,12 +1,10 @@
-﻿import { useNavigate, useRouterState } from "@tanstack/react-router"
+import { useNavigate, useRouterState } from "@tanstack/react-router"
 import { useCallback } from "react"
 
-import { Logo } from "@/components/Common/Logo"
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
-  SidebarHeader,
   useSidebar,
 } from "@/components/ui/sidebar"
 import { useChatNavigation } from "@/features/chat/chat-navigation-context"
@@ -14,8 +12,6 @@ import { ConversationHistory } from "@/features/chat/conversation-history"
 import useAuth from "@/hooks/useAuth"
 import { cn } from "@/lib/utils"
 import { User } from "./User"
-
-const CONVERSATION_KEY = "travel_agent_conversation_id"
 
 export function AppSidebar() {
   const { user: currentUser } = useAuth()
@@ -40,7 +36,6 @@ export function AppSidebar() {
 
   const selectConversation = useCallback(
     (conversationId: string) => {
-      localStorage.setItem(CONVERSATION_KEY, conversationId)
       closeMobileSidebar()
       void navigate({
         to: "/chat",
@@ -53,12 +48,7 @@ export function AppSidebar() {
 
   return (
     <Sidebar className={cn(isChat && "chat-sidebar")} collapsible="offcanvas">
-      <SidebarHeader className="pb-3 pt-5">
-        <div className="relative flex justify-center">
-          <Logo variant="mark" />
-        </div>
-      </SidebarHeader>
-      <SidebarContent className="min-h-0 overflow-hidden">
+      <SidebarContent className="min-h-0 overflow-hidden pt-5">
         <ConversationHistory
           activeConversationId={activeConversationId}
           disabled={isNavigationLocked}

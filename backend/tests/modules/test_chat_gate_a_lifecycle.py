@@ -229,7 +229,6 @@ async def test_stream_agent_task_is_supervised_outside_store_producer(
                 AgentExecutionResult(
                     content="supervised stream final",
                     reasoning_summary="公开的规划思路摘要",
-                    reasoning_duration_ms=4200,
                 )
             )
         yield "chunk-1"
@@ -242,13 +241,14 @@ async def test_stream_agent_task_is_supervised_outside_store_producer(
         supervisor=supervisor,
     )
     request_id = uuid.uuid4()
-    factory = await service.stream_factory(
+    prepared = await service.prepare_turn(
         request_id=request_id,
         user_id=user.id,
         conversation_id=conversation_id,
         idempotency_key="supervisor-stream-topology",
         message="stream this",
     )
+    factory = await service.stream_factory(prepared=prepared)
 
     stream = factory()
 
@@ -266,7 +266,6 @@ async def test_stream_agent_task_is_supervised_outside_store_producer(
         message for message in messages if message.role is MessageRole.ASSISTANT
     )
     assert assistant.reasoning_summary == "公开的规划思路摘要"
-    assert assistant.reasoning_duration_ms == 4200
     await supervisor.shutdown()
 
 
@@ -290,13 +289,14 @@ async def test_stream_error_terminal_is_emitted_after_failed_commit(
     monkeypatch.setattr(service_module, "stream_vercel_events", failing_stream)
     service = ChatService(db, executor=ImmediateExecutor())
     request_id = uuid.uuid4()
-    factory = await service.stream_factory(
+    prepared = await service.prepare_turn(
         request_id=request_id,
         user_id=user.id,
         conversation_id=conversation_id,
         idempotency_key="stream-error-gate",
         message="fail this stream",
     )
+    factory = await service.stream_factory(prepared=prepared)
 
     chunks = [chunk async for chunk in factory()]
     assert chunks[0] == "non-terminal"
@@ -341,13 +341,14 @@ async def test_stream_typed_model_error_preserves_product_code(
     service = ChatService(db, executor=ImmediateExecutor())
     request_id = uuid.uuid4()
     idempotency_key = f"stream-{error_code.lower()}-gate"
-    factory = await service.stream_factory(
+    prepared = await service.prepare_turn(
         request_id=request_id,
         user_id=user.id,
         conversation_id=conversation_id,
         idempotency_key=idempotency_key,
         message=f"fail with {error_code}",
     )
+    factory = await service.stream_factory(prepared=prepared)
 
     chunks = [chunk async for chunk in factory()]
     assert any('"type": "error"' in chunk for chunk in chunks)
@@ -384,13 +385,14 @@ async def test_stream_cancel_terminal_is_emitted_after_cancel_commit(
         supervisor=supervisor,
     )
     request_id = uuid.uuid4()
-    factory = await service.stream_factory(
+    prepared = await service.prepare_turn(
         request_id=request_id,
         user_id=user.id,
         conversation_id=conversation_id,
         idempotency_key="stream-cancel-gate",
         message="cancel this stream",
     )
+    factory = await service.stream_factory(prepared=prepared)
     stream = factory()
 
     async def collect_stream() -> list[str]:
@@ -429,13 +431,14 @@ async def test_stream_deadline_terminal_is_emitted_after_failed_commit(
     monkeypatch.setattr(settings, "REQUEST_DEADLINE_SECONDS", 0.05)
     service = ChatService(db, executor=ImmediateExecutor())
     request_id = uuid.uuid4()
-    factory = await service.stream_factory(
+    prepared = await service.prepare_turn(
         request_id=request_id,
         user_id=user.id,
         conversation_id=conversation_id,
         idempotency_key="stream-deadline-gate",
         message="deadline this stream",
     )
+    factory = await service.stream_factory(prepared=prepared)
 
     chunks = [chunk async for chunk in factory()]
     assert '"type": "error"' in chunks[0]

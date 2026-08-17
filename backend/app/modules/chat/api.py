@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 from typing import Annotated, Any
 
@@ -7,7 +8,6 @@ from fastapi.responses import JSONResponse, Response
 
 from app.agent.executor import (
     AgentRuntimeNotConfigured,
-    dispatch_vercel_spike,
     get_agent_executor,
 )
 from app.core.deps import CurrentUser, SessionDep
@@ -21,6 +21,10 @@ from app.modules.request_run.repository import RequestRunRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
+_SIMPLE_GREETING_RE = re.compile(
+    r"^(?:你好|您好|嗨|哈喽|早上好|下午好|晚上好|早安|晚安|hello|hi|hey)[!！,，。?？\s]*$",
+    re.IGNORECASE,
+)
 
 ChatRuntimeDep = Annotated[ChatRuntime, Depends(get_chat_runtime)]
 
@@ -78,6 +82,8 @@ async def chat(
             conversation_id=payload.conversation_id,
             idempotency_key=idempotency_key.strip(),
             message=payload.message,
+            enable_web_search=payload.enable_web_search,
+            enable_thinking=payload.enable_thinking,
             client_ip=request.client.host if request.client else "unknown",
         )
         if result.status is RequestRunStatus.RUNNING:
@@ -146,6 +152,20 @@ def _parse_conversation_id(body: dict[str, Any]) -> uuid.UUID | None:
         raise HTTPException(status_code=422, detail="invalid conversation_id") from exc
 
 
+def _parse_bool_field(
+    body: dict[str, Any], field: str, default: bool = True
+) -> bool:
+    raw = body.get(field, default)
+    if not isinstance(raw, bool):
+        raise HTTPException(status_code=422, detail=f"{field} must be boolean")
+    return raw
+
+
+def _effective_web_search(message: str, requested: bool) -> bool:
+    """Avoid loading web-search capabilities for pure greetings."""
+    return requested and not _SIMPLE_GREETING_RE.fullmatch(message)
+
+
 @router.post("/chat/stream")
 async def chat_stream(
     request: Request,
@@ -168,6 +188,11 @@ async def chat_stream(
 
     message = _extract_user_text(body)
     conversation_id = _parse_conversation_id(body)
+    enable_web_search = _effective_web_search(
+        message,
+        _parse_bool_field(body, "enable_web_search"),
+    )
+    enable_thinking = _parse_bool_field(body, "enable_thinking")
 
     request_id = uuid.uuid4()
     service = ChatService(db, executor=get_agent_executor(), runtime=runtime)
@@ -179,6 +204,8 @@ async def chat_stream(
             conversation_id=conversation_id,
             idempotency_key=idempotency_key.strip(),
             message=message,
+            enable_web_search=enable_web_search,
+            enable_thinking=enable_thinking,
             client_ip=request.client.host if request.client else "unknown",
         )
         factory = await service.stream_factory(prepared=prepared)
@@ -187,8 +214,6 @@ async def chat_stream(
 
     store = get_stream_resume_store()
     stream = await store.start_or_resume(str(prepared.request_id), factory)
-    if stream is None:
-        stream = await store.resume(str(prepared.request_id))
     if stream is None:
         return JSONResponse(status_code=204, content=None)
 
@@ -223,14 +248,3 @@ async def reconnect_stream(
     if stream is None:
         return JSONResponse(status_code=204, content=None)
     return sse_response(stream, headers={"x-vercel-ai-ui-message-stream": "v1"})
-
-
-@router.post("/chat/stream/dispatch")
-async def chat_stream_dispatch(request: Request, current_user: CurrentUser) -> Response:
-    """Compatibility spike endpoint (NOT the production Product lifecycle path).
-
-    Kept for AI SDK protocol spike only. Production streaming goes through
-    ``/chat/stream`` + ``/chat/requests/{id}/stream``.
-    """
-    del current_user
-    return await dispatch_vercel_spike(request)

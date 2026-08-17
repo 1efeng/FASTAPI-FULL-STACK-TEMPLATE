@@ -9,7 +9,15 @@ from uuid import UUID
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelResponse, TextPart, ThinkingPart
+from pydantic_ai.messages import (
+    ModelResponse,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    ThinkingPart,
+    ThinkingPartDelta,
+    ToolReturnPart,
+)
 from pydantic_ai.models.test import TestModel
 
 from app.agent.executor import (
@@ -19,6 +27,8 @@ from app.agent.executor import (
 )
 from app.agent.pydantic_executor import (
     VERCEL_AI_SDK_VERSION,
+    _project_raw_reasoning,
+    _source_urls,
     _to_reasoning_summary,
     stream_vercel_events,
 )
@@ -115,6 +125,106 @@ def test_public_reasoning_summary_excludes_provider_metadata() -> None:
     assert _to_reasoning_summary(cast(Any, FakeResult())) == (
         "compare routes\n\ncheck budget"
     )
+
+
+def test_reasoning_summary_captures_raw_content_from_responses_api() -> None:
+    class FakeResult:
+        def new_messages(self):
+            return [
+                ModelResponse(
+                    parts=[
+                        ThinkingPart(
+                            content="",
+                            id="provider-part-id",
+                            provider_name="litellm",
+                            provider_details={"raw_content": ["  think step one  ", "think step two"]},
+                        ),
+                        TextPart(content="final"),
+                    ]
+                )
+            ]
+
+    assert _to_reasoning_summary(cast(Any, FakeResult())) == (
+        "think step one  think step two"
+    )
+
+
+def test_source_urls_only_collect_from_tool_returns() -> None:
+    class FakeResult:
+        def new_messages(self):
+            return [
+                ModelResponse(parts=[TextPart(content="https://not-a-source.example")]),
+                ModelResponse(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name="web_fetch",
+                            content={"url": "https://official.example/guide"},
+                        )
+                    ]
+                ),
+            ]
+
+    assert _source_urls(cast(Any, FakeResult())) == (
+        "https://official.example/guide",
+    )
+
+
+async def test_project_raw_reasoning_streams_raw_cot_as_live_content() -> None:
+    def raw_updater(delta: str) -> Any:
+        def update(existing: dict[str, Any] | None) -> dict[str, Any]:
+            details = {**(existing or {})}
+            raw_list = list(details.get("raw_content", []))
+            if not raw_list:
+                raw_list = [""]
+            raw_list[0] += delta
+            details["raw_content"] = raw_list
+            return details
+
+        return update
+
+    async def feed(items: list[Any]) -> Any:
+        for item in items:
+            yield item
+
+    events = [
+        PartStartEvent(
+            index=0,
+            part=ThinkingPart(
+                content="",
+                id="provider-part-id",
+                provider_name="litellm",
+                provider_details={"raw_content": ["hello "]},
+            ),
+        ),
+        PartDeltaEvent(
+            index=0,
+            delta=ThinkingPartDelta(
+                content_delta=None,
+                provider_name="litellm",
+                provider_details=raw_updater("world"),
+            ),
+        ),
+        # A raw-less empty thinking part must pass through untouched.
+        PartStartEvent(
+            index=1,
+            part=ThinkingPart(content="", provider_name="litellm"),
+        ),
+    ]
+
+    projected = [
+        event async for event in _project_raw_reasoning(feed(events))
+    ]
+
+    assert isinstance(projected[0], PartStartEvent)
+    assert projected[0].part.content == "hello "
+    assert projected[0].part.provider_details == {"raw_content": ["hello "]}
+
+    assert isinstance(projected[1], PartDeltaEvent)
+    assert projected[1].delta.content_delta == "world"
+    assert projected[1].delta.provider_details == {"raw_content": ["hello world"]}
+
+    assert projected[2] is events[2]
+    assert projected[2].part.content == ""
 
 
 async def test_adapter_v7_text_stream_matches_protocol_fixture() -> None:
@@ -278,5 +388,3 @@ async def test_adapter_completion_projects_reasoning_into_product_result(
     assert len(completed) == 1
     assert completed[0].content == "final answer"
     assert completed[0].reasoning_summary == "public reasoning"
-    assert completed[0].reasoning_duration_ms is not None
-    assert completed[0].reasoning_duration_ms >= 1
