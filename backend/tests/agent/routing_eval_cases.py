@@ -62,7 +62,7 @@ ROUTING_CASES: tuple[RoutingCase, ...] = (
 )
 
 
-def _validate_routing_cases() -> list[str]:
+def validate_routing_cases() -> list[str]:
     errors: list[str] = []
     seen_ids: set[str] = set()
     for case in ROUTING_CASES:
@@ -79,19 +79,3 @@ def _validate_routing_cases() -> list[str]:
                 f"{case.expected_architecture!r}"
             )
     return errors
-
-
-def test_routing_eval_cases_cover_all_three_architectures() -> None:
-    covered = {case.expected_architecture for case in ROUTING_CASES}
-    assert covered == EXPECTED_ARCHITECTURES
-
-
-def test_routing_eval_cases_are_well_formed() -> None:
-    assert not _validate_routing_cases()
-
-
-def test_single_research_agent_is_bounded_not_path_dependent() -> None:
-    # case-4 must be the only single-delegation entry; dynamic path dependence is
-    # expressed as case-5 (Main orchestration), never as one free-running child.
-    delegated = [case for case in ROUTING_CASES if case.expected_architecture == "research_agent"]
-    assert [case.id for case in delegated] == ["case-4"]

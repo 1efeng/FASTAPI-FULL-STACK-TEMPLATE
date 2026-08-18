@@ -51,17 +51,19 @@ def _structured_output(info: AgentInfo, payload: dict[str, Any]) -> ModelRespons
 
 
 def _research_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-    """Two-stage bounded research child: Planner batch, then compressed findings."""
+    """Model both bounded child stages without executing external tools."""
     del messages
+    properties = info.output_tools[0].parameters_json_schema.get("properties", {})
+    if "actions" in properties:
+        return _structured_output(info, {"actions": []})
     return _structured_output(
         info,
         {
             "topic": "JR Pass 方案比较",
-            "summary": "区域 Pass + 单买组合更合适。",
+            "summary": "本 routing contract 只验证 Planner→Finalizer 编排。",
             "verification_results": [],
             "claims": [],
             "sources": [],
-            "media": [],
             "unresolved": [],
         },
     )

@@ -57,11 +57,49 @@ def test_research_request_accepts_atomic_checklist_and_rejects_duplicate_ids() -
 
     assert request.title == "箱根交通 Pass 比较"
     assert request.verification_items[0].id == "pass-price"
+    assert request.verification_items[0].impact == "unknown"
 
     with pytest.raises(ValidationError, match="verification item ids must be unique"):
         ResearchRequest(
             objective="重复 checklist",
             verification_items=[item, item.model_copy()],
+        )
+
+
+def test_verification_item_defaults_to_unknown_and_accepts_all_levels() -> None:
+    defaulted = VerificationItem(
+        id="opening",
+        entity="故宫博物院",
+        aspect="开放",
+        question="指定日期是否开放？",
+    )
+    assert defaulted.impact == "unknown"
+
+    medium = VerificationItem(
+        id="restaurant",
+        entity="某餐厅",
+        aspect="体验",
+        question="哪家餐厅更适合情侣晚餐？",
+        impact="medium",
+    )
+    assert medium.impact == "medium"
+
+    low = VerificationItem(
+        id="photo",
+        entity="夜景机位",
+        aspect="拍照角度",
+        question="哪个机位适合情侣打卡？",
+        impact="low",
+    )
+    assert low.impact == "low"
+
+    with pytest.raises(ValidationError, match="impact"):
+        VerificationItem(
+            id="bad",
+            entity="x",
+            aspect="y",
+            question="z",
+            impact="critical",  # type: ignore[arg-type]
         )
 
 

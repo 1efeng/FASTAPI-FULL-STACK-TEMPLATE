@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     MAIN_TOOL_CALL_LIMIT: PositiveInt = 16
     RESEARCH_AGENT_MODEL_REQUEST_LIMIT: PositiveInt = 8
     RESEARCH_AGENT_TOOL_CALL_LIMIT: PositiveInt = 18
+    # Research Task budget per impact level. The unit is a Research Task
+    # (one delegated topic / verification item), NOT a raw search API call:
+    # one task may legitimately use several tools (POI + Maps + Web Search),
+    # so tool calls are never capped directly.
+    # high/unknown <= 5 / medium <= 3 / low = 0 (never blocks the Final Plan).
+    RESEARCH_AGENT_IMPACT_BUDGET: dict[str, int] = {
+        "high": 5,
+        "medium": 3,
+        "low": 0,
+    }
 
     BACKEND_CORS_ORIGINS: Annotated[
         list[AnyUrl] | str, BeforeValidator(parse_cors)

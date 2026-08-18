@@ -44,18 +44,27 @@ producer-memory replay backlog
 
 ---
 
-# 2. 当前 SOT
+# 2. Reset 后状态
 
-请阅读：
+本文本身已经是历史说明，不再定义 TARGET Architecture。
+
+当前设计入口：
 
 ```text
-docs/架构v8.md
+docs/产品文档.md
+docs/架构.md
 AGENTS.md
-docs/接口契约.md
+```
+
+如果需要理解 CURRENT stream 实现，可直接查看：
+
+```text
 backend/app/infra/stream_resume/README.md
 backend/app/infra/stream_resume/protocol.py
 backend/app/infra/stream_resume/redis_store.py
 ```
+
+`docs/接口契约.md` 在 2026-08-19 reset 后属于 PROVISIONAL / NEEDS AUDIT，不能反向定义新架构。
 
 ---
 

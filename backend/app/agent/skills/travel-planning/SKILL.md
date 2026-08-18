@@ -40,6 +40,49 @@ Main 始终是最终用户意图负责人、最终旅行决策者和最终回答
 6. 完成必要核验后，由 Main 修正 Candidate Plan。
 7. 再完成 Budget / FX、Markdown Contract 和 Final Plan。
 
+### Research Decision Layer（调用搜索前必须判断）
+
+每次完整旅行规划中，Main 在调用任何搜索 / 事实能力之前，先对每个 Reality Gap 做一次决策判断：**这个信息如果错误，会不会影响旅行方案？**
+
+- 不会影响决策 → 不搜索，直接使用稳定知识 / 合理假设。
+- 会导致方案失败 / 核心路线调整 → 必须搜索，并标记为 high impact。
+- 只影响体验质量 → medium impact，可搜索但优先级低于 high。
+- 锦上添花 → low impact，默认不搜索，不阻塞 Final Plan（使用已有知识 / 用户二次询问时再查）。
+- 无法立即确定影响程度 → `unknown`，按 high 处理以保持安全。
+
+典型不需要搜索的例子：`北京有哪些著名景点`（不改变既定决策）。
+典型必须搜索的例子：`8月27日八达岭长城是否适合当天往返`（决定当天路线能否成立）。
+
+默认不要把所有 item 标成 high：只有“错误会导致方案不可执行或核心路线调整”的事实才是 high；多数体验优化项是 medium，多数锦上添花项是 low。
+
+### Research Task 数量预算
+
+限制对象是 **Research Task**（一次需要弄清的事实 / 一个 verification item / 一次 `research_agent` 委托），不是 search API 调用次数；一个 task 内部可以使用多个工具（POI / Maps / Web Search 属于同一研究任务），不对单个 task 的工具数量做上限。
+
+默认预算：
+- high / unknown：最多 5 个；
+- medium：最多 3 个；
+- low：0（默认不查）。
+
+超过预算的 item 不安排搜索，按 unresolved 处理。时间或成本不足时 medium 可延后。
+
+### unresolved 按 impact 分流
+
+unresolved 不能统一“不阻塞”。Main 依据 item 的 impact 分级处理：
+
+- `high` / `unknown`：未验证会威胁方案可执行性 → 阻塞或降级方案（fallback：改用保守假设并在方案中明确标注；block：对核心路线 / 关键预约，宁可降级也不能当作确定事实）。
+- `medium`：未验证只影响体验 → warning，方案照常成立，体验项按合理假设给出并注明不确定性。
+- `low`：未验证无影响 → 完全忽略。
+
+### Evidence Sufficiency（停止搜索）
+
+当已有证据足以支撑当前决策时，停止继续搜索（按 Research Task 判断，而非整次 run）：
+
+- 每个 high / unknown impact 项均已 verified / conflicting（有可用证据）；
+- 没有 unresolved 的 high / unknown impact 风险。
+
+满足即进入 Final Plan，禁止 Research Agent 自由探索（如“研究北京旅游”这类开放式委托）。仍 unresolved 的 medium / low 项不触发继续搜索。
+
 Research Need 的判断标准是：最终方案是否依赖需要当前外部世界核验的信息，而不是单纯看天数或城市数量。
 
 通常需要现实核验的情况：
@@ -149,7 +192,7 @@ Tool 数量 ≠ Agentic Complexity。即使需要 3 个 Search、2 个 Maps、�
 - research_agent(查故宫预约)
 - research_agent(查故宫几点关门)
 
-这些属于同一主题时应合并为一次 Topic 调查。
+这些事实通常属于 predetermined fact work，应由 Main 并行核验，而不是拆成多个 `research_agent`。只有当它们是一个真正 evidence-heavy Research Topic 的 atomic verification_items 时，才随该 Topic 一起委托。
 
 ### 3. 一次规划允许 0..N 个 Research Topics
 
@@ -161,11 +204,11 @@ Main 每次完整规划可以调用 0..N 次 `research_agent`，不预先限定�
 
 如果 Candidate Plan 中存在多个彼此独立的 Research Topics，Main 应在同一个模型响应中发出多个 `research_agent` tool calls，由运行时并行执行，避免无意义串行等待。
 
-例如：
-- Topic A：北京核心景点预约 / 开放执行条件；
-- Topic B：郑州↔北京 + 八达岭交通执行条件。
+例如，若 Candidate Plan 同时暴露两个真正 evidence-heavy 且互不依赖的 Topic：
+- Topic A：比较完整日本路线下全国 JR Pass、区域 Pass 与单买组合；
+- Topic B：比较多个住宿区域在价格、通勤与夜间活动上的综合取舍。
 
-A 与 B 不互相依赖，可以同轮派发。
+只有当 A、B 都确实满足 bounded + context-isolation + compression 条件且互不依赖时，才可以同轮派发。普通景点预约 / 开放或交通班次等 predetermined fact work 仍由 Main Direct 处理。
 
 如果 Topic B 的定义取决于 Topic A 的结果，则必须分阶段：
 Research A → Main 判断结果 → 再决定是否产生 / 派发 Research B。
@@ -186,12 +229,15 @@ Main 委托 `research_agent` 时传一个面向决策的最小 contract：
 - context：Candidate Plan 中与该主题直接相关的最小片段；
 - constraints：会改变研究判断的用户关键约束。
 
-`verification_items` 只定义“必须从外部世界证明什么”，不定义“怎么查”。每个 item 使用稳定 id，并包含 entity / aspect / question；不要把搜索词、工具顺序或 reasoning step 塞进 item。由已核验事实直接推导出的安全余量、是否值得、最终取舍等结论不应单独成为 verification item，避免为了派生结论再次搜索。
+`verification_items` 只定义“必须从外部世界证明什么”，不定义“怎么查”。每个 item 使用稳定 id，并包含 entity / aspect / question / impact；不要把搜索词、工具顺序或 reasoning step 塞进 item。由已核验事实直接推导出的安全余量、是否值得、最终取舍等结论不应单独成为 verification item，避免为了派生结论再次搜索。
+
+`impact` 表示该 item 对最终决策的影响程度：`high`（错误会导致方案不可执行或核心路线调整）、`medium`（只影响体验质量）、`low`（锦上添花）、`unknown`（未分级，按 high 处理）。Main 在委派前完成 Research Decision（见 B 节），并遵守 Research Task 数量预算（high/unknown ≤5 / medium ≤3 / low 0）。每个 item 都应尽量填写准确 impact；无法立即判断时留 `unknown`，不要一律标成 high，也不要一律默认 medium 掩盖关键风险。
 
 示例：
-- `palace-opening`：故宫博物院 / 开放与闭馆规则 / 指定日期是否开放、固定闭馆日是什么；
-- `palace-reservation`：故宫博物院 / 预约与放票 / 预约渠道、提前天数、放票时间；
-- `palace-price`：故宫博物院 / 当前门票价格 / 指定日期适用的当前票价。
+- `palace-opening`：故宫博物院 / 开放与闭馆规则 / 指定日期是否开放、固定闭馆日是什么 / impact=high；
+- `palace-reservation`：故宫博物院 / 预约与放票 / 预约渠道、提前天数、放票时间 / impact=high；
+- `palace-price`：故宫博物院 / 当前门票价格 / 指定日期适用的当前票价 / impact=medium；
+- `night-photo-spot`：某夜景机位 / 拍照角度 / 是否适合情侣打卡 / impact=low。
 
 同一 Topic 下有多个景点或多个事实维度时，必须把它们拆成足够原子的 verification items，使某一项能明确落到 verified / conflicting / unresolved，而不是只给一个“景点规则已核验”的大项。
 

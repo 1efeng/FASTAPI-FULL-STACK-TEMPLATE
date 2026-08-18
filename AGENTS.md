@@ -1,4 +1,4 @@
-# AGENTS.md — Travel Agent v8 Cursor Execution Rules
+# AGENTS.md — Travel Agent Cursor Execution Rules
 
 > This file contains only long-lived execution rules.
 > Do not store current milestone, commit hash, temporary debug state, or short-lived implementation status here.
@@ -16,21 +16,29 @@ If current code makes the approved plan impossible or unsafe, stop and report th
 
 ## 2. Source of Truth
 
-Use this order:
+The project completed a documentation/architecture reset on 2026-08-19. Do not use pre-reset architecture documents as current design input.
+
+Use these sources by role, not as one mixed priority list:
 
 1. The currently approved task and acceptance criteria.
-2. Current workspace code and tests.
-3. `docs/架构v8.md` for TARGET architecture and ownership.
-4. `docs/施工路线图.md` for CURRENT → TARGET progress and gate status.
-5. Relevant contracts / READMEs.
-6. Locked dependency versions and official APIs.
+2. `docs/产品文档.md` for current Product WHAT / WHY.
+3. `docs/架构.md` for TARGET architecture **only after that document explicitly says Architecture Baseline is accepted**.
+4. Current workspace code and tests for CURRENT implementation reality.
+5. Active post-reset contracts / READMEs only after they are explicitly re-created or re-adopted under the new Architecture Baseline.
+6. Locked dependency versions and official APIs for implementation facts.
 
-Never infer current project state from old chats, old commits, old branches, or stale text in this file.
+The Active Docs allowlist is defined in `docs/文档体系.md`. Every pre-reset `docs/**` file outside that allowlist is Historical / NON-SOT even if it still exists at its old path for CURRENT implementation reference.
 
-When code and docs differ:
-- code is CURRENT;
-- architecture docs describe TARGET unless explicitly marked current;
-- report the mismatch instead of making docs look artificially consistent.
+`docs/archive/**`, pre-reset contracts, and pre-reset ADRs are historical evidence only. They are never a Source of Truth unless a current approved task explicitly re-adopts a decision.
+
+`docs/施工路线图.md` is not authoritative until it is rebuilt after Product + Architecture baselines are accepted.
+
+Never infer current project state from old chats, old commits, old branches, archived docs, or stale text in this file.
+
+When CURRENT code and TARGET docs differ:
+- code/tests describe CURRENT behavior;
+- accepted Product / Architecture docs describe TARGET behavior;
+- report the mismatch instead of silently redesigning or making docs look artificially consistent.
 
 ## 3. Minimal Scope
 
@@ -102,21 +110,19 @@ Never expose secrets, API keys, tokens, private keys, real `.env` values, or pro
 
 ## 7. Architecture Guardrail
 
-Do not change established runtime ownership unless the current task explicitly approves it.
+The 2026-08-19 reset intentionally removed legacy architecture ownership from this long-lived execution file.
 
-For Agent/runtime work, preserve these principles:
-- Product lifecycle belongs to the FastAPI Product Runtime.
-- Product → Agent execution crosses the `AgentExecutor` boundary.
-- Pydantic AI owns the agent loop.
-- Harness owns Skills/SubAgents capability composition.
-- LiteLLM owns provider routing, provider retry, and fallback.
-- PostgreSQL is the business source of truth.
-- Redis is coordination infrastructure.
-- Stream resume is not execution durability.
-- Network disconnect is not Product Cancel.
-- Product Stop must use the Product cancellation lifecycle.
+Until `docs/架构.md` is explicitly accepted as the new Architecture Baseline:
+- do not treat the current framework, Agent topology, runtime ownership, persistence choice, gateway choice, Search/Research design, or context strategy as permanent TARGET architecture merely because it exists in code;
+- also do not rewrite CURRENT code speculatively during the design reset;
+- preserve CURRENT behavior unless an approved implementation task explicitly changes it.
 
-For exact current architecture, read `docs/架构v8.md`; do not duplicate it here.
+After the new Architecture Baseline is accepted:
+- implement it faithfully;
+- core architecture changes require an approved architecture task / ADR;
+- Prompt changes, Tool routing, token/context limits, provider tuning, and benchmark-driven performance work are implementation changes unless they actually violate a frozen architecture invariant.
+
+Never use archived architecture documents to reconstruct old guardrails.
 
 ## 8. Reporting
 

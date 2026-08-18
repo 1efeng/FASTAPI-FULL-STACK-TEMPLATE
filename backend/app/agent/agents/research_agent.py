@@ -64,13 +64,26 @@ class ImageAsset(BaseModel):
     source: str | None = None
 
 
+ImpactLevel = Literal["high", "medium", "low", "unknown"]
+
+
 class VerificationItem(BaseModel):
-    """One atomic fact that must be resolved for the Topic decision."""
+    """One atomic fact that must be resolved for the Topic decision.
+
+    ``impact`` grades how much a wrong answer would change the final plan:
+    high = plan becomes infeasible or core route must change, medium = experience
+    quality only, low = nice-to-have. Default is ``unknown`` so Main must make an
+    explicit Research Decision instead of silently defaulting everything to high.
+    Research Task budget is capped per level (high <= 5 / medium <= 3 / low 0)
+    so the child never free-explores; ``unknown`` falls back to the high budget
+    to stay safe.
+    """
 
     id: str = Field(min_length=1, max_length=80)
     entity: str = Field(min_length=1, max_length=120)
     aspect: str = Field(min_length=1, max_length=120)
     question: str = Field(min_length=1, max_length=320)
+    impact: ImpactLevel = "unknown"
 
 
 class VerificationResult(BaseModel):
@@ -165,6 +178,21 @@ RESEARCH_AGENT_INSTRUCTIONS = """\
 Main 始终负责最终旅行方案、路线取舍、住宿、预算和最终回答；你不生成完整 itinerary，也不替 Main 做最终旅行决策。
 Main 传入的是“需要弄清楚什么”，不是预先写好的搜索步骤；你必须自己决定如何完成调查。
 如果 request 包含 `verification_items`，它们是这个 Topic 的原子验收清单：每一次 Search / Fetch / Maps / Weather 都必须直接服务至少一个 item；不会改变任何 item 结论的调查必须停止。它们不是 query、tool sequence 或 reasoning steps。
+
+# Impact 分级与预算
+
+每个 verification item 带有 `impact` 分级，表示该 Research Task 对最终决策的影响程度：
+
+- `high`：这个事实错误会导致整个方案不可执行或核心路线需要调整（例如核心景点开放 / 预约、跨城交通、返程时间、预算关键项）。必须验证。
+- `medium`：不会导致方案失败，但影响体验质量或优化程度（例如入口选择、区域住宿体验、路线偏好、餐厅选择）。
+- `low`：锦上添花，不影响主要决策（例如小众咖啡馆、拍照角度、网红小店）。
+- `unknown`：Main 未明确分级；按 high 处理以保持安全。
+
+Research Task 数量预算（保护机制，不是搜索 API 调用次数；一个 task 可以使用多个工具，不做 tool 数量限制）：
+- high/unknown 最多 5 个；medium 最多 3 个；low 默认 0。
+- 超预算的 item 不安排搜索，直接 unresolved。
+- unresolved 按 impact 分流：high/unknown → 阻塞或降级方案（fallback/block）；medium → 仅警告，不影响计划成立；low → 完全忽略。
+- 已有足够证据支撑决策（所有 high/unknown impact 项均已 verified/conflicting 且无 unresolved 高影响风险）时立即停止搜索，不做自由探索。
 
 # Research 方法
 

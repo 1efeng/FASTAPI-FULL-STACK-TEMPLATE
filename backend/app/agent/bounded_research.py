@@ -45,7 +45,7 @@ from app.agent.tools.weather import get_weather
 from app.agent.tools.web_search import search_web
 from app.core.config import settings
 
-_MAX_PLAN_ACTIONS = 4
+_MAX_PLAN_ACTIONS = 12
 _MAX_AUTH_FETCHES = 2
 _WEB_RESULT_COUNT = 3
 _WEB_SNIPPET_LENGTH = 200
@@ -150,6 +150,137 @@ def _valid_actions_for_request(
         for action in actions
         if action.item_ids and all(item_id in allowed_ids for item_id in action.item_ids)
     ]
+
+
+def _item_impact(request: ResearchRequest, item_id: str) -> str:
+    """Return the impact level of the verification item owning ``item_id``.
+
+    ``unknown`` is treated as ``high`` for budgeting so an undeclared item never
+    silently escapes the strictest safety budget.
+    """
+    for item in request.verification_items:
+        if item.id == item_id:
+            return "high" if item.impact == "unknown" else item.impact
+    return "high"
+
+
+def _impact_budget() -> dict[str, int]:
+    """Return the Research Task budget keyed by effective impact level."""
+    budget = dict(settings.RESEARCH_AGENT_IMPACT_BUDGET)
+    # unknown items must never exceed the strictest (high) budget.
+    budget["unknown"] = budget.get("high", 5)
+    return budget
+
+
+def _cap_actions_by_impact(
+    request: ResearchRequest,
+    actions: list[ResearchAction],
+) -> list[ResearchAction]:
+    """Hard-cap planned actions by the number of distinct Research Tasks served.
+
+    The budget unit is the Research Task (one verification item), NOT the raw tool
+    call: one task may legitimately use several tools (POI + Maps + Web Search), so
+    multiple actions for the SAME item all stay within that item's single slot.
+    Only when an action would serve a NEW item whose impact level has already
+    reached its cap is it dropped; the dropped item falls back to unresolved
+    instead of over-spending.
+
+    Default budgets: high/unknown <= 5 / medium <= 3 / low <= 0. ``low`` never
+    consumes research budget (nice-to-have facts never block the Final Plan).
+    """
+    if not actions:
+        return actions
+    budget = _impact_budget()
+    served: dict[str, str] = {}  # item_id -> effective impact level
+    impact_counts: dict[str, int] = {}  # effective impact level -> served items
+    kept: list[ResearchAction] = []
+    for action in actions:
+        impacted_ids = [
+            item_id
+            for item_id in action.item_ids
+            if _item_impact(request, item_id) in {"high", "medium", "unknown"}
+        ]
+        if not impacted_ids:
+            continue
+        new_items = [item_id for item_id in impacted_ids if item_id not in served]
+        over_budget = any(
+            impact_counts.get(_item_impact(request, item_id), 0)
+            >= budget.get(_item_impact(request, item_id), 0)
+            for item_id in new_items
+        )
+        if over_budget:
+            continue
+        for item_id in impacted_ids:
+            if item_id not in served:
+                impact = _item_impact(request, item_id)
+                served[item_id] = impact
+                impact_counts[impact] = impact_counts.get(impact, 0) + 1
+        kept.append(action)
+    return kept
+
+
+class ResearchBlockStatus(BaseModel):
+    """Impact-aware resolution of one verification item's evidence state.
+
+    ``impact`` mirrors the input item's declared level (unknown normalized to
+    high). ``blocked`` is True when a high/unknown impact item could not be
+    resolved and therefore threatens plan feasibility.
+    """
+
+    item_id: str
+    impact: str
+    status: Literal["verified", "conflicting", "unresolved"]
+    blocked: bool = False
+    warning: bool = False
+
+
+def classify_research_results(
+    request: ResearchRequest,
+    findings: ResearchFindings,
+) -> list[ResearchBlockStatus]:
+    """Grade each verification result by its impact on the final decision.
+
+    unresolved handling is impact-aware, NOT uniformly non-blocking:
+    - high / unknown: unresolved blocks the plan (fallback or block).
+    - medium: unresolved only warns (degrade gracefully, never fails the plan).
+    - low: unresolved never blocks (nice-to-have).
+    """
+    result_by_id = {result.item_id: result for result in findings.verification_results}
+    statuses: list[ResearchBlockStatus] = []
+    for item in request.verification_items:
+        impact = item.impact
+        effective_impact = "high" if impact == "unknown" else impact
+        result = result_by_id.get(item.id)
+        status = result.status if result is not None else "unresolved"
+        unresolved = status == "unresolved"
+        blocked = unresolved and effective_impact == "high"
+        warning = unresolved and effective_impact == "medium"
+        statuses.append(
+            ResearchBlockStatus(
+                item_id=item.id,
+                impact=effective_impact,
+                status=status,
+                blocked=blocked,
+                warning=warning,
+            )
+        )
+    return statuses
+
+
+def evidence_sufficiency(
+    request: ResearchRequest,
+    findings: ResearchFindings,
+) -> bool:
+    """Return True when every high/unknown impact task is resolved.
+
+    Stop-search gate evaluated PER Research Task, not per whole run: the research
+    layer may keep exploring only while some high-impact task remains unresolved.
+    Unresolved medium/low tasks never force additional searches.
+    """
+    return not any(
+        status.blocked
+        for status in classify_research_results(request, findings)
+    )
 
 
 def _item_evidence_scope(
@@ -360,6 +491,9 @@ _PLANNER_INSTRUCTIONS = """\
 规则：
 - 每个 action 必须绑定至少一个 input verification_item：item_ids 必须逐字使用 request 中真实存在的 id，不允许为空，不允许创建 checklist 之外的 id；一个 action 只能服务它明确绑定的 items。
 - actions 总数最多 4；默认每个 verification item 只安排 1 个 action，只有一条查询明显不足时才允许第 2 个。
+- 每个 verification item 有 impact 分级（high/medium/low/unknown），它是该 Research Task 对最终决策的影响程度：high=方案不可执行或核心路线要改，medium=只影响体验质量，low=锦上添花，unknown=未分级按 high 处理。
+- 遵守 impact 预算（按 Research Task 数量，不是 tool 数量）：high/unknown 最多 5 个、medium 最多 3 个、low 默认 0（不安排搜索）。超过预算的 item 直接不安排 action，返回 unresolved 即可。
+- 同一 item 的多个 action 属于同一个 Research Task，可以同时保留（POI / Maps / Web 可共用于一个核验项）。
 - 不为可以由已有外部事实直接推导的结论单独查询，例如安全余量、是否值得、最终取舍。
 - 开放、预约、政策、当前价格等动态 Web 事实优先 search_web(authoritative=true)。
 - 涉及铁路/班次/赶车风险的交通 item，必要时可安排两个互补 Web 查询：总体公共交通可达性 + 明确铁路/高铁/时刻/换乘。
@@ -630,9 +764,14 @@ async def run_bounded_research(
         )
         responses.extend(_model_responses(plan_result))
 
-        action_budget = max(0, settings.RESEARCH_AGENT_TOOL_CALL_LIMIT)
-        planned_actions = plan_result.output.actions[: min(_MAX_PLAN_ACTIONS, action_budget)]
+        planned_actions = plan_result.output.actions[: _MAX_PLAN_ACTIONS]
         actions = _valid_actions_for_request(request, planned_actions)
+        # Hard cap per impact budget: Research Task (distinct verification item)
+        # count is limited, NOT raw tool calls. One task may use several tools
+        # (POI + Maps + Web Search); actions serving an already-served item stay.
+        # Actions that would introduce a new item at a saturated impact level are
+        # dropped; that item falls back to unresolved instead of over-spending.
+        actions = _cap_actions_by_impact(request, actions)
         packets = list(await asyncio.gather(*(_execute_action(action) for action in actions)))
         tool_calls += len(packets)
         for packet in packets:
@@ -643,9 +782,11 @@ async def run_bounded_research(
                 result=packet.result,
             )
 
-        fetch_budget = max(0, action_budget - tool_calls)
+        # Authoritative-source fetch is part of the same Research Task, not a
+        # separate tool budget: at most _MAX_AUTH_FETCHES authoritative pages are
+        # read per child run as a fixed context-compression cost.
         authoritative_packets = [packet for packet in packets if _top_search_url(packet)]
-        fetch_count = min(fetch_budget, _MAX_AUTH_FETCHES)
+        fetch_count = min(_MAX_AUTH_FETCHES, len(authoritative_packets))
         fetched = list(
             await asyncio.gather(
                 *(_fetch_authoritative(packet) for packet in authoritative_packets[:fetch_count])
