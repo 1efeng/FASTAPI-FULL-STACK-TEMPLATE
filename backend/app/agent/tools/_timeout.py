@@ -1,10 +1,8 @@
 """Hard wall-clock bound for one external tool execution.
 
 Every external IO tool must finish within a bounded window so a hung provider
-can never consume the Product deadline (300s) or the Researcher budget (240s)
-from inside a single tool call. The tool layer owns this boundary — it is the
-tightest time owner, kept well below the model RPC timeout (150s) so a stuck
-provider cannot eat a model turn.
+cannot consume a model turn or a long-running Product RequestRun from inside one
+tool call. The tool layer owns this tightest runtime boundary.
 
 This is deliberately a code constant, not a config key: it is a runtime safety
 limit owned by the tool layer, and the architecture contract forbids duplicate
@@ -16,9 +14,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 
-# One external tool call must complete within this window. Kept equal to the
-# web_fetch bound (30s) and strictly below LITELLM_CLIENT_TIMEOUT_SECONDS (150s):
-#   0 < TOOL_EXECUTION_TIMEOUT_SECONDS < 150 < 240 < 300
+# One external tool call must complete within this window. Keep it well below the
+# configured model RPC timeout; the Product RequestRun safety cap is much wider.
 TOOL_EXECUTION_TIMEOUT_SECONDS: float = 30.0
 
 

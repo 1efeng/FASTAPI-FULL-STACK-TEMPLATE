@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import pytest
 from pydantic_ai import Tool
-from pydantic_ai.capabilities import AbstractCapability, Capability, WebSearch
+from pydantic_ai.capabilities import AbstractCapability, Capability
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
-from pydantic_ai_harness.dynamic_workflow import DynamicWorkflow
 from pydantic_ai_harness.skills import Skills
 
 from app.agent.capabilities.research_agent import (
-    RESEARCH_WORKFLOW_CAPABILITY_ID,
+    RESEARCH_AGENT_CAPABILITY_ID,
+    RESEARCH_AGENT_TOOL_NAME,
 )
 from app.agent.capabilities.travel import (
     SKILL_LIBRARY,
@@ -36,7 +36,7 @@ def _noop_model(
     return ModelResponse(parts=[TextPart("ok")])
 
 
-def test_travel_bundle_contains_skills_main_tools_and_research_workflow() -> None:
+def test_travel_bundle_contains_skills_main_tools_and_research_agent() -> None:
     capabilities = build_travel_capabilities(research_model=FunctionModel(_noop_model))
 
     skills = next(item for item in capabilities if isinstance(item, Skills))
@@ -45,14 +45,11 @@ def test_travel_bundle_contains_skills_main_tools_and_research_workflow() -> Non
         for item in capabilities
         if isinstance(item, Capability) and item.id == "travel-main-tools"
     )
-    research_workflow = next(
+    research_capability = next(
         item
         for item in capabilities
-        if isinstance(item, DynamicWorkflow)
+        if isinstance(item, Capability) and item.id == RESEARCH_AGENT_CAPABILITY_ID
     )
-    native_web_search = next(item for item in capabilities if isinstance(item, WebSearch))
-    assert native_web_search.native is not False
-
     skill_leaves = _leaf_capabilities(skills)
     assert {leaf.id for leaf in skill_leaves} == {
         "travel-budget",
@@ -63,7 +60,11 @@ def test_travel_bundle_contains_skills_main_tools_and_research_workflow() -> Non
 
     registered = {tool.name for tool in main_tools.tools if isinstance(tool, Tool)}
     assert registered == {
+        "search_web",
         "web_fetch",
+        "search_poi",
+        "get_poi_detail",
+        "search_nearby",
         "search_maps",
         "get_weather",
         "calculate_budget",
@@ -74,12 +75,11 @@ def test_travel_bundle_contains_skills_main_tools_and_research_workflow() -> Non
     assert isinstance(toolset, FunctionToolset)
     assert set(toolset.tools) == registered
 
-    assert research_workflow.id == RESEARCH_WORKFLOW_CAPABILITY_ID
-    assert research_workflow.tool_name == "run_workflow"
-    assert [agent.name for agent in research_workflow.agents] == [
-        "research_agent"
-    ]
-    assert "run_workflow" not in registered
+    assert research_capability.id == RESEARCH_AGENT_CAPABILITY_ID
+    assert {
+        tool.name for tool in research_capability.tools if isinstance(tool, Tool)
+    } == {RESEARCH_AGENT_TOOL_NAME}
+    assert RESEARCH_AGENT_TOOL_NAME not in registered
 
 
 def test_skill_tool_dependency_validation_fails_closed() -> None:
@@ -89,11 +89,14 @@ def test_skill_tool_dependency_validation_fails_closed() -> None:
             available_tools=set(),
         )
 
-    with pytest.raises(ValueError, match="travel-planning.*run_workflow"):
+    with pytest.raises(ValueError, match="travel-planning.*research_agent"):
         validate_skill_tool_dependencies(
             selected_skills={"travel-planning"},
             available_tools={
                 "web_fetch",
+                "search_poi",
+                "get_poi_detail",
+                "search_nearby",
                 "search_maps",
                 "get_weather",
                 "calculate_budget",

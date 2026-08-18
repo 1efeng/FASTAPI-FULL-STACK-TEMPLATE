@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -10,24 +11,15 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    NativeToolCallPart,
-    NativeToolReturnPart,
     ToolCallPart,
     ToolReturnPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from app.agent.agents.research_agent import (
-    EvidenceClaim,
-    EvidenceSource,
-    ResearchFindings,
-    build_research_agent,
-)
+from app.agent.agents.research_agent import build_research_agent
 from app.agent.research_runtime import (
-    ResearchEvidenceTrace,
     ResearchRequestState,
-    _attest_findings,
-    _record_native_search_response,
+    _tool_progress_label,
     bind_research_request_state,
 )
 
@@ -130,10 +122,219 @@ async def test_research_progress_is_safe_and_request_scoped() -> None:
     assert events[0] == {
         "topic": "核验故宫预约规则",
         "status": "started",
+        "stage": "research",
         "label": "开始核验研究主题",
     }
+    assert any(
+        event["stage"] == "analysis"
+        and event["label"] == "正在拆分核验项：预约/放票"
+        for event in events
+    )
     assert events[-1]["status"] == "completed"
-    assert all(set(event) == {"topic", "status", "label"} for event in events)
+    assert events[-1]["stage"] == "research"
+    assert all(
+        set(event) == {"topic", "status", "stage", "label"}
+        for event in events
+    )
+
+
+async def test_checklist_progress_uses_attested_results_and_fills_missing_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_url = "https://www.dpm.org.cn/visit"
+
+    async def fake_search_web(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return {
+            "query": "故宫 开放规则",
+            "result_count": 1,
+            "results": [{"title": "故宫博物院", "url": source_url, "summary": "官方规则"}],
+        }
+
+    fake_search_web.__name__ = "search_web"
+    monkeypatch.setattr("app.agent.tools.research_tools.search_web", fake_search_web)
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not _tool_returns(messages, "search_web"):
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="search_web",
+                        args={"query": "故宫 开放规则", "authoritative": True},
+                        tool_call_id="checklist-search",
+                    )
+                ]
+            )
+        return _final(
+            info,
+            {
+                "topic": "北京核心景点开放、预约与门票",
+                "summary": "故宫开放规则已确认，预约规则仍缺少可靠证据。",
+                "verification_results": [
+                    {
+                        "item_id": "palace-opening",
+                        "summary": "官方页面确认指定日期适用的开放规则。",
+                        "status": "verified",
+                        "source_urls": [source_url],
+                        "tool_evidence": [],
+                    }
+                ],
+                "claims": [],
+                "sources": [
+                    {
+                        "title": "故宫博物院",
+                        "url": source_url,
+                        "source_type": "official",
+                    }
+                ],
+                "media": [],
+                "unresolved": [],
+            },
+        )
+
+    prompt = json.dumps(
+        {
+            "title": "北京核心景点开放、预约与门票",
+            "objective": "核验故宫开放与预约规则",
+            "verification_items": [
+                {
+                    "id": "palace-opening",
+                    "entity": "故宫博物院",
+                    "aspect": "开放与闭馆规则",
+                    "question": "指定日期是否开放？",
+                },
+                {
+                    "id": "palace-reservation",
+                    "entity": "故宫博物院",
+                    "aspect": "预约与放票规则",
+                    "question": "预约渠道、提前天数与放票时间是什么？",
+                },
+            ],
+        },
+        ensure_ascii=False,
+    )
+    worker = build_research_agent(model=FunctionModel(model))
+    state = ResearchRequestState()
+    with bind_research_request_state(state):
+        result = await worker.run(prompt)
+
+    assert [item.item_id for item in result.output.verification_results] == [
+        "palace-opening",
+        "palace-reservation",
+    ]
+    assert [item.status for item in result.output.verification_results] == [
+        "verified",
+        "unresolved",
+    ]
+
+    events = []
+    while not state.progress_queue.empty():
+        events.append(state.progress_queue.get_nowait())
+
+    start = events[0]
+    assert start["topic_title"] == "北京核心景点开放、预约与门票"
+    assert [item["id"] for item in start["verification_items"]] == [
+        "palace-opening",
+        "palace-reservation",
+    ]
+    assert all(item["status"] == "pending" for item in start["verification_items"])
+    assert any(
+        event.get("item_id") == "palace-opening"
+        and event.get("item_status") == "verified"
+        and event["status"] == "completed"
+        for event in events
+    )
+    assert any(
+        event.get("item_id") == "palace-reservation"
+        and event.get("item_status") == "unresolved"
+        and event["status"] == "unresolved"
+        for event in events
+    )
+
+
+async def test_host_owned_web_search_emits_safe_progress_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_search_web(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return {
+            "query": "故宫 当前预约规则",
+            "result_count": 1,
+            "results": [{"url": "https://example.test/current", "title": "Current"}],
+        }
+
+    fake_search_web.__name__ = "search_web"
+    monkeypatch.setattr("app.agent.tools.research_tools.search_web", fake_search_web)
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not _tool_returns(messages, "search_web"):
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="search_web",
+                        args={"query": "故宫 当前预约规则"},
+                        tool_call_id="web-search-progress",
+                    )
+                ]
+            )
+        return _final(
+            info,
+            {
+                "topic": "预约",
+                "claims": [],
+                "sources": [],
+                "media": [],
+                "unresolved": [],
+            },
+        )
+
+    worker = build_research_agent(model=FunctionModel(model))
+    state = ResearchRequestState()
+    prompt = '{"objective":"核验故宫预约规则"}'
+    with bind_research_request_state(state):
+        await worker.run(prompt)
+
+    events = []
+    while not state.progress_queue.empty():
+        events.append(state.progress_queue.get_nowait())
+
+    assert any(
+        event == {
+            "topic": "核验故宫预约规则",
+            "status": "checking",
+            "stage": "web_search",
+            "label": "最新来源已检索",
+        }
+        for event in events
+    )
+
+
+def test_tool_progress_labels_include_observable_targets() -> None:
+    assert _tool_progress_label(
+        "web_fetch",
+        {"url": "https://www.dpm.org.cn/visit"},
+        completed=False,
+    ) == "正在读取来源：dpm.org.cn"
+    assert _tool_progress_label(
+        "search_maps",
+        {"origin": "北京北站", "destination": "八达岭长城"},
+        completed=False,
+    ) == "正在核验路线：北京北站 → 八达岭长城"
+    assert _tool_progress_label(
+        "get_weather",
+        {"city": "北京"},
+        completed=True,
+    ) == "天气已核验：北京"
+    assert _tool_progress_label(
+        "search_poi",
+        {"keywords": "故宫博物院"},
+        completed=False,
+    ) == "正在查找地点：故宫博物院"
+    assert _tool_progress_label(
+        "search_nearby",
+        {"keywords": "北京菜"},
+        completed=True,
+    ) == "附近地点已找到：北京菜"
 
 
 async def test_parallel_research_runs_keep_evidence_traces_isolated(
@@ -216,6 +417,64 @@ async def test_parallel_research_runs_keep_evidence_traces_isolated(
     assert len(state.research_runs) == 2
 
 
+async def test_poi_tool_can_attest_structured_place_fact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_nearby(**kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return {
+            "results": [
+                {
+                    "id": "B0FFG9V1R9",
+                    "name": "四季民福烤鸭店(故宫店)",
+                    "distance_m": 620,
+                    "rating": 4.7,
+                }
+            ]
+        }
+
+    fake_nearby.__name__ = "search_nearby"
+    monkeypatch.setattr("app.agent.tools.research_tools.search_nearby", fake_nearby)
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not _tool_returns(messages, "search_nearby"):
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="search_nearby",
+                        args={
+                            "location": "116.397029,39.917839",
+                            "keywords": "北京菜",
+                        },
+                        tool_call_id="nearby-evidence",
+                    )
+                ]
+            )
+        return _final(
+            info,
+            {
+                "topic": "故宫附近餐厅",
+                "claims": [
+                    {
+                        "claim": "四季民福故宫店距离中心点约620米，评分4.7",
+                        "status": "verified",
+                        "source_urls": [],
+                        "tool_evidence": ["search_nearby"],
+                    }
+                ],
+                "sources": [],
+                "media": [],
+                "unresolved": [],
+            },
+        )
+
+    worker = build_research_agent(model=FunctionModel(model))
+    result = await worker.run("核验故宫附近可选北京菜餐厅")
+
+    assert result.output.claims[0].status == "verified"
+    assert result.output.claims[0].tool_evidence == ["search_nearby"]
+
+
 async def test_model_cannot_self_certify_tool_name_without_execution() -> None:
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         del messages
@@ -242,48 +501,6 @@ async def test_model_cannot_self_certify_tool_name_without_execution() -> None:
 
     assert result.output.claims[0].status == "unresolved"
     assert result.output.claims[0].tool_evidence == []
-
-
-async def test_native_web_search_attests_verified_source() -> None:
-    source_url = "https://example.test/search"
-    trace = ResearchEvidenceTrace()
-    _record_native_search_response(
-        ModelResponse(
-            parts=[
-                NativeToolCallPart(
-                    tool_name="web_search",
-                    args={"open_page": {"url": source_url}},
-                    tool_call_id="web-search-1",
-                ),
-                NativeToolReturnPart(
-                    tool_name="web_search",
-                    content={"sources": [{"url": source_url}]},
-                    tool_call_id="web-search-1",
-                ),
-            ]
-        ),
-        trace,
-    )
-
-    findings = _attest_findings(
-        ResearchFindings(
-            topic="预约",
-            claims=[
-                EvidenceClaim(
-                    claim="当前预约规则已核实",
-                    status="verified",
-                    source_urls=[source_url],
-                )
-            ],
-            sources=[EvidenceSource(title="Test official result", url=source_url)],
-        ),
-        trace,
-    )
-
-    assert findings.claims[0].status == "verified"
-    assert findings.claims[0].source_urls == [source_url]
-    assert [source.url for source in findings.sources] == [source_url]
-    assert "web_search" in trace.successful_tools
 
 
 async def test_failed_weather_execution_cannot_attest_verified_claim(

@@ -44,12 +44,13 @@ class Settings(BaseSettings):
     APP_ENV: Literal["local", "test", "staging", "production"] = "local"
     APP_DEBUG: bool = False
     APP_TIMEZONE: str = "Asia/Shanghai"
-    REQUEST_DEADLINE_SECONDS: PositiveFloat = 300.0
-    # Runtime protection hierarchy: tool/provider bounds are tighter than the
-    # model RPC bound, which is tighter than the Product request deadline.
+    # Emergency wall-clock safety cap for one Product RequestRun. Normal long-running
+    # research is bounded by per-RPC/tool timeouts and usage limits, not a short turn SLA.
+    REQUEST_DEADLINE_SECONDS: PositiveFloat = 900.0
+    # One model RPC remains independently bounded well below the Product safety cap.
     LITELLM_CLIENT_TIMEOUT_SECONDS: PositiveFloat = 240.0
     MAIN_MODEL_REQUEST_LIMIT: PositiveInt = 8
-    MAIN_TOOL_CALL_LIMIT: PositiveInt = 6
+    MAIN_TOOL_CALL_LIMIT: PositiveInt = 16
     RESEARCH_AGENT_MODEL_REQUEST_LIMIT: PositiveInt = 8
     RESEARCH_AGENT_TOOL_CALL_LIMIT: PositiveInt = 18
 
@@ -76,6 +77,7 @@ class Settings(BaseSettings):
     OTEL_SERVICE_NAME: str = "travel-agent-api"
     OTLP_ENDPOINT: str | None = None
     AMAP_API_KEY: str | None = None
+    WEB_SEARCH_API_KEY: str | None = None
     WEATHER_API_KEY: str | None = None
     QWEATHER_API_KEY: str | None = None
     QWEATHER_API_HOST: str = "https://devapi.qweather.com"
@@ -163,6 +165,15 @@ class Settings(BaseSettings):
                 warnings.warn(message, stacklevel=1)
             else:
                 raise ValueError(message)
+
+    @model_validator(mode="after")
+    def _enforce_runtime_timeout_hierarchy(self) -> Self:
+        if self.LITELLM_CLIENT_TIMEOUT_SECONDS >= self.REQUEST_DEADLINE_SECONDS:
+            raise ValueError(
+                "LITELLM_CLIENT_TIMEOUT_SECONDS must be less than "
+                "REQUEST_DEADLINE_SECONDS"
+            )
+        return self
 
     @model_validator(mode="after")
     def _enforce_production_config(self) -> Self:

@@ -19,10 +19,21 @@ def test_litellm_production_config_matches_retry_contract() -> None:
     }
 
     assert set(models) == {"travel-agent-llm", "travel-doubao"}
+    assert models["travel-agent-llm"]["model"] == "openai/deepseek-v4-flash"
+    assert models["travel-agent-llm"]["mode"] == "responses"
+    assert models["travel-agent-llm"]["api_base"] == "os.environ/DOUBAO_PLAN_BASE_URL"
+    assert models["travel-agent-llm"]["api_key"] == "os.environ/DOUBAO_PLAN_API_KEY"
     assert all(
-        params["timeout"] == 60 and params["stream_timeout"] == 60
+        params["timeout"] == 120 and params["stream_timeout"] == 120
         for params in models.values()
     )
+
+    primary_model_info = next(
+        model["model_info"]
+        for model in config["model_list"]
+        if model["model_name"] == "travel-agent-llm"
+    )
+    assert primary_model_info["mode"] == "responses"
 
     router = config["router_settings"]
     assert router["num_retries"] == 0
@@ -37,7 +48,7 @@ def test_litellm_production_config_matches_retry_contract() -> None:
         "InternalServerErrorRetries": 1,
     }
 
-    assert config["litellm_settings"]["request_timeout"] == 60
+    assert config["litellm_settings"]["request_timeout"] == 120
 
 
 @pytest.mark.parametrize(

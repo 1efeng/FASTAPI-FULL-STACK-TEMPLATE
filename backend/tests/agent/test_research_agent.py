@@ -15,6 +15,8 @@ from app.agent.agents.research_agent import (
     EvidenceSource,
     ResearchFindings,
     ResearchRequest,
+    VerificationItem,
+    VerificationResult,
     build_research_agent,
 )
 from app.agent.research_runtime import ResearchRequestState, bind_research_request_state
@@ -37,8 +39,33 @@ def test_research_request_is_minimal_and_has_safe_defaults() -> None:
     request = ResearchRequest(objective="比较东京到箱根交通 Pass")
 
     assert request.objective == "比较东京到箱根交通 Pass"
+    assert request.title is None
+    assert request.verification_items == []
     assert request.context is None
     assert request.constraints == []
+
+
+def test_research_request_accepts_atomic_checklist_and_rejects_duplicate_ids() -> None:
+    item = VerificationItem(
+        id="pass-price",
+        entity="箱根周游券",
+        aspect="当前票价",
+        question="当前成人票价是多少？",
+    )
+    request = ResearchRequest(
+        title="箱根交通 Pass 比较",
+        objective="比较东京到箱根交通 Pass",
+        verification_items=[item],
+    )
+
+    assert request.title == "箱根交通 Pass 比较"
+    assert request.verification_items[0].id == "pass-price"
+
+    with pytest.raises(ValidationError, match="verification item ids must be unique"):
+        ResearchRequest(
+            objective="重复 checklist",
+            verification_items=[item, item.model_copy()],
+        )
 
 
 def test_verified_claim_still_requires_evidence() -> None:
@@ -54,11 +81,35 @@ def test_verified_claim_still_requires_evidence() -> None:
         ResearchFindings(topic="规则", claims=[claim])
 
 
+def test_verification_result_requires_evidence_when_resolved() -> None:
+    with pytest.raises(ValidationError, match="verification results require evidence"):
+        VerificationResult(
+            item_id="palace-price",
+            summary="旺季票价已确认",
+            status="verified",
+        )
+
+    unresolved = VerificationResult(
+        item_id="palace-price",
+        summary="暂未找到可靠当前价格",
+        status="unresolved",
+    )
+    assert unresolved.status == "unresolved"
+
+
 def test_research_findings_adds_summary_without_weakening_evidence_contract() -> None:
     url = "https://official.example/pass"
     findings = ResearchFindings(
         topic="交通 Pass",
         summary="当前可选方案已经核验到足以供 Main 比较。",
+        verification_results=[
+            VerificationResult(
+                item_id="pass-scope",
+                summary="官方页面列出该 Pass 的覆盖范围",
+                status="verified",
+                source_urls=[url],
+            )
+        ],
         claims=[
             EvidenceClaim(
                 claim="官方页面列出该 Pass 的覆盖范围",
@@ -70,10 +121,11 @@ def test_research_findings_adds_summary_without_weakening_evidence_contract() ->
     )
 
     assert findings.summary is not None
+    assert findings.verification_results[0].status == "verified"
     assert findings.claims[0].status == "verified"
 
 
-async def test_build_research_agent_has_only_research_tools_and_native_web_search() -> None:
+async def test_build_research_agent_has_host_owned_search_and_no_native_web_search() -> None:
     observed: dict[str, set[str]] = {}
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -100,11 +152,15 @@ async def test_build_research_agent_has_only_research_tools_and_native_web_searc
     assert agent.name == RESEARCH_AGENT_NAME == "research_agent"
     assert result.output.topic == "箱根交通"
     assert observed["function_tools"] == {
+        "search_web",
         "web_fetch",
+        "search_poi",
+        "get_poi_detail",
+        "search_nearby",
         "search_maps",
         "get_weather",
     }
-    assert "WebSearchTool" in observed["native_tools"]
+    assert observed["native_tools"] == set()
     assert "calculate_budget" not in observed["function_tools"]
     assert "convert_currency" not in observed["function_tools"]
     assert "research_agent" not in observed["function_tools"]

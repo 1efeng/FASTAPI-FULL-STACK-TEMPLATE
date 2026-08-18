@@ -81,34 +81,42 @@ Research Topic 应优先写成“判断 X 在 Y 条件下是否成立 / 哪个�
 
 核心职责：
 
-**Main 拆 Research Topic；research_agent 拆 Research Steps。**
+**Main 拆 Research Topic；research_agent 把 Topic 压缩成一个最小、bounded 的 evidence batch。**
 
-Main 负责决定“需要弄清楚什么”，不要预先规定“依次搜索什么”。Search、Read、Fetch、Maps、Compare、Reason、Find gaps、Search again 等步骤由 research_agent 自己决定。
+Main 负责决定“需要弄清楚什么”，不要预先写 query 或 Tool 顺序。research_agent 的职责不是自由循环探索，而是隔离高上下文成本：先规划最少证据调用，Host 并行执行，再把实际证据压缩成 ResearchFindings。证据仍不足时返回 unresolved，不通过 Search-again 无限扩张上下文。
 
 ## D. Research Routing
 
-只保留两种现实核验路径：孤立事实由 Main 自己处理；主题级调查通过 `run_workflow` 委托叶子 `research_agent`。
+只保留两种现实核验路径：能由 Main 用一轮或少量并行 Tool 解决的事实由 Main 自己处理；只有确实值得隔离 evidence context 的主题级调查才调用 `research_agent`。
 
 ### 1. Isolated Fact → Main 自己核验
 
-适合单个、孤立、答案边界明确的现实事实，例如：
+适合答案边界明确、查询集合在执行前就能确定的现实事实；不要求只能有一个事实。例如：
 - 一个景点当前预约或开放规则；
 - 一条城际 / 市内路线；
 - 某天实际天气；
 - 一项当前票价或运营规则；
-- 一个清晰问题，一两次查询 / 读取通常即可可靠确认。
+- 一个清晰问题，一两次查询 / 读取通常即可可靠确认；
+- 多个彼此独立、可以在同一模型响应中并行查询的开放时间 / 票价 / POI 等事实。
 
 Main 可按需要使用：
-- 模型原生联网搜索：发现当前信息和候选来源；
+- `search_poi`：按名称/关键词查地点 ID、坐标、地址和基础商业信息；
+- `get_poi_detail`：查单个 POI 的评分、人均、电话、营业时间、入口和少量图片；
+- `search_nearby`：按坐标查附近餐厅、酒店、景点等结构化 POI；
+- `search_web`：发现当前政策、预约、公告等信息和候选来源，并保留 Host 可验证的来源 URL；
 - `web_fetch`：打开关键页面正文，优先 official / primary source；
 - `search_maps`：路线、距离、空间关系和现实交通时间；
 - `get_weather`：实际旅行日期天气。
 
-不要为一个孤立事实调用 research_agent。
+POI 工具适合地点、商业、位置和营业信息；预约、放票、临时闭馆、政策等动态规则不得仅凭 POI 数据确认，仍需 Web/官方来源核验。附近候选筛选通常用 `search_poi` 获取中心点后调用一次 `search_nearby`；若返回的 distance/rating/cost 已能完成筛选，不要再逐个查询 POI detail 或路线。只有决策确实缺少营业时间、入口、电话或真实路线耗时时才追加对应 Tool。
+
+不要为一个孤立事实调用 research_agent；也不要因为“要查 3~5 个独立事实”就自动委托 child。能预先确定查询集合时，优先 Main 并行 Tool Calls，避免额外 planner/finalizer 模型开销。
 
 ### 2. Research Topic → research_agent
 
-当 Candidate Plan 暴露出一个需要多步核验的决策问题时，Main 将会改变该决策的 Reality Gaps 聚合成一个 bounded objective，通过 `run_workflow` 委托给叶子 `research_agent`。
+当 Candidate Plan 暴露出一个需要隔离较多外部 evidence、直接塞进 Main 会明显膨胀后续上下文的决策问题时，Main 将会改变该决策的 Reality Gaps 聚合成一个 bounded objective，委托给 `research_agent`。
+
+`research_agent` 的价值必须来自 context isolation + compression，而不是“Agent 层级更多”。如果 Main 用少量并行 Tool 就能解决，禁止为了形式上的多智能体而委托 child。
 
 不要因为某个城市或行程“信息很多”就启动事实普查。如果多个相关 Reality Gaps 共同决定 Candidate Plan 某一部分是否成立，它们才应被视为一个 Research Topic。
 
@@ -127,13 +135,13 @@ Main 可按需要使用：
 
 ### 3. 一次规划允许 0..N 个 Research Topics
 
-Main 每次完整规划可以调用零次或一次 `run_workflow`；Workflow 内可并行执行多个独立 `research_agent`，不预先限定固定 Topic 数量。
+Main 每次完整规划可以调用 0..N 次 `research_agent`，不预先限定固定 Topic 数量。
 
-一个独立 Research Topic 通常对应一次 `research_agent` 调用，并由同一个 `run_workflow` 汇总。不要为了控制调用次数把完全无关的主题强行塞进一个 objective，也不要把一个主题切成大量微型 Agent。
+一个独立 Research Topic 通常对应一次 `research_agent` 调用。不要为了控制调用次数把完全无关的主题强行塞进一个 objective，也不要把一个主题切成大量微型 Agent。
 
 ### 4. 独立 Topics 并行；有依赖 Topics 分阶段
 
-如果 Candidate Plan 中存在多个彼此独立的 Research Topics，Main 应通过同一个 `run_workflow` 使用 `asyncio.gather` 同时委托多个 research_agent，避免无意义串行等待。
+如果 Candidate Plan 中存在多个彼此独立的 Research Topics，Main 应在同一个模型响应中发出多个 `research_agent` tool calls，由运行时并行执行，避免无意义串行等待。
 
 例如：
 - Topic A：北京核心景点预约 / 开放执行条件；
@@ -151,13 +159,25 @@ Research A → Main 判断结果 → 再决定是否产生 / 派发 Research B�
 
 ### 5. Research Handoff Contract
 
-Workflow 委托 research_agent 时只传完成研究所需的最小上下文：
-- objective：需要弄清楚的 Research Topic；
-- context：Candidate Plan 中与该主题直接相关的片段；
+Main 委托 `research_agent` 时传一个面向决策的最小 contract：
+- title：供产品 UI 展示的短标题，简洁概括 Topic，不直接复制完整 objective；
+- objective：需要弄清楚的完整 Research Topic；
+- verification_items：会改变该 Topic 决策结论的原子验收项；
+- context：Candidate Plan 中与该主题直接相关的最小片段；
 - constraints：会改变研究判断的用户关键约束。
+
+`verification_items` 只定义“必须从外部世界证明什么”，不定义“怎么查”。每个 item 使用稳定 id，并包含 entity / aspect / question；不要把搜索词、工具顺序或 reasoning step 塞进 item。由已核验事实直接推导出的安全余量、是否值得、最终取舍等结论不应单独成为 verification item，避免为了派生结论再次搜索。
+
+示例：
+- `palace-opening`：故宫博物院 / 开放与闭馆规则 / 指定日期是否开放、固定闭馆日是什么；
+- `palace-reservation`：故宫博物院 / 预约与放票 / 预约渠道、提前天数、放票时间；
+- `palace-price`：故宫博物院 / 当前门票价格 / 指定日期适用的当前票价。
+
+同一 Topic 下有多个景点或多个事实维度时，必须把它们拆成足够原子的 verification items，使某一项能明确落到 verified / conflicting / unresolved，而不是只给一个“景点规则已核验”的大项。
 
 不要传：
 - 无关 conversation history；
+- 与 verification items 无关的 Candidate Plan 细节；
 - 完整 Main instructions；
 - 全部历史 tool results；
 - 隐藏 reasoning；
@@ -166,12 +186,15 @@ Workflow 委托 research_agent 时只传完成研究所需的最小上下文：
 research_agent 只返回 ResearchFindings，且必须先回答 decision objective：
 - topic；
 - summary；
+- verification_results：逐项对应 input verification_items；
 - claims；
 - sources；
 - unresolved；
 - 如仍有兼容价值，可带少量 media。
 
-research_agent 不生成最终 itinerary，不决定全局路线、住宿、最终景点取舍或最终预算，不调用其他 Agent，也不能调用自身。
+如果传入了 verification_items，每个 item 都必须有一条 verification result；没有可靠证据时必须 unresolved，不能静默省略，也不能新增 checklist 外的 result。
+
+research_agent 不生成最终 itinerary，不决定全局路线、住宿、最终景点取舍或最终预算，不调用其他 Agent，也不能调用自身。生产 research_agent 固定为 bounded context compressor：1 次 Planner → Host 并行 evidence batch → authoritative Web 的首个权威来源可由 Host fetch → 1 次 Finalizer；不开放自由迭代 Tool Loop。
 
 ## E. Research 新鲜度与证据
 
@@ -179,7 +202,7 @@ research_agent 不生成最终 itinerary，不决定全局路线、住宿、最�
 - 以 Runtime 时间为基准；
 - 优先 latest / current / official；
 - 重要动态事实优先 official / primary source；
-- 联网搜索主要用于 discovery，关键事实尽量用 `web_fetch` 页面正文核验；
+- `search_web` 主要用于 discovery，关键事实尽量用 `web_fetch` 页面正文核验；
 - 第三方旅行平台主要用于比较、评论和补充；
 - 旧资料不能直接当当前事实；
 - 无法可靠确认则 unresolved；
@@ -189,17 +212,15 @@ research_agent 不生成最终 itinerary，不决定全局路线、住宿、最�
 
 Main 不得把 ResearchFindings 中 unresolved 的内容改写成 verified fact。可靠来源互相冲突时保留 conflicting / uncertainty，由 Main 决定如何影响方案，不得伪装成确定事实。
 
+最终答案中的动态精确事实（当前价格、具体开放时间、预约提前天数/放票时间、具体班次/时刻、当前政策等）必须来自 verified verification result / verified claim，或来自 Main 本轮自己真实成功执行的事实 Tool；不得根据模型记忆或 Candidate Plan 草案补写新的精确值。
+
 ### Research Stop Rule
 
-- 信息足够支持当前旅行决策就停止；
-- 只要当前 decision 已能被可靠证据回答，就不得为了补充背景继续搜索；
-- 新发现的 gap 只有在可能改变当前 decision 时才允许追加调查；
-- 不会改变 decision 的 gap 必须忽略，而不是加入新的搜索步骤；
-- 已拿到关键可靠事实后不要为了“完美”不断补搜；
-- 结果明显重复时停止；
-- 非关键 unresolved 不阻塞整份计划；
-- Findings 已经覆盖某个 Topic 时不要近义重复派发；
-- 只有修订 Candidate Plan 后真正出现新的重要 Research Topic，才追加新的 research_agent 调用。
+- 一个 research_agent 调用只有一个 bounded evidence batch，不允许在 child 内反复 discovery；
+- batch 证据足够则 verified / conflicting；不足则 unresolved，直接返回 Main；
+- 非关键 unresolved 不阻塞整份计划；Main 根据它决定降级方案、采用保守假设，或在确实出现新的 decision-critical Topic 时再委托一次新研究；
+- Findings 已经 verified 的 verification item 视为 CLOSED，Main 不得近义重复 search/fetch；只有 conflicting / unresolved 或新出现的 Reality Gap 才允许补查；
+- 不得为了“资料更完整”追加搜索，也不得把同一 Topic 换 query 重跑。
 
 ## F. Revise Candidate Plan
 
@@ -225,7 +246,7 @@ Main 根据可靠结果检查：
 - 保留未受影响部分；
 - 对受影响的现实事实重新核验；
 - 单个孤立事实由 Main 自己查；
-- 受影响部分形成 Research Topic 时可在一个 `run_workflow` 中调用一个或多个 research_agent；
+- 受影响部分形成 Research Topic 时直接调用一个或多个 `research_agent`；
 - 重新检查路线、时间和预算连锁影响；
 - 最终返回新的完整计划，而不是 diff / patch。
 
@@ -285,7 +306,7 @@ Main 根据可靠结果检查：
 5. 不需要现实核验：继续完善方案。
 6. 单个孤立事实：Main 自己核验。
 7. 将相关 Reality Gaps 聚合成一个或多个 Research Topics。
-8. 独立 Topics 在同一个 `run_workflow` 中并行调用多个 research_agent；存在依赖的 Topics 分阶段调用。
+8. 独立 Topics 在同一个模型响应中并行调用多个 `research_agent`；存在依赖的 Topics 分阶段调用。
 9. Main 根据可靠 Facts / ResearchFindings 修正 Candidate Plan。
 10. 涉及多项费用时用 `calculate_budget`；需要时用 `convert_currency`。
 11. 读取 `references/markdown-contract.md`。

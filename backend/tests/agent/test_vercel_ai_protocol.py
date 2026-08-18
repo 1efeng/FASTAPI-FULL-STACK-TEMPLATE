@@ -287,7 +287,7 @@ async def test_adapter_terminal_chunks_are_held_for_product_gate(
         return 'data: {"type":"error","errorText":"safe product error"}\n\n'
 
     monkeypatch.setattr(
-        "app.agent.pydantic_executor.VercelAIAdapter",
+        "app.agent.pydantic_executor._ProductVercelAIAdapter",
         FakeAdapter,
     )
     chunks = [
@@ -373,7 +373,7 @@ async def test_adapter_completion_projects_reasoning_into_product_result(
         completed.append(result)
 
     monkeypatch.setattr(
-        "app.agent.pydantic_executor.VercelAIAdapter",
+        "app.agent.pydantic_executor._ProductVercelAIAdapter",
         FakeAdapter,
     )
     chunks = [

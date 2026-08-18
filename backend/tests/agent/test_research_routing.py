@@ -116,6 +116,7 @@ async def test_simple_current_fact_keeps_research_agent_unused() -> None:
     assert result.output
     assert "web_fetch" in available_tools
     assert "research_agent" in available_tools
+    assert "run_workflow" not in available_tools
 
 
 async def test_normal_full_plan_can_finish_without_research_agent() -> None:

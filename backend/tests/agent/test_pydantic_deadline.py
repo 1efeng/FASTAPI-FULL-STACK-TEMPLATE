@@ -139,7 +139,7 @@ async def test_stream_model_requests_receive_same_rpc_timeout() -> None:
 
     request = _request(deadline_at=datetime.now(UTC) - timedelta(seconds=1))
     with patch(
-        "app.agent.pydantic_executor.VercelAIAdapter",
+        "app.agent.pydantic_executor._ProductVercelAIAdapter",
         FakeAdapter,
     ):
         chunks = [chunk async for chunk in stream_vercel_events(request)]

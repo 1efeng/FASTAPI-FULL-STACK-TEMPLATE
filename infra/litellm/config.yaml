@@ -1,22 +1,18 @@
 model_list:
+  # Primary: DeepSeek V4 Flash through the Volcengine Agent Plan endpoint.
   - model_name: travel-agent-llm
     litellm_params:
       model: openai/deepseek-v4-flash
-      api_base: os.environ/DEEPSEEK_BASE_URL
-      api_key: os.environ/DEEPSEEK_API_KEY
+      mode: responses
+      api_base: os.environ/DOUBAO_PLAN_BASE_URL
+      api_key: os.environ/DOUBAO_PLAN_API_KEY
       timeout: 120
       stream_timeout: 120
       rpm: 600
       tpm: 1000000
       max_parallel_requests: 100
     model_info:
-      # LiteLLM spend uses USD/token. These are the USD equivalents of
-      # DeepSeek's CNY pricing: cache hit ¥0.02/M, cache miss ¥1/M, output ¥2/M.
-      input_cost_per_token: 0.00000014
-      cache_read_input_token_cost: 0.0000000028
-      output_cost_per_token: 0.00000028
-      max_input_tokens: 1000000
-      max_output_tokens: 384000
+      mode: responses
       supports_function_calling: true
       supports_response_schema: true
 

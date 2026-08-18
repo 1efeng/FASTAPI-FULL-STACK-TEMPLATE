@@ -49,10 +49,10 @@ def test_database_url_is_the_database_source_of_truth() -> None:
 def test_runtime_budget_defaults_match_main_and_research_agent_contract() -> None:
     configured = _settings()
 
-    assert configured.REQUEST_DEADLINE_SECONDS == 300.0
-    assert configured.LITELLM_CLIENT_TIMEOUT_SECONDS == 150.0
+    assert configured.REQUEST_DEADLINE_SECONDS == 900.0
+    assert configured.LITELLM_CLIENT_TIMEOUT_SECONDS == 240.0
     assert configured.MAIN_MODEL_REQUEST_LIMIT == 8
-    assert configured.MAIN_TOOL_CALL_LIMIT == 6
+    assert configured.MAIN_TOOL_CALL_LIMIT == 16
     assert configured.RESEARCH_AGENT_MODEL_REQUEST_LIMIT == 8
     assert configured.RESEARCH_AGENT_TOOL_CALL_LIMIT == 18
     assert not hasattr(configured, "TRAVEL_RESEARCHER_TIMEOUT_SECONDS")
@@ -69,6 +69,14 @@ def test_runtime_budget_hierarchy_is_strict() -> None:
         < configured.LITELLM_CLIENT_TIMEOUT_SECONDS
         < configured.REQUEST_DEADLINE_SECONDS
     )
+
+
+def test_runtime_timeout_hierarchy_rejects_model_rpc_at_or_above_safety_cap() -> None:
+    with pytest.raises(ValidationError, match="LITELLM_CLIENT_TIMEOUT_SECONDS"):
+        _settings(
+            REQUEST_DEADLINE_SECONDS=240.0,
+            LITELLM_CLIENT_TIMEOUT_SECONDS=240.0,
+        )
 
 
 def test_legacy_agent_timeout_switch_is_ignored() -> None:

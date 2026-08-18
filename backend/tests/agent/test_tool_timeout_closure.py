@@ -22,8 +22,8 @@ def test_runtime_timeout_hierarchy_is_bounded() -> None:
     assert _timeout.TOOL_EXECUTION_TIMEOUT_SECONDS < settings.LITELLM_CLIENT_TIMEOUT_SECONDS
     assert settings.LITELLM_CLIENT_TIMEOUT_SECONDS < settings.REQUEST_DEADLINE_SECONDS
     assert _timeout.TOOL_EXECUTION_TIMEOUT_SECONDS == 30
-    assert settings.LITELLM_CLIENT_TIMEOUT_SECONDS == 150
-    assert settings.REQUEST_DEADLINE_SECONDS == 300
+    assert settings.LITELLM_CLIENT_TIMEOUT_SECONDS == 240
+    assert settings.REQUEST_DEADLINE_SECONDS == 900
 
 
 def test_official_web_fetch_keeps_its_internal_30_second_bound() -> None:

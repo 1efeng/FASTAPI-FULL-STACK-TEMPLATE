@@ -85,7 +85,7 @@ async def test_main_blocks_ninth_model_request(
     assert model_calls == 8
 
 
-async def test_main_blocks_seventh_tool_call(
+async def test_main_blocks_tool_call_beyond_configured_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "MAIN_MODEL_REQUEST_LIMIT", 20)
@@ -122,14 +122,14 @@ async def test_main_blocks_seventh_tool_call(
         await executor.execute(_request())
 
     assert raised.value.code == "MODEL_CALL_LIMIT_REACHED"
-    assert tool_calls == 6
+    assert tool_calls == settings.MAIN_TOOL_CALL_LIMIT == 16
 
 
 def test_main_limits_are_role_specific_and_token_free() -> None:
     limits = _main_usage_limits()
 
     assert limits.request_limit == settings.MAIN_MODEL_REQUEST_LIMIT == 8
-    assert limits.tool_calls_limit == settings.MAIN_TOOL_CALL_LIMIT == 6
+    assert limits.tool_calls_limit == settings.MAIN_TOOL_CALL_LIMIT == 16
     assert limits.total_tokens_limit is None
     assert limits.input_tokens_limit is None
     assert limits.output_tokens_limit is None
@@ -247,6 +247,6 @@ def test_timeout_ownership_hierarchy_is_stable_without_child_timer() -> None:
         < settings.REQUEST_DEADLINE_SECONDS
     )
     assert _timeout.TOOL_EXECUTION_TIMEOUT_SECONDS == 30
-    assert settings.LITELLM_CLIENT_TIMEOUT_SECONDS == 150
-    assert settings.REQUEST_DEADLINE_SECONDS == 300
+    assert settings.LITELLM_CLIENT_TIMEOUT_SECONDS == 240
+    assert settings.REQUEST_DEADLINE_SECONDS == 900
     assert not hasattr(settings, "TRAVEL_RESEARCHER_TIMEOUT_SECONDS")

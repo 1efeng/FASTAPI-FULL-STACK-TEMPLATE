@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from pydantic_ai import Agent
@@ -156,23 +157,29 @@ async def test_executor_end_to_end_includes_research_agent_usage() -> None:
         nonlocal research_calls
         research_calls += 1
         assert info.output_tools
+        if research_calls == 1:
+            payload: dict[str, Any] = {"actions": []}
+            response_id = "research-plan"
+        else:
+            payload = {
+                "topic": "箱根交通",
+                "summary": "方案 A 证据更完整",
+                "claims": [],
+                "sources": [],
+                "media": [],
+                "unresolved": [],
+            }
+            response_id = "research-final"
         return ModelResponse(
             parts=[
                 ToolCallPart(
                     tool_name=info.output_tools[0].name,
-                    args={
-                        "topic": "箱根交通",
-                        "summary": "方案 A 证据更完整",
-                        "claims": [],
-                        "sources": [],
-                        "media": [],
-                        "unresolved": [],
-                    },
-                    tool_call_id="research-final",
+                    args=payload,
+                    tool_call_id=f"structured-{research_calls}",
                 )
             ],
             usage=RequestUsage(input_tokens=40, output_tokens=4),
-            provider_response_id="research-response",
+            provider_response_id=response_id,
         )
 
     def main_model(
@@ -213,15 +220,16 @@ async def test_executor_end_to_end_includes_research_agent_usage() -> None:
     ).execute(_request())
 
     assert result.content == "main final"
-    assert research_calls == 1
-    assert result.usage.model_requests == 3
-    assert result.usage.input_tokens == 90
-    assert result.usage.output_tokens == 9
-    assert result.usage.total_tokens == 99
+    assert research_calls == 2
+    assert result.usage.model_requests == 4
+    assert result.usage.input_tokens == 130
+    assert result.usage.output_tokens == 13
+    assert result.usage.total_tokens == 143
     assert {call.provider_response_id for call in result.usage.model_calls} == {
         "main-research",
         "main-final",
-        "research-response",
+        "research-plan",
+        "research-final",
     }
     assert result.usage.tool_calls >= 1
 
@@ -229,9 +237,14 @@ async def test_executor_end_to_end_includes_research_agent_usage() -> None:
 async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """2 Main requests + 7 Research requests may exceed Main limits in total."""
+    """Bounded child usage is aggregated without consuming Main role-local limits."""
 
     monkeypatch.setattr(settings, "APP_ENV", "test")
+    # Main itself needs exactly two model requests and one research_agent tool.
+    # The bounded child adds two model requests plus four Host weather calls; Product
+    # usage must exceed both Main-local limits without making Main fail.
+    monkeypatch.setattr(settings, "MAIN_MODEL_REQUEST_LIMIT", 2)
+    monkeypatch.setattr(settings, "MAIN_TOOL_CALL_LIMIT", 1)
 
     async def fake_weather(city: str, forecast: bool = False) -> str:
         return f"{city}: sunny (forecast={forecast})"
@@ -242,43 +255,43 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
     def research_model(
         messages: list[ModelMessage], info: AgentInfo
     ) -> ModelResponse:
+        del messages
         nonlocal research_model_calls
         research_model_calls += 1
-        completed_searches = len(_tool_returns(messages, "get_weather"))
-        if completed_searches < 6:
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="get_weather",
-                        args={"city": "东京"},
-                        tool_call_id=f"research-weather-{completed_searches + 1}",
-                    )
-                ],
-                usage=RequestUsage(
-                    input_tokens=10 + completed_searches,
-                    output_tokens=1,
-                ),
-                provider_response_id=f"research-{research_model_calls}",
-            )
-
         assert info.output_tools
+        if research_model_calls == 1:
+            payload: dict[str, Any] = {
+                "actions": [
+                    {
+                        "tool": "get_weather",
+                        "item_ids": [],
+                        "city": city,
+                        "forecast": False,
+                    }
+                    for city in ("东京", "横滨", "箱根", "镰仓")
+                ]
+            }
+            response_id = "research-plan"
+        else:
+            payload = {
+                "topic": "bounded research",
+                "summary": "天气核验完成",
+                "claims": [],
+                "sources": [],
+                "media": [],
+                "unresolved": [],
+            }
+            response_id = "research-final"
         return ModelResponse(
             parts=[
                 ToolCallPart(
                     tool_name=info.output_tools[0].name,
-                    args={
-                        "topic": "bounded research",
-                        "summary": "天气核验完成",
-                        "claims": [],
-                        "sources": [],
-                        "media": [],
-                        "unresolved": [],
-                    },
-                    tool_call_id="research-bounded-final",
+                    args=payload,
+                    tool_call_id=f"research-structured-{research_model_calls}",
                 )
             ],
-            usage=RequestUsage(input_tokens=16, output_tokens=1),
-            provider_response_id="research-7",
+            usage=RequestUsage(input_tokens=10, output_tokens=1),
+            provider_response_id=response_id,
         )
 
     def main_model(
@@ -312,9 +325,9 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
     result = await PydanticAIExecutor(agent).execute(_request())
 
     assert result.content == "main final after isolated research"
-    assert research_model_calls == 7
-    assert result.usage.model_requests == 9
-    assert result.usage.tool_calls >= 7
+    assert research_model_calls == 2
+    assert result.usage.model_requests == 4
+    assert result.usage.tool_calls >= 5
     assert result.usage.model_requests > settings.MAIN_MODEL_REQUEST_LIMIT
     assert result.usage.tool_calls > settings.MAIN_TOOL_CALL_LIMIT
 

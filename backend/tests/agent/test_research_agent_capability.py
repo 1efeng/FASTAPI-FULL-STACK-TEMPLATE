@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelAPIError
+from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -84,7 +85,22 @@ async def test_main_receives_only_compressed_research_findings() -> None:
                     ToolCallPart(
                         tool_name=RESEARCH_AGENT_TOOL_NAME,
                         args={
+                            "title": "箱根交通 Pass 比较",
                             "objective": "比较东京到箱根交通 Pass",
+                            "verification_items": [
+                                {
+                                    "id": "pass-price",
+                                    "entity": "箱根周游券",
+                                    "aspect": "当前票价",
+                                    "question": "当前成人与儿童票价分别是多少？",
+                                },
+                                {
+                                    "id": "pass-scope",
+                                    "entity": "箱根周游券",
+                                    "aspect": "覆盖范围",
+                                    "question": "是否覆盖 Candidate Plan 需要的主要交通？",
+                                },
+                            ],
                             "context": "Candidate Plan: Day 2 前往箱根",
                             "constraints": ["2 adults", "1 child"],
                         },
@@ -117,14 +133,17 @@ async def test_main_receives_only_compressed_research_findings() -> None:
     assert "儿童政策" in returned
     assert child_prompts
     prompt = child_prompts[0]
+    assert "箱根交通 Pass 比较" in prompt
     assert "比较东京到箱根交通 Pass" in prompt
+    assert "pass-price" in prompt
+    assert "当前成人与儿童票价分别是多少" in prompt
     assert "Candidate Plan: Day 2 前往箱根" in prompt
     assert "2 adults" in prompt
     assert state.research_requests > 0
     # Separate child usage is collected for Product accounting rather than being
     # folded into Main's own RunUsage counter.
     assert result.usage.requests == 2
-    assert state.research_requests == 1
+    assert state.research_requests == 2
 
 
 async def test_main_can_delegate_multiple_research_topics_sequentially() -> None:
@@ -190,9 +209,109 @@ async def test_main_can_delegate_multiple_research_topics_sequentially() -> None
         result = await main.run("先做 Candidate Plan，再分阶段核验两个主题")
 
     assert result.output == "两个研究主题都已整合"
-    assert len(child_prompts) == 2
+    assert len(child_prompts) == 4
     assert len(state.research_runs) == 2
-    assert state.research_requests == 2
+    assert state.research_requests == 4
+
+
+async def test_recoverable_failure_returns_unresolved_checklist_items() -> None:
+    def child_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del messages, info
+        raise ModelAPIError("research-model", "synthetic provider failure")
+
+    captured_returns: list[ToolReturnPart] = []
+
+    def parent_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        returns = _tool_returns(messages, RESEARCH_AGENT_TOOL_NAME)
+        if not returns:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name=RESEARCH_AGENT_TOOL_NAME,
+                        args={
+                            "title": "故宫预约",
+                            "objective": "核验故宫预约与放票规则",
+                            "verification_items": [
+                                {
+                                    "id": "palace-reservation",
+                                    "entity": "故宫博物院",
+                                    "aspect": "预约与放票",
+                                    "question": "预约渠道、提前天数与放票时间是什么？",
+                                }
+                            ],
+                        },
+                        tool_call_id="failed-checklist-topic",
+                    )
+                ]
+            )
+        captured_returns.extend(returns)
+        return ModelResponse(parts=[TextPart("继续使用 unresolved 结果")])
+
+    capability = build_research_agent_capability(model=FunctionModel(child_model))
+    main = Agent(FunctionModel(parent_model), capabilities=(capability,))
+    result = await main.run("核验故宫预约")
+
+    assert result.output == "继续使用 unresolved 结果"
+    assert len(captured_returns) == 1
+    returned = str(captured_returns[0].content)
+    assert "palace-reservation" in returned
+    assert "unresolved" in returned
+
+
+async def test_research_budget_exhaustion_degrades_to_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def budget_exhausted_research(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise UsageLimitExceeded("synthetic research budget exhaustion")
+
+    monkeypatch.setattr(
+        "app.agent.capabilities.research_agent.run_bounded_research",
+        budget_exhausted_research,
+    )
+
+    captured_returns: list[ToolReturnPart] = []
+
+    def parent_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        returns = _tool_returns(messages, RESEARCH_AGENT_TOOL_NAME)
+        if not returns:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name=RESEARCH_AGENT_TOOL_NAME,
+                        args={
+                            "objective": "核验故宫预约规则",
+                            "verification_items": [
+                                {
+                                    "id": "palace-reservation",
+                                    "entity": "故宫博物院",
+                                    "aspect": "预约与放票",
+                                    "question": "预约渠道和放票时间是什么？",
+                                }
+                            ],
+                        },
+                        tool_call_id="budget-exhausted-topic",
+                    )
+                ]
+            )
+        captured_returns.extend(returns)
+        return ModelResponse(parts=[TextPart("保留 unresolved 后继续完成主计划")])
+
+    capability = build_research_agent_capability(
+        model=FunctionModel(
+            lambda messages, info: ModelResponse(parts=[TextPart("unused")])
+        )
+    )
+    main = Agent(FunctionModel(parent_model), capabilities=(capability,))
+    result = await main.run("规划北京行程")
+
+    assert result.output == "保留 unresolved 后继续完成主计划"
+    assert len(captured_returns) == 1
+    returned = str(captured_returns[0].content)
+    assert "palace-reservation" in returned
+    assert "unresolved" in returned
 
 
 async def test_recoverable_parallel_research_failure_does_not_cancel_sibling() -> None:

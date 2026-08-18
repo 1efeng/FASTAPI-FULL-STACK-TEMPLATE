@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -39,8 +38,6 @@ from app.modules.conversation.model import Conversation, Message, MessageRole
 from app.modules.conversation.repository import ConversationRepository
 from app.modules.request_run.model import RequestRun, RequestRunStatus
 from app.modules.request_run.repository import RequestRunRepository
-
-logger = logging.getLogger(__name__)
 
 ChatErrorCode = Literal[
     "CONVERSATION_NOT_FOUND",
@@ -163,10 +160,11 @@ _EXECUTOR_ERROR_MAP: dict[str, tuple[str, bool, int]] = {
 
 @asynccontextmanager
 async def _execution_timeout(deadline_at: datetime) -> AsyncIterator[None]:
-    """Bound one Product Turn execution to its absolute deadline.
+    """Enforce the Product RequestRun emergency wall-clock safety cap.
 
-    The Product Runtime is the sole owner of this hard boundary. Debug or
-    transitional executor switches must not disable it.
+    Normal long-running research is governed by per-model/per-tool timeouts,
+    usage limits, and explicit Product cancellation. This outer bound exists only
+    to stop runaway/zombie execution and remains Product-owned.
     """
     timeout = remaining_deadline_seconds(deadline_at)
     if timeout <= 0:
@@ -281,6 +279,7 @@ class ChatService:
     ) -> tuple[uuid.UUID, datetime]:
         started_at = datetime.now(UTC)
         deadline_at = started_at + timedelta(seconds=settings.REQUEST_DEADLINE_SECONDS)
+        conversation: Conversation | None
         try:
             if conversation_id is None:
                 conversation = Conversation(
@@ -853,10 +852,6 @@ class ChatService:
                 except TimeoutError:
                     await events.put(_StreamingDeadlineExceeded())
                 except BaseException as exc:
-                    logger.exception(
-                        "chat stream execution failed after request admission",
-                        extra={"request_id": str(request_id), "error_type": type(exc).__name__},
-                    )
                     await events.put(exc)
                 finally:
                     # #region agent log

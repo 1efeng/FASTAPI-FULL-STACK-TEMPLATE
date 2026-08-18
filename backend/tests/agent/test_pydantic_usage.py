@@ -162,7 +162,7 @@ def test_main_usage_limits_are_role_specific() -> None:
     limits = _main_usage_limits()
 
     assert limits.request_limit == settings.MAIN_MODEL_REQUEST_LIMIT == 8
-    assert limits.tool_calls_limit == settings.MAIN_TOOL_CALL_LIMIT == 6
+    assert limits.tool_calls_limit == settings.MAIN_TOOL_CALL_LIMIT == 16
     assert limits.total_tokens_limit is None
     assert limits.input_tokens_limit is None
     assert limits.output_tokens_limit is None
