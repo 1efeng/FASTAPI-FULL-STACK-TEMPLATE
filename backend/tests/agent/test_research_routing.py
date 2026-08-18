@@ -37,7 +37,7 @@ def _tool_returns(messages: list[ModelMessage], name: str) -> list[ToolReturnPar
     ]
 
 
-def _research_final(info: AgentInfo, payload: dict[str, Any]) -> ModelResponse:
+def _structured_output(info: AgentInfo, payload: dict[str, Any]) -> ModelResponse:
     assert info.output_tools
     return ModelResponse(
         parts=[
@@ -51,12 +51,14 @@ def _research_final(info: AgentInfo, payload: dict[str, Any]) -> ModelResponse:
 
 
 def _research_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+    """Two-stage bounded research child: Planner batch, then compressed findings."""
     del messages
-    return _research_final(
+    return _structured_output(
         info,
         {
-            "topic": "箱根交通比较",
-            "summary": "当前证据支持方案 A。",
+            "topic": "JR Pass 方案比较",
+            "summary": "区域 Pass + 单买组合更合适。",
+            "verification_results": [],
             "claims": [],
             "sources": [],
             "media": [],
@@ -82,6 +84,35 @@ def _direct_agent(answer: str) -> tuple[Agent[object, str], list[ModelMessage]]:
         ),
         seen,
     )
+
+
+def _pass_items() -> list[dict[str, str]]:
+    return [
+        {
+            "id": "jr-pass-price",
+            "entity": "全国 JR Pass",
+            "aspect": "当前价格",
+            "question": "当前成人 7 日券价格是多少？",
+        },
+        {
+            "id": "route-coverage",
+            "entity": "当前路线",
+            "aspect": "覆盖范围",
+            "question": "关键城际段是否由 JR Pass 覆盖？",
+        },
+        {
+            "id": "regional-pass-scope",
+            "entity": "已知区域 Pass",
+            "aspect": "覆盖范围",
+            "question": "区域 Pass 覆盖哪些区段？",
+        },
+        {
+            "id": "key-segment-cost",
+            "entity": "关键单买段",
+            "aspect": "单买成本",
+            "question": "关键区段单买价格是多少？",
+        },
+    ]
 
 
 async def test_casual_request_does_not_call_research_agent() -> None:
@@ -126,70 +157,45 @@ async def test_normal_full_plan_can_finish_without_research_agent() -> None:
     assert _tool_calls(seen, "research_agent") == 0
 
 
-async def test_beijing_three_day_plan_can_delegate_independent_topics_together() -> None:
-    seen: list[ModelMessage] = []
+async def test_predetermined_parallel_fact_work_does_not_require_research_agent() -> None:
+    """Multiple predetermined independent facts stay on Main Direct tools.
 
-    def research_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        prompt = str(messages[0])
-        topic = "景点预约开放" if "景点" in prompt else "城际与八达岭交通"
-        return _research_final(
-            info,
-            {
-                "topic": topic,
-                "summary": f"{topic}核验完成",
-                "claims": [],
-                "sources": [],
-                "media": [],
-                "unresolved": [],
-            },
-        )
+    Verifying palace opening / temple ticket / garden reservation is lightweight
+    predetermined fact work whose queries can be fixed before execution, so the
+    expected architecture routes it to Main parallel tools with zero research_agent
+    delegation.
+    """
+
+    seen: list[ModelMessage] = []
 
     def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         del info
         seen[:] = messages
-        returns = _tool_returns(messages, "research_agent")
-        if returns:
-            assert len(returns) == 2
-            return ModelResponse(parts=[TextPart("Main 根据两个 Findings 修订北京三日计划")])
         return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="research_agent",
-                    args={
-                        "objective": "核验北京核心景点预约、开放和参观执行条件",
-                        "context": "Candidate Plan: D1 天坛前门；D2 故宫景山",
-                        "constraints": ["2026-08-26 至 2026-08-28", "2 人"],
-                    },
-                    tool_call_id="beijing-attractions",
-                ),
-                ToolCallPart(
-                    tool_name="research_agent",
-                    args={
-                        "objective": "核验郑州往返北京及八达岭当天交通执行条件",
-                        "context": "Candidate Plan: D3 八达岭后返郑州",
-                        "constraints": ["总预算 RMB 5000"],
-                    },
-                    tool_call_id="beijing-transport",
-                ),
-            ]
+            parts=[TextPart("Main 用并行工具核验三个独立事实并完成计划")]
         )
 
     agent = Agent(
         FunctionModel(main_model),
         capabilities=build_travel_capabilities(
-            research_model=FunctionModel(research_model)
+            research_model=FunctionModel(_research_model)
         ),
     )
     result = await agent.run(
-        "2026-08-26 郑州出发，两个人，北京三日经典景点，总预算 RMB 5000"
+        "核验故宫开放、天坛票价、颐和园预约三个独立事实后给我完整计划"
     )
 
-    assert "修订北京三日计划" in result.output
-    assert _tool_calls(seen, "research_agent") == 2
-    assert len(_tool_returns(seen, "research_agent")) == 2
+    assert "并行工具核验三个独立事实" in result.output
+    assert _tool_calls(seen, "research_agent") == 0
 
 
-async def test_one_coherent_pass_topic_uses_one_research_agent() -> None:
+async def test_bounded_evidence_heavy_pass_comparison_uses_research_agent() -> None:
+    """A bounded evidence-heavy Pass comparison delegates once to research_agent.
+
+    Main has already defined the Research boundary (atomic verification_items),
+    so the child is responsible for one bounded evidence batch plus compression.
+    """
+
     seen: list[ModelMessage] = []
 
     def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -197,22 +203,22 @@ async def test_one_coherent_pass_topic_uses_one_research_agent() -> None:
         seen[:] = messages
         returns = _tool_returns(messages, "research_agent")
         if returns:
-            return ModelResponse(parts=[TextPart("Main 最终选择方案 A")])
+            return ModelResponse(parts=[TextPart("Main 最终选择区域 Pass + 单买组合")])
         return ModelResponse(
             parts=[
                 ToolCallPart(
                     tool_name="research_agent",
                     args={
-                        "objective": "比较东京到箱根多种交通 Pass",
-                        "context": "Candidate Plan: Day 2 东京前往箱根",
-                        "constraints": [
-                            "当前价格",
-                            "儿童政策",
-                            "覆盖范围",
-                            "换乘复杂度",
-                        ],
+                        "title": "JR Pass 与区域 Pass 比较",
+                        "objective": (
+                            "结合东京、箱根、京都、大阪、广岛 10 日路线，"
+                            "比较全国 JR Pass、区域 Pass 与单买组合，判断哪种更适合。"
+                        ),
+                        "verification_items": _pass_items(),
+                        "context": "10 日路线：东京→箱根→京都→大阪→广岛",
+                        "constraints": ["2 名成人"],
                     },
-                    tool_call_id="research-complex",
+                    tool_call_id="research-pass",
                 )
             ]
         )
@@ -223,13 +229,19 @@ async def test_one_coherent_pass_topic_uses_one_research_agent() -> None:
             research_model=FunctionModel(_research_model)
         ),
     )
-    result = await agent.run("深入比较东京到箱根交通与 Pass")
-    assert result.output == "Main 最终选择方案 A"
+    result = await agent.run("比较这条路线下全国 JR Pass 与区域 Pass 哪个更划算")
+    assert result.output == "Main 最终选择区域 Pass + 单买组合"
     assert _tool_calls(seen, "research_agent") == 1
     assert len(_tool_returns(seen, "research_agent")) == 1
 
 
-async def test_dependent_research_topic_is_delegated_after_first_result() -> None:
+async def test_path_dependency_research_a_creates_research_b() -> None:
+    """Path dependence belongs to Main orchestration, not child Search-again.
+
+    Research A compares JR Pass coverage; Main reads the Findings, discovers a new
+    Reality Gap, and only then delegates Research B for the Kansai regional Pass.
+    """
+
     seen: list[ModelMessage] = []
 
     def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -241,8 +253,27 @@ async def test_dependent_research_topic_is_delegated_after_first_result() -> Non
                 parts=[
                     ToolCallPart(
                         tool_name="research_agent",
-                        args={"objective": "核验故宫当日是否可预约"},
-                        tool_call_id="dependency-a",
+                        args={
+                            "title": "全国 JR Pass 适用性",
+                            "objective": "比较全国 JR Pass 与当前已知 Pass 对完整路线的适用性",
+                            "verification_items": [
+                                {
+                                    "id": "price",
+                                    "entity": "全国 JR Pass",
+                                    "aspect": "价格",
+                                    "question": "全国 JR Pass 当前价格是否值得？",
+                                },
+                                {
+                                    "id": "coverage",
+                                    "entity": "全国 JR Pass",
+                                    "aspect": "路线覆盖",
+                                    "question": "是否覆盖整条路线关键段？",
+                                },
+                            ],
+                            "context": "10 日路线：东京→箱根→京都→大阪→广岛",
+                            "constraints": [],
+                        },
+                        tool_call_id="research-a",
                     )
                 ]
             )
@@ -252,14 +283,24 @@ async def test_dependent_research_topic_is_delegated_after_first_result() -> Non
                     ToolCallPart(
                         tool_name="research_agent",
                         args={
-                            "objective": "研究故宫不可预约时的同区域替代方案",
-                            "context": "第一阶段 Findings 显示故宫不可预约",
+                            "title": "关西段区域 Pass",
+                            "objective": "研究关西段是否有更合适的区域 Pass",
+                            "verification_items": [
+                                {
+                                    "id": "kansai-pass",
+                                    "entity": "关西区域 Pass",
+                                    "aspect": "覆盖与价格",
+                                    "question": "是否有覆盖关西段且更便宜的区域 Pass？",
+                                }
+                            ],
+                            "context": "Research A Findings 显示关西段覆盖不理想",
+                            "constraints": [],
                         },
-                        tool_call_id="dependency-b",
+                        tool_call_id="research-b",
                     )
                 ]
             )
-        return ModelResponse(parts=[TextPart("Main 根据两阶段 Findings 完成替代计划")])
+        return ModelResponse(parts=[TextPart("Main 根据两阶段 Findings 完成方案")])
 
     agent = Agent(
         FunctionModel(main_model),
@@ -267,9 +308,8 @@ async def test_dependent_research_topic_is_delegated_after_first_result() -> Non
             research_model=FunctionModel(_research_model)
         ),
     )
-    result = await agent.run("如果故宫订不到就给我同区域替代方案")
-
-    assert "替代计划" in result.output
+    result = await agent.run("全国 JR Pass 覆盖不理想时，研究关西段替代 Pass")
+    assert "两阶段 Findings" in result.output
     assert _tool_calls(seen, "research_agent") == 2
     assert len(_tool_returns(seen, "research_agent")) == 2
 

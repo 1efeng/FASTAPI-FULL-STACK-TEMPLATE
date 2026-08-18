@@ -7,7 +7,11 @@ from typing import Any
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
+from pydantic_ai.exceptions import (
+    ModelAPIError,
+    UnexpectedModelBehavior,
+    UsageLimitExceeded,
+)
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -178,7 +182,17 @@ async def test_main_can_delegate_multiple_research_topics_sequentially() -> None
                 parts=[
                     ToolCallPart(
                         tool_name=RESEARCH_AGENT_TOOL_NAME,
-                        args={"objective": "核验景点执行条件"},
+                        args={
+                            "objective": "核验景点执行条件",
+                            "verification_items": [
+                                {
+                                    "id": "palace-opening",
+                                    "entity": "故宫博物院",
+                                    "aspect": "开放与闭馆",
+                                    "question": "指定日期是否开放？",
+                                }
+                            ],
+                        },
                         tool_call_id="topic-a",
                     )
                 ]
@@ -188,7 +202,17 @@ async def test_main_can_delegate_multiple_research_topics_sequentially() -> None
                 parts=[
                     ToolCallPart(
                         tool_name=RESEARCH_AGENT_TOOL_NAME,
-                        args={"objective": "核验交通执行条件"},
+                        args={
+                            "objective": "核验交通执行条件",
+                            "verification_items": [
+                                {
+                                    "id": "route-feasibility",
+                                    "entity": "北京北站→八达岭",
+                                    "aspect": "交通时间",
+                                    "question": "公共交通耗时是否可衔接返程？",
+                                }
+                            ],
+                        },
                         tool_call_id="topic-b",
                     )
                 ]
@@ -356,12 +380,32 @@ async def test_recoverable_parallel_research_failure_does_not_cancel_sibling() -
                 parts=[
                     ToolCallPart(
                         tool_name=RESEARCH_AGENT_TOOL_NAME,
-                        args={"objective": "失败主题"},
+                        args={
+                            "objective": "失败主题",
+                            "verification_items": [
+                                {
+                                    "id": "failed-item",
+                                    "entity": "失败主题实体",
+                                    "aspect": "失败维度",
+                                    "question": "该主题需要核验什么？",
+                                }
+                            ],
+                        },
                         tool_call_id="failing-topic",
                     ),
                     ToolCallPart(
                         tool_name=RESEARCH_AGENT_TOOL_NAME,
-                        args={"objective": "健康主题"},
+                        args={
+                            "objective": "健康主题",
+                            "verification_items": [
+                                {
+                                    "id": "healthy-item",
+                                    "entity": "健康主题实体",
+                                    "aspect": "健康维度",
+                                    "question": "该主题需要核验什么？",
+                                }
+                            ],
+                        },
                         tool_call_id="healthy-topic",
                     ),
                 ]
@@ -397,3 +441,67 @@ def test_research_workflow_is_bounded_and_has_one_leaf_agent() -> None:
     assert capability.max_agent_calls == 2
     assert len(capability.agents) == 1
     assert capability.agents[0].name == "research_agent"
+
+
+async def test_research_agent_requires_verification_items_tool_call() -> None:
+    """A tool call missing verification_items must not enter bounded research.
+
+    ``verification_items`` is a required PydanticAI tool argument. When Main omits
+    it, PydanticAI tool argument validation fails and the run aborts with
+    ``UnexpectedModelBehavior`` instead of executing the child model, so a bare
+    ``objective`` can never start a production Research run.
+    """
+
+    child_called = False
+
+    def child_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal child_called
+        child_called = True
+        del messages
+        assert info.output_tools
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name=info.output_tools[0].name,
+                    args={
+                        "topic": "不应进入 child",
+                        "summary": "child 不应被调用",
+                        "verification_results": [],
+                        "claims": [],
+                        "sources": [],
+                        "media": [],
+                        "unresolved": [],
+                    },
+                    tool_call_id="child-final",
+                )
+            ]
+        )
+
+    def parent_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        if _tool_returns(messages, RESEARCH_AGENT_TOOL_NAME):
+            return ModelResponse(parts=[TextPart("不应到达")])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name=RESEARCH_AGENT_TOOL_NAME,
+                    args={"objective": "核验故宫预约规则"},
+                    tool_call_id="missing-items",
+                )
+            ]
+        )
+
+    capability = build_research_agent_capability(model=FunctionModel(child_model))
+    main = Agent(
+        FunctionModel(
+            parent_model,
+            settings=ModelSettings(parallel_tool_calls=True),
+        ),
+        model_settings=ModelSettings(parallel_tool_calls=True),
+        capabilities=(capability,),
+    )
+
+    with pytest.raises(UnexpectedModelBehavior):
+        await main.run("核验故宫预约")
+
+    assert child_called is False

@@ -174,36 +174,58 @@ Main
 
 ---
 
-# 三、真正适合 Research Agent 的任务
+# 三、三层 Routing 模型
 
-成熟标准应是：
+Routing 不是两元决策（Main vs Research），而是三层。真正的 path-dependence 属于 Main 的分阶段 orchestration，不属于单次 child。
+
+## A. Main Direct
+
+适合：
 
 ```text
-open-ended
-+
-path-dependent
-+
-context-heavy
-+
+单个当前事实
+多个 predetermined facts
+查询 / Tool 集合事先明确
+evidence 较轻
+不值得独立 context
+```
+
+即使需要：
+
+```text
+3 个 Search
+2 个 Maps
+多个 POI
+```
+
+只要 queries / tools 可以在开始前确定，且 evidence 不重，仍应 Main parallel tools。
+
+> **Tool 数量 ≠ Agentic Complexity。**
+
+## B. 单次 research_agent
+
+适合一个 coherent bounded Research Topic，它必须同时满足：
+
+```text
+bounded
+coherent
+upfront-batchable
+evidence-heavy
+context-isolation valuable
 compressible
 ```
 
-### 1. Open-ended
+展开：
 
-一开始不能完全确定应该调查哪些方向。
+### 1. Bounded + Coherent
 
-### 2. Path-dependent
+一个 Topic 是一个统一的决策问题，可以提前拆成 atomic verification_items。
 
-下一步研究方向取决于前一步发现：
+### 2. Upfront-batchable
 
-```text
-查 A
-↓
-发现 X → 查 B
-发现 Y → 查 C
-```
+Planner 能一次规划有限的 evidence batch，而不是走一步看一步。
 
-### 3. Context-heavy
+### 3. Evidence-heavy
 
 中间会产生很多：
 
@@ -218,7 +240,7 @@ tool results
 
 ### 4. Compressible
 
-最后却可以压缩成：
+最后可以压缩成：
 
 ```text
 结论
@@ -227,6 +249,19 @@ verified / conflicting / unresolved
 ```
 
 如果 Research 最终还得把 20K evidence 全交给 Main，那 subagent 没价值。
+
+## C. Path-dependent research process
+
+真正的 Search → Observe → Search-again 动态探索，**不属于单次 research_agent**，而是 Main 的分阶段 orchestration：
+
+```text
+Research A
+→ Main 根据 Findings
+→ 发现新的 Reality Gap
+→ Research B
+```
+
+单次 bounded research_agent 不承担自由 path-dependent 探索；它一次规划一个 evidence batch，证据不足就 unresolved 返回，由 Main 决定是否产生新的 Topic。
 
 ---
 
@@ -277,23 +312,19 @@ buffer calculation
 
 例如：
 
-> “结合东京、箱根、京都、大阪、广岛10日路线，JR Pass、区域 Pass 和单买到底哪个组合最划算？”
+> “结合东京、箱根、京都、大阪、广岛10日路线，比较全国 JR Pass、区域 Pass 与单买组合，判断哪种更适合当前路线。”
 
-因为可能：
+这是一个 bounded evidence-heavy 对比研究：Main 已经定义 Research boundary（价格、覆盖范围、关键组合），child 负责一次性规划 evidence batch 并压缩返回。
 
 ```text
-先查 JR Pass
-↓
-发现箱根部分不覆盖
-↓
-发现箱根周游券
-↓
-再发现关西区域 Pass
-↓
-重新比较组合
+verification_items:
+  jr-pass-price
+  route-coverage
+  regional-pass-scope
+  key-segment-cost
 ```
 
-最终却可以压成：
+最终压成：
 
 ```text
 推荐组合 A
@@ -303,7 +334,7 @@ buffer calculation
 未确认项
 ```
 
-这是典型 Research。
+注意：如果后续发现新的区域 Pass 候选需要进一步研究，由 Main 生成新的 Research Topic，而不是 child 自己无限 Search-again。
 
 ---
 
@@ -832,43 +863,47 @@ Main 决定：
 
 # 十八、Research Agent 和 Main Tool 的关系
 
-完整 routing：
+完整 routing（三层模型）：
 
 ```text
 Reality Gap
     ↓
-是否可以预先确定需要哪些 Tool？
+Queries / Tools 是否能在开始前预先确定？
     │
-    ├─ YES
+    ├─ YES（predetermined / lightweight fact work）
     │    ↓
     │   Main Direct
     │   parallel tools if possible
     │
-    └─ NO
+    └─ NO（真正需要探索）
          ↓
-    是否存在真正的 exploration /
-    path-dependent research？
+    是否存在需要隔离的 evidence-heavy
+    bounded Research Topic？
          │
          ├─ NO
          │    → Main / deterministic workflow
          │
          └─ YES
               ↓
-    中间 evidence 是否值得隔离？
+    Topic 是否能由 Main 提前拆成
+    atomic verification_items、
+    Planner 一次规划 evidence batch、
+    最终高度压缩？
               │
-              ├─ NO
-              │    → Main
+              ├─ NO → Main（不 delegate）
               │
               └─ YES
                    ↓
-    最终是否能高度压缩？
-                   │
-                   ├─ NO → Main
-                   │
-                   └─ YES
-                        ↓
-                   research_agent
+              research_agent（单次 bounded batch）
 ```
+
+如果单个 Topic 无法一次 bounded 解决，而是依赖前一步发现才能定义下一步，那么 path-dependence 属于 Main 的分阶段 orchestration：
+
+```text
+Research A → Main → 新的 Reality Gap → Research B
+```
+
+而不是在 child 内自由 Search-again。
 
 ---
 
@@ -989,17 +1024,17 @@ legacy/iterative_research_agent.py
 single current fact
 → Main
 
-several predetermined facts
+several predetermined independent facts
 → Main parallel
 
-simple route feasibility
+deterministic route feasibility
 → Main
 
-open-ended Pass comparison
-→ Research
+bounded evidence-heavy Pass comparison
+→ research_agent
 
-path-dependent alternative discovery
-→ Research
+Research A result creates new Research B
+→ Research → Main → Research（path-dependence 属于 Main orchestration）
 ```
 
 ### Handoff eval
@@ -1046,7 +1081,7 @@ Main context growth
 
 我认为我们现在可以正式把 `research_agent` 定义成：
 
-> **一个由 Main 以 Agent-as-Tool 方式调用的、面向明确 Research Topic 的 bounded context-isolated evidence worker。它只在研究过程具有 open-ended / path-dependent 特征、原始 evidence 会显著污染 Main 上下文、且最终结果能够高度压缩时使用。Main 传入 objective、atomic verification items、minimal context 和 constraints；Research Agent 通过 bounded Planner → Host evidence batch → Finalizer → Host attestation 返回 ResearchFindings，中间搜索轨迹与原始 evidence 不进入 Main context。**
+> **一个由 Main 以 Agent-as-Tool 方式调用的、面向一个 bounded Research Topic 的 context-isolated evidence worker。单次调用不是自由 path-dependent agent：Main 传入 objective 与 atomic verification_items 定义 completion boundary，Planner 一次规划有限 evidence batch，Host 并行执行并读取权威来源，Finalizer 压缩为 ResearchFindings，Host 再做 item-scoped normalization 与全局 attestation 后返回。只有原始 evidence 会显著污染 Main 上下文、且最终结果能够高度压缩时才使用。真正的 Search→Observe→Search-again 动态探索属于 Main 的分阶段 orchestration（Research A → Main → Research B），不发生在 child 内。**
 
 再压缩成架构口号就是：
 

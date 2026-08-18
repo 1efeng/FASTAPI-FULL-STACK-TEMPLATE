@@ -198,6 +198,20 @@ async def test_executor_end_to_end_includes_research_agent_usage() -> None:
                     tool_name="research_agent",
                     args={
                         "objective": "比较东京到箱根交通 Pass",
+                        "verification_items": [
+                            {
+                                "id": "pass-price",
+                                "entity": "箱根周游券",
+                                "aspect": "当前票价",
+                                "question": "当前票价是多少？",
+                            },
+                            {
+                                "id": "pass-scope",
+                                "entity": "箱根周游券",
+                                "aspect": "覆盖范围",
+                                "question": "是否覆盖主要交通？",
+                            },
+                        ],
                         "context": "Candidate Plan: Day 2 去箱根",
                         "constraints": ["当前价格", "儿童政策"],
                     },
@@ -264,7 +278,7 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
                 "actions": [
                     {
                         "tool": "get_weather",
-                        "item_ids": [],
+                        "item_ids": ["route-weather"],
                         "city": city,
                         "forecast": False,
                     }
@@ -308,7 +322,18 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
             parts=[
                 ToolCallPart(
                     tool_name="research_agent",
-                    args={"objective": "核验东京天气", "constraints": []},
+                    args={
+                        "objective": "核验东京天气",
+                        "verification_items": [
+                            {
+                                "id": "route-weather",
+                                "entity": "东京",
+                                "aspect": "天气",
+                                "question": "指定日期天气是否影响户外计划？",
+                            }
+                        ],
+                        "constraints": [],
+                    },
                     tool_call_id="research-heavy",
                 )
             ],

@@ -35,14 +35,11 @@ def _structured_output(info: AgentInfo, payload: dict[str, Any]) -> ModelRespons
     )
 
 
-def test_research_request_is_minimal_and_has_safe_defaults() -> None:
-    request = ResearchRequest(objective="比较东京到箱根交通 Pass")
-
-    assert request.objective == "比较东京到箱根交通 Pass"
-    assert request.title is None
-    assert request.verification_items == []
-    assert request.context is None
-    assert request.constraints == []
+def test_research_request_requires_verification_items() -> None:
+    # Runtime contract: an empty checklist is invalid. The type checker can't see
+    # this because the field constraint is expressed via Field(min_length=1).
+    with pytest.raises(ValidationError):
+        ResearchRequest(objective="比较东京到箱根交通 Pass")  # type: ignore[call-arg]
 
 
 def test_research_request_accepts_atomic_checklist_and_rejects_duplicate_ids() -> None:

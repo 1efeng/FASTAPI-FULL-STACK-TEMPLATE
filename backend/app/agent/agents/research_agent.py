@@ -94,11 +94,15 @@ class VerificationResult(BaseModel):
 
 
 class ResearchRequest(BaseModel):
-    """Minimal handoff from Main into an isolated complex research task."""
+    """Minimal bounded handoff from Main into one evidence-heavy research topic.
+
+    ``verification_items`` is the required completion boundary: Main must already
+    be able to state which atomic facts this Topic must prove before delegating.
+    """
 
     objective: str
     title: str | None = Field(default=None, max_length=80)
-    verification_items: list[VerificationItem] = Field(default_factory=list)
+    verification_items: list[VerificationItem] = Field(min_length=1)
     context: str | None = None
     constraints: list[str] = Field(default_factory=list)
 

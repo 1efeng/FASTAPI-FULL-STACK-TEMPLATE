@@ -33,6 +33,7 @@ from app.agent.context.runtime_clock import runtime_clock_context
 from app.agent.research_runtime import (
     ResearchEvidenceTrace,
     ResearchUsageObservation,
+    _result_is_usable,
     attest_research_findings,
     get_research_request_state,
     record_research_tool_observation,
@@ -53,14 +54,14 @@ _FETCH_CONTENT_CHARS = 8_000
 
 class WebSearchAction(BaseModel):
     tool: Literal["search_web"] = "search_web"
-    item_ids: list[str] = Field(default_factory=list, max_length=2)
+    item_ids: list[str] = Field(min_length=1, max_length=2)
     query: str = Field(min_length=1, max_length=100)
     authoritative: bool = False
 
 
 class RouteAction(BaseModel):
     tool: Literal["search_maps"] = "search_maps"
-    item_ids: list[str] = Field(default_factory=list, max_length=2)
+    item_ids: list[str] = Field(min_length=1, max_length=2)
     origin: str = Field(min_length=1, max_length=120)
     destination: str = Field(min_length=1, max_length=120)
     mode: Literal["driving", "transit"] = "transit"
@@ -68,14 +69,14 @@ class RouteAction(BaseModel):
 
 class WeatherAction(BaseModel):
     tool: Literal["get_weather"] = "get_weather"
-    item_ids: list[str] = Field(default_factory=list, max_length=2)
+    item_ids: list[str] = Field(min_length=1, max_length=2)
     city: str = Field(min_length=1, max_length=80)
     forecast: bool = False
 
 
 class PoiSearchAction(BaseModel):
     tool: Literal["search_poi"] = "search_poi"
-    item_ids: list[str] = Field(default_factory=list, max_length=2)
+    item_ids: list[str] = Field(min_length=1, max_length=2)
     keywords: str = Field(min_length=1, max_length=80)
     region: str | None = Field(default=None, max_length=80)
     strict_region: bool = False
@@ -130,6 +131,66 @@ class EvidencePacket(BaseModel):
     tool: str
     args: dict[str, Any]
     result: Any
+
+
+def _valid_actions_for_request(
+    request: ResearchRequest,
+    actions: list[ResearchAction],
+) -> list[ResearchAction]:
+    """Keep only Planner actions bound to real request verification item ids.
+
+    An action with an unknown or empty item_id is dropped without correction,
+    fuzzy matching, checklist expansion, or a Planner re-request. The affected
+    verification item then naturally falls back to ``unresolved`` because it has
+    no executed evidence.
+    """
+    allowed_ids = {item.id for item in request.verification_items}
+    return [
+        action
+        for action in actions
+        if action.item_ids and all(item_id in allowed_ids for item_id in action.item_ids)
+    ]
+
+
+def _item_evidence_scope(
+    packets: list[EvidencePacket],
+    item_id: str,
+) -> tuple[set[str], set[str]]:
+    """Return the URLs and dedicated tools this item is actually allowed to use.
+
+    Only packets whose ``item_ids`` include ``item_id`` count as that item's
+    evidence. Web URLs come from the observed search_web/web_fetch results of those
+    packets; dedicated tool names come from the tool types of those packets. This
+    replaces any global ``trace.web_urls`` / ``trace.successful_tools`` proof for a
+    single ``VerificationResult``.
+    """
+    allowed_urls: set[str] = set()
+    allowed_tools: set[str] = set()
+    for packet in packets:
+        if item_id not in packet.item_ids:
+            continue
+        if not _result_is_usable(packet.result):
+            continue
+        if packet.tool in {"search_web", "web_fetch"}:
+            if not isinstance(packet.result, dict):
+                continue
+            if packet.tool == "search_web":
+                rows = packet.result.get("results")
+                if not isinstance(rows, list):
+                    continue
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    url = row.get("url")
+                    if isinstance(url, str) and url.startswith(("http://", "https://")):
+                        allowed_urls.add(url)
+            else:
+                url = packet.result.get("url")
+                if isinstance(url, str) and url.startswith(("http://", "https://")):
+                    allowed_urls.add(url)
+        else:
+            allowed_tools.add(packet.tool)
+    return allowed_urls, allowed_tools
 
 
 def _observed_source_catalog(packets: list[EvidencePacket]) -> dict[str, EvidenceSource]:
@@ -195,15 +256,25 @@ def _draft_to_findings(
         tool_evidence: list[str],
         status: Literal["verified", "conflicting", "unresolved"],
         marker: str,
+        allowed_urls: set[str] | None = None,
+        allowed_tool_names: set[str] | None = None,
     ) -> tuple[
         list[str],
         list[EvidenceToolName],
         Literal["verified", "conflicting", "unresolved"],
     ]:
-        urls = list(dict.fromkeys(url for url in source_urls if url in source_catalog))
+        # Item-scoped normalization: a URL/tool is only acceptable for a
+        # VerificationResult if it belongs to that item's own evidence packets.
+        url_filter = allowed_urls if allowed_urls is not None else set(source_catalog)
+        tool_filter = allowed_tool_names if allowed_tool_names is not None else allowed_tools
+        urls = list(
+            dict.fromkeys(
+                url for url in source_urls if url in source_catalog and url in url_filter
+            )
+        )
         tools = cast(
             list[EvidenceToolName],
-            list(dict.fromkeys(tool for tool in tool_evidence if tool in allowed_tools)),
+            list(dict.fromkeys(tool for tool in tool_evidence if tool in tool_filter)),
         )
         normalized_status = status
         if normalized_status in {"verified", "conflicting"} and not (urls or tools):
@@ -235,11 +306,14 @@ def _draft_to_findings(
             if marker not in unresolved:
                 unresolved.append(marker)
             continue
+        item_urls, item_tools = _item_evidence_scope(packets, item_id)
         urls, tools, status = normalize_evidence(
             source_urls=result.source_urls,
             tool_evidence=result.tool_evidence,
             status=result.status,
             marker=f"Draft evidence incomplete for verification item: {item_id}",
+            allowed_urls=item_urls,
+            allowed_tool_names=item_tools,
         )
         results.append(
             VerificationResult(
@@ -284,6 +358,7 @@ _PLANNER_INSTRUCTIONS = """\
 你是旅行研究查询规划器。你的唯一任务是为一个 ResearchRequest 生成最小、可并行执行的证据查询批次，不做最终回答。
 
 规则：
+- 每个 action 必须绑定至少一个 input verification_item：item_ids 必须逐字使用 request 中真实存在的 id，不允许为空，不允许创建 checklist 之外的 id；一个 action 只能服务它明确绑定的 items。
 - actions 总数最多 4；默认每个 verification item 只安排 1 个 action，只有一条查询明显不足时才允许第 2 个。
 - 不为可以由已有外部事实直接推导的结论单独查询，例如安全余量、是否值得、最终取舍。
 - 开放、预约、政策、当前价格等动态 Web 事实优先 search_web(authoritative=true)。
@@ -556,7 +631,8 @@ async def run_bounded_research(
         responses.extend(_model_responses(plan_result))
 
         action_budget = max(0, settings.RESEARCH_AGENT_TOOL_CALL_LIMIT)
-        actions = plan_result.output.actions[: min(_MAX_PLAN_ACTIONS, action_budget)]
+        planned_actions = plan_result.output.actions[: min(_MAX_PLAN_ACTIONS, action_budget)]
+        actions = _valid_actions_for_request(request, planned_actions)
         packets = list(await asyncio.gather(*(_execute_action(action) for action in actions)))
         tool_calls += len(packets)
         for packet in packets:

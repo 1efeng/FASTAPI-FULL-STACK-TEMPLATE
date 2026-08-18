@@ -42,8 +42,8 @@ def build_research_agent_capability(
     """
     async def research_agent(
         objective: str,
+        verification_items: list[VerificationItem],
         title: str | None = None,
-        verification_items: list[VerificationItem] | None = None,
         context: str | None = None,
         constraints: list[str] | None = None,
     ) -> ResearchFindings:
@@ -51,7 +51,7 @@ def build_research_agent_capability(
         request = ResearchRequest(
             objective=objective,
             title=title,
-            verification_items=verification_items or [],
+            verification_items=verification_items,
             context=context,
             constraints=constraints or [],
         )
@@ -81,12 +81,12 @@ def build_research_agent_capability(
         name=RESEARCH_AGENT_TOOL_NAME,
         sequential=False,
         description=(
-            "Answer one bounded travel decision question discovered from a Candidate Plan. "
-            "Use it for related reality gaps that can change that decision, not a general "
-            "city fact survey. Provide a short title and atomic verification_items when "
-            "the Topic has multiple facts to prove. The child plans one bounded evidence "
-            "batch and returns compressed ResearchFindings. Multiple independent "
-            "questions may be delegated."
+            "Use this tool for one bounded, evidence-heavy travel research topic "
+            "whose raw evidence should stay out of Main context and whose completion "
+            "criteria can be expressed as atomic verification_items. "
+            "Do not use it for isolated facts or lightweight predetermined batches "
+            "whose required tools/queries are already obvious to Main. "
+            "verification_items are required."
         ),
     )
     return Capability[object](
