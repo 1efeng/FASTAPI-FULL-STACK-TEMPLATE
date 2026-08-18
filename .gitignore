@@ -17,3 +17,7 @@ frontend/.tanstack/
 /tw-*.css
 /tw-*.mjs
 /pnpm-lock.yaml
+
+# Cursor debug logs
+.cursor/
+**/debug-*.log
