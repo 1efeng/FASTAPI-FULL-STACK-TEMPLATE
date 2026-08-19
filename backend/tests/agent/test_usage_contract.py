@@ -76,6 +76,23 @@ def test_usage_exposes_model_requests_without_per_call_evidence() -> None:
     assert usage.total_tokens is None
 
 
+def test_usage_research_runs_exposed() -> None:
+    usage = AgentUsage(
+        model_calls=(
+            _call(input_tokens=10, output_tokens=2),
+            _call(call_index=1, input_tokens=5, output_tokens=1),
+        ),
+        research_runs=2,
+    )
+
+    assert usage.research_runs == 2
+
+
+def test_usage_rejects_negative_research_runs() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        AgentUsage(research_runs=-1)
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

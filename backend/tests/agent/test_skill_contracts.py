@@ -32,30 +32,30 @@ def test_main_instructions_remain_domain_neutral() -> None:
     assert "Runtime" in MAIN_AGENT_INSTRUCTIONS
 
 
-def test_travel_skill_owns_topic_research_routing_contract() -> None:
+def test_travel_skill_owns_specific_bounded_research_contract() -> None:
     content = _TRAVEL_SKILL.read_text(encoding="utf-8")
 
     required = (
-        "Candidate Plan First",
-        "Reality Gap",
-        "Research Topic",
-        "Main 拆 Research Topic；research_agent 把 Topic 压缩成一个最小、bounded 的 evidence batch",
-        "Isolated Fact → Main 自己核验",
-        "一次规划允许 0..N 个 Research Topics",
-        "独立 Topics 并行；有依赖 Topics 分阶段",
-        "ResearchFindings",
-        "verification_items",
-        "verification_results",
-        "动态精确事实",
+        "只搜索会改变决策的信息",
+        "具体问题",
+        "research_agent",
+        "objective",
         "calculate_budget",
         "references/markdown-contract.md",
+        "动态精确事实",
+        "不得用记忆补写",
+        "证据足够支撑当前决策即停止",
+        "不为「资料更完整」换 query 重跑",
     )
     for phrase in required:
         assert phrase in content
 
     forbidden_legacy_contracts = (
-        "每次最多一次 research_agent",
-        "single complex research run",
+        "verification_items",
+        "verification_results",
+        "impact",
+        "Evidence Sufficiency",
+        "fixed worker",
         "固定 worker 数量",
         "固定研究轴",
     )
@@ -63,38 +63,50 @@ def test_travel_skill_owns_topic_research_routing_contract() -> None:
         assert phrase not in content
 
 
-def test_skill_routing_defaults_to_main_direct_over_research_agent() -> None:
+def test_skill_splits_structured_main_direct_from_web_research_agent() -> None:
     content = _TRAVEL_SKILL.read_text(encoding="utf-8")
 
     required_routing = (
-        "Tool 数量 ≠ Agentic Complexity",
-        "能预先确定查询集合时，优先 Main 并行 Tool Calls",
-        "Isolated Fact → Main 自己核验",
-        "禁止为了形式上的多智能体而委托 child",
-        "context isolation + compression",
-        "Findings 可以高度压缩",
-        "只定义“必须从外部世界证明什么”",
-        "不定义“怎么查”",
+        "结构化工具",
+        "不委托子 agent",
+        "多个独立主题",
+        "先用 A 的结果判断再派 B",
+        "不验证事实、不生成行程、不决定取舍",
     )
     for phrase in required_routing:
         assert phrase in content
 
 
-def test_skill_main_owns_cross_topic_path_dependency() -> None:
+def test_skill_reference_search_is_bounded_to_itinerary_recommendations() -> None:
     content = _TRAVEL_SKILL.read_text(encoding="utf-8")
 
-    # Single bounded research_agent is not a free path-dependent explorer; real
-    # Search->Observe->Search-again lives in Main's staged orchestration.
-    assert "由 Main 生成新的 Research Topic，不是 child 自己无限 Search-again" in content
-    assert "Research A → Main 判断结果 → 再决定是否产生 / 派发 Research B" in content
-    assert "Main 根据它决定降级方案" in content
+    required = (
+        "行程/路线推荐",
+        "只搜行程推荐",
+        "不捎带查",
+    )
+    for phrase in required:
+        assert phrase in content
 
 
 def test_skill_avoids_fake_closed_state_machine() -> None:
     content = _TRAVEL_SKILL.read_text(encoding="utf-8")
 
-    # Findings answering the same scope only require Main to avoid redundant
-    # re-investigation; the Skill must not pretend Runtime has a CLOSED state.
-    assert "当 ResearchFindings 已充分回答同一 scope 时，Main 应避免无意义重复调查" in content
-    assert "只有 conflicting / unresolved、新 evidence 或新出现的 decision-critical Reality Gap 才允许继续查" in content
+    # Evidence sufficiency is judged per topic, not a fake CLOSED runtime state.
+    assert "证据足够支撑当前决策即停止" in content
     assert "视为 CLOSED" not in content
+
+
+def test_skill_keeps_product_guardrails_and_limitations() -> None:
+    content = _TRAVEL_SKILL.read_text(encoding="utf-8")
+
+    required = (
+        "边界情况",
+        "预算过低",
+        "带老人小孩",
+        "目的地不熟",
+        "局限",
+        "以实际为准",
+    )
+    for phrase in required:
+        assert phrase in content

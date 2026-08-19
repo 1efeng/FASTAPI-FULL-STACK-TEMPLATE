@@ -261,6 +261,7 @@ def _to_agent_usage(
         model_calls=model_calls,
         tool_calls=result.usage.tool_calls + research_tool_calls,
         unattributed_model_requests=main_unattributed + research_unattributed,
+        research_runs=len(research_runs),
     )
 
 def _to_reasoning_summary(result: AgentRunResult[Any]) -> str | None:

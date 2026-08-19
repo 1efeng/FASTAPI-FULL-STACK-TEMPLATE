@@ -60,8 +60,6 @@ def test_travel_bundle_contains_skills_main_tools_and_research_agent() -> None:
 
     registered = {tool.name for tool in main_tools.tools if isinstance(tool, Tool)}
     assert registered == {
-        "search_web",
-        "web_fetch",
         "search_poi",
         "get_poi_detail",
         "search_nearby",
@@ -70,6 +68,9 @@ def test_travel_bundle_contains_skills_main_tools_and_research_agent() -> None:
         "calculate_budget",
         "convert_currency",
     }
+    # Raw web tools are exclusive to research_agent; Main never holds them.
+    assert "search_web" not in registered
+    assert "web_fetch" not in registered
 
     toolset = main_tools.get_toolset()
     assert isinstance(toolset, FunctionToolset)
@@ -93,7 +94,6 @@ def test_skill_tool_dependency_validation_fails_closed() -> None:
         validate_skill_tool_dependencies(
             selected_skills={"travel-planning"},
             available_tools={
-                "web_fetch",
                 "search_poi",
                 "get_poi_detail",
                 "search_nearby",

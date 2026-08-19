@@ -51,20 +51,15 @@ def _structured_output(info: AgentInfo, payload: dict[str, Any]) -> ModelRespons
 
 
 def _research_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-    """Model both bounded child stages without executing external tools."""
+    """Model the bounded child stages without executing external tools."""
     del messages
-    properties = info.output_tools[0].parameters_json_schema.get("properties", {})
-    if "actions" in properties:
-        return _structured_output(info, {"actions": []})
     return _structured_output(
         info,
         {
             "topic": "JR Pass 方案比较",
-            "summary": "本 routing contract 只验证 Planner→Finalizer 编排。",
-            "verification_results": [],
-            "claims": [],
+            "summary": "本 routing contract 只验证 Main→research_agent 编排。",
             "sources": [],
-            "unresolved": [],
+            "media": [],
         },
     )
 
@@ -88,35 +83,6 @@ def _direct_agent(answer: str) -> tuple[Agent[object, str], list[ModelMessage]]:
     )
 
 
-def _pass_items() -> list[dict[str, str]]:
-    return [
-        {
-            "id": "jr-pass-price",
-            "entity": "全国 JR Pass",
-            "aspect": "当前价格",
-            "question": "当前成人 7 日券价格是多少？",
-        },
-        {
-            "id": "route-coverage",
-            "entity": "当前路线",
-            "aspect": "覆盖范围",
-            "question": "关键城际段是否由 JR Pass 覆盖？",
-        },
-        {
-            "id": "regional-pass-scope",
-            "entity": "已知区域 Pass",
-            "aspect": "覆盖范围",
-            "question": "区域 Pass 覆盖哪些区段？",
-        },
-        {
-            "id": "key-segment-cost",
-            "entity": "关键单买段",
-            "aspect": "单买成本",
-            "question": "关键区段单买价格是多少？",
-        },
-    ]
-
-
 async def test_casual_request_does_not_call_research_agent() -> None:
     agent, seen = _direct_agent("你好！")
     result = await agent.run("你好")
@@ -131,13 +97,13 @@ async def test_rough_plan_does_not_call_research_agent() -> None:
     assert _tool_calls(seen, "research_agent") == 0
 
 
-async def test_simple_current_fact_keeps_research_agent_unused() -> None:
+async def test_structured_current_fact_keeps_research_agent_unused() -> None:
     available_tools: set[str] = set()
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         del messages
         available_tools.update(tool.name for tool in info.function_tools)
-        return ModelResponse(parts=[TextPart("当前规则应由 Main 直接核验")])
+        return ModelResponse(parts=[TextPart("天气等结构化事实由 Main 直接查询")])
 
     agent = Agent(
         FunctionModel(model),
@@ -145,28 +111,31 @@ async def test_simple_current_fact_keeps_research_agent_unused() -> None:
             research_model=FunctionModel(_research_model)
         ),
     )
-    result = await agent.run("核对一个景点当前预约规则")
+    result = await agent.run("核对某日天气与一条市内路线")
     assert result.output
-    assert "web_fetch" in available_tools
+    assert "search_poi" in available_tools
+    assert "get_poi_detail" in available_tools
+    assert "search_nearby" in available_tools
+    assert "search_maps" in available_tools
+    assert "get_weather" in available_tools
     assert "research_agent" in available_tools
+    # Raw web content is exclusive to research_agent; Main never holds it.
+    assert "search_web" not in available_tools
+    assert "web_fetch" not in available_tools
     assert "run_workflow" not in available_tools
 
 
 async def test_normal_full_plan_can_finish_without_research_agent() -> None:
-    agent, seen = _direct_agent("Candidate Plan → 少量事实核验 → Final Plan")
+    agent, seen = _direct_agent("Candidate Plan → 少量事实搜索 → Final Plan")
     result = await agent.run("东京三日游，按正常节奏规划")
     assert "Final Plan" in result.output
     assert _tool_calls(seen, "research_agent") == 0
 
 
-async def test_predetermined_parallel_fact_work_does_not_require_research_agent() -> None:
-    """Multiple predetermined independent facts stay on Main Direct tools.
-
-    Verifying palace opening / temple ticket / garden reservation is lightweight
-    predetermined fact work whose queries can be fixed before execution, so the
-    expected architecture routes it to Main parallel tools with zero research_agent
-    delegation.
-    """
+async def test_predetermined_parallel_structured_facts_do_not_require_research_agent() -> (
+    None
+):
+    """Multiple predetermined structured facts stay on Main Direct tools."""
 
     seen: list[ModelMessage] = []
 
@@ -174,7 +143,7 @@ async def test_predetermined_parallel_fact_work_does_not_require_research_agent(
         del info
         seen[:] = messages
         return ModelResponse(
-            parts=[TextPart("Main 用并行工具核验三个独立事实并完成计划")]
+            parts=[TextPart("Main 用并行工具查询三个结构化事实并完成计划")]
         )
 
     agent = Agent(
@@ -184,18 +153,18 @@ async def test_predetermined_parallel_fact_work_does_not_require_research_agent(
         ),
     )
     result = await agent.run(
-        "核验故宫开放、天坛票价、颐和园预约三个独立事实后给我完整计划"
+        "查询故宫坐标、天坛到颐和园路线、8月27日北京天气三个独立事实后给我完整计划"
     )
 
-    assert "并行工具核验三个独立事实" in result.output
+    assert "并行工具查询三个结构化事实" in result.output
     assert _tool_calls(seen, "research_agent") == 0
 
 
-async def test_bounded_evidence_heavy_pass_comparison_uses_research_agent() -> None:
-    """A bounded evidence-heavy Pass comparison delegates once to research_agent.
+async def test_bounded_context_heavy_pass_comparison_uses_research_agent() -> None:
+    """A bounded context-heavy Pass comparison delegates once to research_agent.
 
-    Main has already defined the Research boundary (atomic verification_items),
-    so the child is responsible for one bounded evidence batch plus compression.
+    Main has already defined the Research boundary (one clear objective), so the
+    child is responsible for one bounded context batch plus compression.
     """
 
     seen: list[ModelMessage] = []
@@ -216,7 +185,6 @@ async def test_bounded_evidence_heavy_pass_comparison_uses_research_agent() -> N
                             "结合东京、箱根、京都、大阪、广岛 10 日路线，"
                             "比较全国 JR Pass、区域 Pass 与单买组合，判断哪种更适合。"
                         ),
-                        "verification_items": _pass_items(),
                         "context": "10 日路线：东京→箱根→京都→大阪→广岛",
                         "constraints": ["2 名成人"],
                     },
@@ -258,20 +226,6 @@ async def test_path_dependency_research_a_creates_research_b() -> None:
                         args={
                             "title": "全国 JR Pass 适用性",
                             "objective": "比较全国 JR Pass 与当前已知 Pass 对完整路线的适用性",
-                            "verification_items": [
-                                {
-                                    "id": "price",
-                                    "entity": "全国 JR Pass",
-                                    "aspect": "价格",
-                                    "question": "全国 JR Pass 当前价格是否值得？",
-                                },
-                                {
-                                    "id": "coverage",
-                                    "entity": "全国 JR Pass",
-                                    "aspect": "路线覆盖",
-                                    "question": "是否覆盖整条路线关键段？",
-                                },
-                            ],
                             "context": "10 日路线：东京→箱根→京都→大阪→广岛",
                             "constraints": [],
                         },
@@ -287,14 +241,6 @@ async def test_path_dependency_research_a_creates_research_b() -> None:
                         args={
                             "title": "关西段区域 Pass",
                             "objective": "研究关西段是否有更合适的区域 Pass",
-                            "verification_items": [
-                                {
-                                    "id": "kansai-pass",
-                                    "entity": "关西区域 Pass",
-                                    "aspect": "覆盖与价格",
-                                    "question": "是否有覆盖关西段且更便宜的区域 Pass？",
-                                }
-                            ],
                             "context": "Research A Findings 显示关西段覆盖不理想",
                             "constraints": [],
                         },
@@ -321,3 +267,55 @@ async def test_existing_plan_modification_does_not_auto_research() -> None:
     result = await agent.run("把 Day 2 / Day 3 对调")
     assert "对调" in result.output
     assert _tool_calls(seen, "research_agent") == 0
+
+
+async def test_couples_beijing_plan_uses_candidate_plan_first_flow() -> None:
+    """User -> Candidate Plan -> Research Topic -> Search -> Final Plan.
+
+    The golden input (情侣第一次北京3日游，5000预算) must NOT route directly to
+    search: Main first states the Candidate Plan, then delegates a bounded
+    decision-oriented Research Topic, then revises the plan. The child search
+    happens only inside research_agent, whose trajectory stays out of Main context.
+    """
+
+    seen: list[ModelMessage] = []
+
+    def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        del info
+        seen[:] = messages
+        returns = _tool_returns(messages, "research_agent")
+        if returns:
+            return ModelResponse(
+                parts=[TextPart("Main 已根据搜索结果修正并输出最终 3 日情侣北京行程")]
+            )
+        return ModelResponse(
+            parts=[
+                TextPart(
+                    "Candidate Plan：D1 天安门/故宫/景山，D2 八达岭，D3 南锣鼓巷/后海，节奏轻松。"
+                ),
+                ToolCallPart(
+                    tool_name="research_agent",
+                    args={
+                        "title": "北京 3 日行程执行条件",
+                        "objective": "收集 D1 故宫与 D2 八达岭在指定日期的开放、预约与返程衔接背景",
+                        "context": "3 日情侣北京行程 Candidate Plan，预算 5000 元",
+                        "constraints": ["2 名成人", "轻松节奏"],
+                    },
+                    tool_call_id="research-beijing",
+                ),
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(main_model),
+        capabilities=build_travel_capabilities(
+            research_model=FunctionModel(_research_model)
+        ),
+    )
+    result = await agent.run("情侣第一次北京3日游，5000预算")
+    assert "最终 3 日情侣北京行程" in result.output
+    # Exactly one bounded Research Topic delegated; child search stays isolated.
+    assert _tool_calls(seen, "research_agent") == 1
+    assert len(_tool_returns(seen, "research_agent")) == 1
+    # Main never issues a raw web_search tool call directly (no search-first).
+    assert _tool_calls(seen, "search_web") == 0

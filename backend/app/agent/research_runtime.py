@@ -1,12 +1,13 @@
-"""Request-scoped Research Agent accounting and evidence attestation.
+"""Request-scoped Research Agent accounting and context collection.
 
 Two invariants live here:
 
 1. Research Agent budgets stay isolated from Main while Product accounting still
    receives every child model/tool call.
-2. A Research Agent cannot self-certify evidence. ``verified`` claims and media
-   survive only when the referenced evidence was observed from tools that actually
-   executed in that Research Agent run.
+2. A Research Agent cannot invent sources. URLs / media survive only when the
+   referenced items were actually observed from tools that executed in that
+   Research Agent run. This is source hygiene, not fact verification: the child
+   never grades facts as verified/unresolved, Main decides how to use the context.
 
 The collector is intentionally request-scoped via ``ContextVar`` so concurrent
 Product requests never share Research Agent state.
@@ -45,15 +46,6 @@ _FAILURE_MARKERS = (
     "未能",
     "无法",
     "缺少",
-)
-_DEDICATED_FACT_TOOLS = frozenset(
-    {
-        "search_poi",
-        "get_poi_detail",
-        "search_nearby",
-        "get_weather",
-        "search_maps",
-    }
 )
 _TOOL_PROGRESS_STAGES = {
     "search_web": "web_search",
@@ -144,10 +136,13 @@ def get_research_request_state() -> ResearchRequestState | None:
 
 @dataclass(slots=True)
 class ResearchEvidenceTrace:
-    """Actual execution evidence for exactly one Research Agent.run."""
+    """Observed tool context for exactly one Research Agent.run.
+
+    This is source hygiene, not fact verification: it records which URLs / media
+    were actually observed so fabricated sources never leak into the summary.
+    """
 
     topic_title: str | None = None
-    verification_items: dict[str, dict[str, str]] = field(default_factory=dict)
     model_responses: list[ModelResponse] = field(default_factory=list)
     successful_tools: set[str] = field(default_factory=set)
     web_urls: set[str] = field(default_factory=set)
@@ -176,7 +171,7 @@ def _research_topic(prompt: Any) -> str:
     objective = value.get("objective") if value is not None else None
     if isinstance(objective, str):
         return objective[:160]
-    return "旅行事实核验"
+    return "旅行信息收集"
 
 
 def _research_title(prompt: Any) -> str | None:
@@ -190,44 +185,8 @@ def _research_title(prompt: Any) -> str | None:
     return normalized[:80] or None
 
 
-def _verification_item_snapshots(prompt: Any) -> list[dict[str, str]]:
-    value = _research_request_payload(prompt)
-    raw_items = value.get("verification_items") if value is not None else None
-    if not isinstance(raw_items, list):
-        return []
-
-    snapshots: list[dict[str, str]] = []
-    seen_ids: set[str] = set()
-    for raw_item in raw_items:
-        if not isinstance(raw_item, dict):
-            continue
-        item_id = raw_item.get("id")
-        entity = raw_item.get("entity")
-        aspect = raw_item.get("aspect")
-        question = raw_item.get("question")
-        if not all(isinstance(value, str) and value for value in (item_id, entity, aspect, question)):
-            continue
-        assert isinstance(item_id, str)
-        assert isinstance(entity, str)
-        assert isinstance(aspect, str)
-        assert isinstance(question, str)
-        if item_id in seen_ids:
-            continue
-        seen_ids.add(item_id)
-        snapshots.append(
-            {
-                "id": item_id,
-                "entity": entity,
-                "aspect": aspect,
-                "question": question,
-                "status": "pending",
-            }
-        )
-    return snapshots
-
-
 def _topic_focus(topic: str) -> str:
-    """Summarize user-visible verification dimensions from the research objective."""
+    """Summarize user-visible search dimensions from the research objective."""
     rules = (
         ("开放/闭馆", ("开放", "闭馆", "开园", "闭园", "营业")),
         ("预约/放票", ("预约", "放票", "预约渠道")),
@@ -237,7 +196,7 @@ def _topic_focus(topic: str) -> str:
         ("天气", ("天气", "降雨", "气温")),
     )
     matched = [label for label, keywords in rules if any(keyword in topic for keyword in keywords)]
-    return "、".join(matched[:5]) or "关键执行条件"
+    return "、".join(matched[:5]) or "关键背景信息"
 
 
 def _short_progress_value(value: Any, *, max_length: int = 36) -> str | None:
@@ -302,19 +261,19 @@ def _tool_progress_label(
         destination = _short_progress_value(args.get("destination"))
         route = f"：{origin} → {destination}" if origin and destination else ""
         if not completed:
-            return f"正在核验路线{route}"
-        return f"路线{'已核验' if usable else '核验失败'}{route}"
+            return f"正在检索路线{route}"
+        return f"路线{'已检索' if usable else '检索失败'}{route}"
 
     if tool_name == "get_weather":
         city = _short_progress_value(args.get("city"))
         target = f"：{city}" if city else ""
         if not completed:
-            return f"正在核验天气{target}"
-        return f"天气{'已核验' if usable else '核验失败'}{target}"
+            return f"正在收集天气背景{target}"
+        return f"天气背景{'已收集' if usable else '收集失败'}{target}"
 
     if not completed:
-        return "正在核验旅行事实"
-    return "旅行事实已核验" if usable else "旅行事实未能可靠核验"
+        return "正在检索旅行背景"
+    return "旅行背景已检索" if usable else "旅行背景检索失败"
 
 
 def _iter_plain_values(value: Any) -> Iterator[Any]:
@@ -380,7 +339,7 @@ def record_research_tool_observation(
     args: dict[str, Any],
     result: Any,
 ) -> bool:
-    """Record one Host-executed research tool result into the evidence trace."""
+    """Record one Host-executed research tool result into the observed trace."""
 
     usable = _result_is_usable(result)
     if not usable:
@@ -397,10 +356,15 @@ def record_research_tool_observation(
     return True
 
 
-def _attest_findings(output: Any, trace: ResearchEvidenceTrace) -> Any:
-    """Downgrade unsupported assertions using actual Research Agent tool evidence."""
+def _sanitize_findings(output: Any, trace: ResearchEvidenceTrace) -> Any:
+    """Filter sources/media to what was actually observed in this run.
 
-    from app.agent.agents.research_agent import ResearchFindings, VerificationResult
+    This is NOT fact verification: it only prevents fabricated URLs / tools from
+    leaking into the summary's sources. The child never grades facts as
+    verified/unresolved; Main decides how to use the collected context.
+    """
+
+    from app.agent.agents.research_agent import ResearchFindings
 
     if not isinstance(output, ResearchFindings):
         return output
@@ -408,74 +372,14 @@ def _attest_findings(output: Any, trace: ResearchEvidenceTrace) -> Any:
     findings = output.model_copy(deep=True)
     findings.sources = [source for source in findings.sources if source.url in trace.web_urls]
 
-    for claim in findings.claims:
-        claim.source_urls = [url for url in claim.source_urls if url in trace.web_urls]
-        claim.tool_evidence = [
-            tool for tool in claim.tool_evidence if tool in trace.successful_tools
-        ]
-        if claim.status not in {"verified", "conflicting"}:
-            continue
-        if claim.source_urls or claim.tool_evidence:
-            continue
-
-        claim.status = "unresolved"
-        marker = f"Host evidence validation failed for claim: {claim.claim}"
-        if marker not in findings.unresolved:
-            findings.unresolved.append(marker)
-
-    allowed_item_ids = set(trace.verification_items)
-    result_by_id: dict[str, VerificationResult] = {}
-    for result in findings.verification_results:
-        if allowed_item_ids and result.item_id not in allowed_item_ids:
-            marker = f"Unexpected verification result dropped: {result.item_id}"
-            if marker not in findings.unresolved:
-                findings.unresolved.append(marker)
-            continue
-
-        result.source_urls = [url for url in result.source_urls if url in trace.web_urls]
-        result.tool_evidence = [
-            tool for tool in result.tool_evidence if tool in trace.successful_tools
-        ]
-        if result.status in {"verified", "conflicting"} and not (
-            result.source_urls or result.tool_evidence
-        ):
-            result.status = "unresolved"
-            result.summary = "当前研究结果缺少可验证的执行证据。"
-            marker = f"Host evidence validation failed for verification item: {result.item_id}"
-            if marker not in findings.unresolved:
-                findings.unresolved.append(marker)
-        result_by_id[result.item_id] = result
-
-    if trace.verification_items:
-        findings.verification_results = []
-        for item_id in trace.verification_items:
-            item_result = result_by_id.get(item_id)
-            if item_result is None:
-                item_result = VerificationResult(
-                    item_id=item_id,
-                    summary="当前研究未能可靠确认该核验项。",
-                    status="unresolved",
-                )
-                marker = f"Missing verification result: {item_id}"
-                if marker not in findings.unresolved:
-                    findings.unresolved.append(marker)
-            findings.verification_results.append(item_result)
-    else:
-        findings.verification_results = list(result_by_id.values())
-
-    # Media discovery has its own attestation lane. Image URLs are presentation
-    # candidates only and can never migrate into ``web_urls`` fact evidence.
+    # Media discovery has its own lane. Image URLs are presentation candidates
+    # only and can never migrate into ``web_urls`` fact evidence.
     filtered_media = []
     for asset in findings.media:
         observed = trace.image_assets.get((asset.image_url, asset.source_page_url))
         if observed is None:
-            marker = f"Unattested image candidate dropped: {asset.place_name}"
-            if marker not in findings.unresolved:
-                findings.unresolved.append(marker)
             continue
 
-        # Preserve the model's semantic place_name, but overwrite transport/media
-        # metadata with the values returned by the provider-native search evidence.
         asset.image_url = str(observed["image_url"])
         asset.source_page_url = str(observed["source_page_url"])
         asset.thumbnail_url = (
@@ -490,26 +394,22 @@ def _attest_findings(output: Any, trace: ResearchEvidenceTrace) -> Any:
     return findings
 
 
-def attest_research_findings(output: Any, trace: ResearchEvidenceTrace) -> Any:
-    """Public package helper used by bounded and iterative research runtimes."""
+def sanitize_research_findings(output: Any, trace: ResearchEvidenceTrace) -> Any:
+    """Public package helper: filter sources/media to observed items only."""
 
-    return _attest_findings(output, trace)
+    return _sanitize_findings(output, trace)
 
 
 @dataclass
 class ResearchAgentRuntimeCapability(AbstractCapability[object]):
-    """Per-Research-Agent hooks for usage capture and evidence attestation."""
+    """Per-Research-Agent hooks for usage capture and source-hygiene filtering."""
 
     @classmethod
     def get_serialization_name(cls) -> str | None:
         return None
 
     async def wrap_run(self, ctx: RunContext[object], *, handler: Any) -> Any:
-        verification_items = _verification_item_snapshots(ctx.prompt)
-        trace = ResearchEvidenceTrace(
-            topic_title=_research_title(ctx.prompt),
-            verification_items={item["id"]: item for item in verification_items},
-        )
+        trace = ResearchEvidenceTrace(topic_title=_research_title(ctx.prompt))
         state = get_research_request_state()
         topic = _research_topic(ctx.prompt)
         if state is not None:
@@ -517,9 +417,8 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
                 topic=topic,
                 status="started",
                 stage="research",
-                label="开始核验研究主题",
+                label="开始检索研究主题",
                 topic_title=trace.topic_title,
-                verification_items=verification_items or None,
             )
         token = _current_research_trace.set(trace)
         succeeded = False
@@ -557,28 +456,14 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
                         tool_calls=ctx.usage.tool_calls,
                     )
                 )
-                if not succeeded:
-                    for item in trace.verification_items.values():
-                        state.emit_progress(
-                            topic=topic,
-                            status="unresolved",
-                            stage="verification",
-                            label=f"暂未可靠确认：{item['entity']} · {item['aspect']}",
-                            topic_title=trace.topic_title,
-                            item_id=item["id"],
-                            entity=item["entity"],
-                            aspect=item["aspect"],
-                            item_status="unresolved",
-                            item_summary="当前研究主题未能可靠完成。",
-                        )
                 state.emit_progress(
                     topic=topic,
-                    status="completed" if succeeded else "unresolved",
+                    status="completed" if succeeded else "failed",
                     stage="research",
                     label=(
-                        "研究主题核验完成"
+                        "研究主题检索完成"
                         if succeeded
-                        else "研究主题未能可靠完成"
+                        else "研究主题检索失败"
                     ),
                     topic_title=trace.topic_title,
                 )
@@ -599,9 +484,9 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
                 status="checking",
                 stage="analysis",
                 label=(
-                    f"正在拆分核验项：{focus}"
+                    f"正在拆分搜索重点：{focus}"
                     if trace is None or not trace.model_responses
-                    else f"正在对照已获取证据：{focus}"
+                    else f"正在整合已获取背景：{focus}"
                 ),
             )
         return request_context
@@ -667,7 +552,7 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
         if state is not None:
             state.emit_progress(
                 topic=_research_topic(ctx.prompt),
-                status="checking" if usable else "unresolved",
+                status="checking" if usable else "failed",
                 stage=_TOOL_PROGRESS_STAGES.get(tool_name, "tool"),
                 label=_tool_progress_label(
                     tool_name,
@@ -707,36 +592,4 @@ class ResearchAgentRuntimeCapability(AbstractCapability[object]):
         if trace is None:
             return output
 
-        attested = attest_research_findings(output, trace)
-        if trace.verification_items:
-            from app.agent.agents.research_agent import ResearchFindings
-
-            state = get_research_request_state()
-            if state is not None and isinstance(attested, ResearchFindings):
-                topic = _research_topic(ctx.prompt)
-                for result in attested.verification_results:
-                    item = trace.verification_items.get(result.item_id)
-                    if item is None:
-                        continue
-                    if result.status == "verified":
-                        label = f"已确认{item['entity']}：{item['aspect']}"
-                        progress_status = "completed"
-                    elif result.status == "conflicting":
-                        label = f"来源存在冲突：{item['entity']} · {item['aspect']}"
-                        progress_status = "unresolved"
-                    else:
-                        label = f"暂未可靠确认：{item['entity']} · {item['aspect']}"
-                        progress_status = "unresolved"
-                    state.emit_progress(
-                        topic=topic,
-                        status=progress_status,
-                        stage="verification",
-                        label=label,
-                        topic_title=trace.topic_title,
-                        item_id=item["id"],
-                        entity=item["entity"],
-                        aspect=item["aspect"],
-                        item_status=result.status,
-                        item_summary=result.summary,
-                    )
-        return attested
+        return sanitize_research_findings(output, trace)

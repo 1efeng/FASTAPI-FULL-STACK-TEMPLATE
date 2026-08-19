@@ -69,12 +69,15 @@ class AgentUsage:
     model_calls: tuple[AgentModelCallUsage, ...] = ()
     tool_calls: int = 0
     unattributed_model_requests: int = 0
+    research_runs: int = 0
 
     def __post_init__(self) -> None:
         if self.tool_calls < 0:
             raise ValueError("tool_calls must be non-negative")
         if self.unattributed_model_requests < 0:
             raise ValueError("unattributed_model_requests must be non-negative")
+        if self.research_runs < 0:
+            raise ValueError("research_runs must be non-negative")
         call_indexes = tuple(call.call_index for call in self.model_calls)
         if call_indexes != tuple(range(len(self.model_calls))):
             raise ValueError("model call indexes must be contiguous and zero-based")
@@ -91,7 +94,9 @@ class AgentUsage:
         if not self.per_call_usage_complete:
             return None
         usages = tuple(call.token_usage for call in self.model_calls)
-        if any(usage is None for usage in usages):
+        # No provider ever reported usage for this run (empty call list): token
+        # counters stay unknown instead of being rewritten as zero.
+        if not usages or any(usage is None for usage in usages):
             return None
         return sum(
             cast(int, getattr(usage, name))
@@ -101,7 +106,7 @@ class AgentUsage:
 
     @property
     def token_usage_available(self) -> bool:
-        return self.per_call_usage_complete and all(
+        return self.per_call_usage_complete and bool(self.model_calls) and all(
             call.token_usage is not None for call in self.model_calls
         )
 

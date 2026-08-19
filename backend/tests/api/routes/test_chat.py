@@ -419,6 +419,15 @@ async def test_agent_chat_invokes_agent(
     assert request_run.status is RequestRunStatus.COMPLETED
     assert request_run.finished_at is not None
     assert request_run.error_code is None
+    # 运行指标随成功落库（空 AgentUsage 时计数为 0，enable 参数默认 True）
+    assert request_run.model_requests == 0
+    assert request_run.tool_calls == 0
+    assert request_run.research_runs == 0
+    assert request_run.input_tokens is None
+    assert request_run.output_tokens is None
+    assert request_run.total_tokens is None
+    assert request_run.enable_web_search is True
+    assert request_run.enable_thinking is True
     assert [message.role for message in messages] == [
         MessageRole.USER,
         MessageRole.ASSISTANT,

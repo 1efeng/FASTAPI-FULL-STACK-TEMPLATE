@@ -16,3 +16,13 @@ class RequestRunPublic(BaseModel):
     started_at: datetime
     deadline_at: datetime
     finished_at: datetime | None
+    model_requests: int | None
+    tool_calls: int | None
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    research_runs: int | None
+    enable_web_search: bool | None
+    enable_thinking: bool | None

@@ -1,4 +1,11 @@
-"""Deterministic Worker trajectories for evidence attestation and media behavior."""
+"""Deterministic trajectories for source hygiene and media behavior.
+
+The research_agent only searches + summarizes. These tests verify:
+- fabricated source URLs never survive into the summary (source hygiene);
+- progress events are safe and request-scoped;
+- parallel research runs keep their observed traces isolated;
+- media discovery keeps its own lane (never migrates into web_urls sources).
+"""
 
 from __future__ import annotations
 
@@ -63,14 +70,7 @@ async def test_model_cannot_self_certify_invented_source_url() -> None:
             info,
             {
                 "topic": "预约",
-                "claims": [
-                    {
-                        "claim": "故宫明天开放",
-                        "status": "verified",
-                        "source_urls": ["https://www.dpm.org.cn/fake-url"],
-                        "tool_evidence": [],
-                    }
-                ],
+                "summary": "模型引用未实际搜索到的 URL。",
                 "sources": [
                     {
                         "title": "故宫官网",
@@ -79,19 +79,16 @@ async def test_model_cannot_self_certify_invented_source_url() -> None:
                     }
                 ],
                 "media": [],
-                "unresolved": [],
             },
         )
 
     worker = build_research_agent(model=FunctionModel(model))
     state = ResearchRequestState()
     with bind_research_request_state(state):
-        result = await worker.run("核实故宫开放")
+        result = await worker.run("收集故宫开放背景")
 
-    assert result.output.claims[0].status == "unresolved"
-    assert result.output.claims[0].source_urls == []
+    # Source hygiene: fabricated URLs never survive into the summary's sources.
     assert result.output.sources == []
-    assert any("Host evidence validation failed" in item for item in result.output.unresolved)
     assert state.research_requests == result.usage.requests
 
 
@@ -102,16 +99,15 @@ async def test_research_progress_is_safe_and_request_scoped() -> None:
             info,
             {
                 "topic": "预约",
-                "claims": [],
+                "summary": "背景已整理。",
                 "sources": [],
                 "media": [],
-                "unresolved": [],
             },
         )
 
     worker = build_research_agent(model=FunctionModel(model))
     state = ResearchRequestState()
-    prompt = '{"objective":"核验故宫预约规则","constraints":["2人"]}'
+    prompt = '{"objective":"收集故宫预约规则背景","constraints":["2人"]}'
     with bind_research_request_state(state):
         await worker.run(prompt)
 
@@ -120,14 +116,14 @@ async def test_research_progress_is_safe_and_request_scoped() -> None:
         events.append(state.progress_queue.get_nowait())
 
     assert events[0] == {
-        "topic": "核验故宫预约规则",
+        "topic": "收集故宫预约规则背景",
         "status": "started",
         "stage": "research",
-        "label": "开始核验研究主题",
+        "label": "开始检索研究主题",
     }
     assert any(
         event["stage"] == "analysis"
-        and event["label"] == "正在拆分核验项：预约/放票"
+        and event["label"] == "正在拆分搜索重点：预约/放票"
         for event in events
     )
     assert events[-1]["status"] == "completed"
@@ -138,17 +134,19 @@ async def test_research_progress_is_safe_and_request_scoped() -> None:
     )
 
 
-async def test_checklist_progress_uses_attested_results_and_fills_missing_items(
+async def test_observed_source_url_survives_and_unobserved_is_filtered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source_url = "https://www.dpm.org.cn/visit"
+    observed_url = "https://www.dpm.org.cn/visit"
 
     async def fake_search_web(**kwargs: Any) -> dict[str, Any]:
         del kwargs
         return {
             "query": "故宫 开放规则",
             "result_count": 1,
-            "results": [{"title": "故宫博物院", "url": source_url, "summary": "官方规则"}],
+            "results": [
+                {"title": "故宫博物院", "url": observed_url, "summary": "官方规则"}
+            ],
         }
 
     fake_search_web.__name__ = "search_web"
@@ -160,7 +158,7 @@ async def test_checklist_progress_uses_attested_results_and_fills_missing_items(
                 parts=[
                     ToolCallPart(
                         tool_name="search_web",
-                        args={"query": "故宫 开放规则", "authoritative": True},
+                        args={"query": "故宫 开放规则"},
                         tool_call_id="checklist-search",
                     )
                 ]
@@ -168,88 +166,29 @@ async def test_checklist_progress_uses_attested_results_and_fills_missing_items(
         return _final(
             info,
             {
-                "topic": "北京核心景点开放、预约与门票",
-                "summary": "故宫开放规则已确认，预约规则仍缺少可靠证据。",
-                "verification_results": [
-                    {
-                        "item_id": "palace-opening",
-                        "summary": "官方页面确认指定日期适用的开放规则。",
-                        "status": "verified",
-                        "source_urls": [source_url],
-                        "tool_evidence": [],
-                    }
-                ],
-                "claims": [],
+                "topic": "故宫背景",
+                "summary": "故宫开放规则背景已整理。",
                 "sources": [
                     {
                         "title": "故宫博物院",
-                        "url": source_url,
+                        "url": observed_url,
                         "source_type": "official",
-                    }
+                    },
+                    {
+                        "title": "未搜索到的 URL",
+                        "url": "https://example.com/unobserved",
+                        "source_type": "official",
+                    },
                 ],
                 "media": [],
-                "unresolved": [],
             },
         )
 
-    prompt = json.dumps(
-        {
-            "title": "北京核心景点开放、预约与门票",
-            "objective": "核验故宫开放与预约规则",
-            "verification_items": [
-                {
-                    "id": "palace-opening",
-                    "entity": "故宫博物院",
-                    "aspect": "开放与闭馆规则",
-                    "question": "指定日期是否开放？",
-                },
-                {
-                    "id": "palace-reservation",
-                    "entity": "故宫博物院",
-                    "aspect": "预约与放票规则",
-                    "question": "预约渠道、提前天数与放票时间是什么？",
-                },
-            ],
-        },
-        ensure_ascii=False,
-    )
     worker = build_research_agent(model=FunctionModel(model))
-    state = ResearchRequestState()
-    with bind_research_request_state(state):
-        result = await worker.run(prompt)
+    result = await worker.run("收集故宫开放背景")
 
-    assert [item.item_id for item in result.output.verification_results] == [
-        "palace-opening",
-        "palace-reservation",
-    ]
-    assert [item.status for item in result.output.verification_results] == [
-        "verified",
-        "unresolved",
-    ]
-
-    events = []
-    while not state.progress_queue.empty():
-        events.append(state.progress_queue.get_nowait())
-
-    start = events[0]
-    assert start["topic_title"] == "北京核心景点开放、预约与门票"
-    assert [item["id"] for item in start["verification_items"]] == [
-        "palace-opening",
-        "palace-reservation",
-    ]
-    assert all(item["status"] == "pending" for item in start["verification_items"])
-    assert any(
-        event.get("item_id") == "palace-opening"
-        and event.get("item_status") == "verified"
-        and event["status"] == "completed"
-        for event in events
-    )
-    assert any(
-        event.get("item_id") == "palace-reservation"
-        and event.get("item_status") == "unresolved"
-        and event["status"] == "unresolved"
-        for event in events
-    )
+    # Only the actually-observed URL survives.
+    assert [source.url for source in result.output.sources] == [observed_url]
 
 
 async def test_host_owned_web_search_emits_safe_progress_event(
@@ -281,16 +220,15 @@ async def test_host_owned_web_search_emits_safe_progress_event(
             info,
             {
                 "topic": "预约",
-                "claims": [],
+                "summary": "背景已整理。",
                 "sources": [],
                 "media": [],
-                "unresolved": [],
             },
         )
 
     worker = build_research_agent(model=FunctionModel(model))
     state = ResearchRequestState()
-    prompt = '{"objective":"核验故宫预约规则"}'
+    prompt = '{"objective":"收集故宫预约规则背景"}'
     with bind_research_request_state(state):
         await worker.run(prompt)
 
@@ -300,7 +238,7 @@ async def test_host_owned_web_search_emits_safe_progress_event(
 
     assert any(
         event == {
-            "topic": "核验故宫预约规则",
+            "topic": "收集故宫预约规则背景",
             "status": "checking",
             "stage": "web_search",
             "label": "最新来源已检索",
@@ -319,12 +257,12 @@ def test_tool_progress_labels_include_observable_targets() -> None:
         "search_maps",
         {"origin": "北京北站", "destination": "八达岭长城"},
         completed=False,
-    ) == "正在核验路线：北京北站 → 八达岭长城"
+    ) == "正在检索路线：北京北站 → 八达岭长城"
     assert _tool_progress_label(
         "get_weather",
         {"city": "北京"},
         completed=True,
-    ) == "天气已核验：北京"
+    ) == "天气背景已收集：北京"
     assert _tool_progress_label(
         "search_poi",
         {"keywords": "故宫博物院"},
@@ -337,7 +275,7 @@ def test_tool_progress_labels_include_observable_targets() -> None:
     ) == "附近地点已找到：北京菜"
 
 
-async def test_parallel_research_runs_keep_evidence_traces_isolated(
+async def test_parallel_research_runs_keep_traces_isolated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def fake_weather(city: str, forecast: bool = False) -> str:
@@ -388,19 +326,9 @@ async def test_parallel_research_runs_keep_evidence_traces_isolated(
             info,
             {
                 "topic": "天气" if weather_topic else "交通",
-                "claims": [
-                    {
-                        "claim": "主题事实已核验",
-                        "status": "verified",
-                        "source_urls": [],
-                        # Deliberately claim both tokens. Host attestation must keep
-                        # only the tool that executed in this specific child run.
-                        "tool_evidence": ["get_weather", "search_maps"],
-                    }
-                ],
+                "summary": "背景已整理。",
                 "sources": [],
                 "media": [],
-                "unresolved": [],
             },
         )
 
@@ -412,140 +340,9 @@ async def test_parallel_research_runs_keep_evidence_traces_isolated(
             agent.run("交通主题"),
         )
 
-    assert weather_result.output.claims[0].tool_evidence == ["get_weather"]
-    assert maps_result.output.claims[0].tool_evidence == ["search_maps"]
+    assert weather_result.output.topic == "天气"
+    assert maps_result.output.topic == "交通"
     assert len(state.research_runs) == 2
-
-
-async def test_poi_tool_can_attest_structured_place_fact(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fake_nearby(**kwargs: Any) -> dict[str, Any]:
-        del kwargs
-        return {
-            "results": [
-                {
-                    "id": "B0FFG9V1R9",
-                    "name": "四季民福烤鸭店(故宫店)",
-                    "distance_m": 620,
-                    "rating": 4.7,
-                }
-            ]
-        }
-
-    fake_nearby.__name__ = "search_nearby"
-    monkeypatch.setattr("app.agent.tools.research_tools.search_nearby", fake_nearby)
-
-    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if not _tool_returns(messages, "search_nearby"):
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="search_nearby",
-                        args={
-                            "location": "116.397029,39.917839",
-                            "keywords": "北京菜",
-                        },
-                        tool_call_id="nearby-evidence",
-                    )
-                ]
-            )
-        return _final(
-            info,
-            {
-                "topic": "故宫附近餐厅",
-                "claims": [
-                    {
-                        "claim": "四季民福故宫店距离中心点约620米，评分4.7",
-                        "status": "verified",
-                        "source_urls": [],
-                        "tool_evidence": ["search_nearby"],
-                    }
-                ],
-                "sources": [],
-                "media": [],
-                "unresolved": [],
-            },
-        )
-
-    worker = build_research_agent(model=FunctionModel(model))
-    result = await worker.run("核验故宫附近可选北京菜餐厅")
-
-    assert result.output.claims[0].status == "verified"
-    assert result.output.claims[0].tool_evidence == ["search_nearby"]
-
-
-async def test_model_cannot_self_certify_tool_name_without_execution() -> None:
-    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del messages
-        return _final(
-            info,
-            {
-                "topic": "天气",
-                "claims": [
-                    {
-                        "claim": "明天北京晴",
-                        "status": "verified",
-                        "source_urls": [],
-                        "tool_evidence": ["get_weather"],
-                    }
-                ],
-                "sources": [],
-                "media": [],
-                "unresolved": [],
-            },
-        )
-
-    worker = build_research_agent(model=FunctionModel(model))
-    result = await worker.run("核实北京明天天气")
-
-    assert result.output.claims[0].status == "unresolved"
-    assert result.output.claims[0].tool_evidence == []
-
-
-async def test_failed_weather_execution_cannot_attest_verified_claim(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def failed_weather(city: str, forecast: bool = False) -> str:
-        del city, forecast
-        raise RuntimeError("synthetic weather failure")
-
-    monkeypatch.setattr("app.agent.tools.weather._get_weather", failed_weather)
-
-    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        if _tool_returns(messages, "get_weather"):
-            return _final(
-                info,
-                {
-                    "topic": "天气失败",
-                    "claims": [
-                        {
-                            "claim": "明天北京晴",
-                            "status": "verified",
-                            "source_urls": [],
-                            "tool_evidence": ["get_weather"],
-                        }
-                    ],
-                    "sources": [],
-                    "media": [],
-                    "unresolved": [],
-                },
-            )
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="get_weather",
-                    args={"city": "北京"},
-                    tool_call_id="weather-fail",
-                )
-            ]
-        )
-
-    worker = build_research_agent(model=FunctionModel(model))
-    result = await worker.run("核实北京天气")
-
-    assert result.output.claims[0].status == "unresolved"
-    assert result.output.claims[0].tool_evidence == []
 
 
 async def test_weather_only_worker_never_calls_image_search(
@@ -565,17 +362,9 @@ async def test_weather_only_worker_never_calls_image_search(
                 info,
                 {
                     "topic": "北京天气",
-                    "claims": [
-                        {
-                            "claim": "北京相关日期天气已查询",
-                            "status": "verified",
-                            "source_urls": [],
-                            "tool_evidence": ["get_weather"],
-                        }
-                    ],
+                    "summary": "北京相关日期天气背景已查询。",
                     "sources": [],
                     "media": [],
-                    "unresolved": [],
                 },
             )
         return ModelResponse(
@@ -589,9 +378,7 @@ async def test_weather_only_worker_never_calls_image_search(
         )
 
     worker = build_research_agent(model=FunctionModel(model))
-    result = await worker.run("只核实北京未来三天的天气风险")
+    result = await worker.run("只收集北京未来三天的天气背景")
 
-    assert result.output.claims[0].status == "verified"
-    assert result.output.claims[0].tool_evidence == ["get_weather"]
     assert result.output.media == []
     assert _tool_calls(result.all_messages(), "get_weather") == 1

@@ -27,8 +27,6 @@ SKILL_TOOL_DEPENDENCIES: Mapping[str, frozenset[str]] = {
     "travel-budget": frozenset({"calculate_budget"}),
     "travel-planning": frozenset(
         {
-            "search_web",
-            "web_fetch",
             "search_poi",
             "get_poi_detail",
             "search_nearby",
@@ -43,8 +41,10 @@ SKILL_TOOL_DEPENDENCIES: Mapping[str, frozenset[str]] = {
 
 _BUDGET_TOOL = Tool[object](calculate_budget, takes_ctx=False)
 _CURRENCY_TOOL = Tool[object](convert_currency, takes_ctx=False)
+# Main never holds raw web tools (search_web / web_fetch): web content belongs
+# exclusively to research_agent so it reaches Main only as compressed findings.
 _MAIN_TOOLS: tuple[Tool[object], ...] = (
-    *build_research_tools(include_web_search=True),
+    *build_research_tools(include_web_search=False, include_web_fetch=False),
     _BUDGET_TOOL,
     _CURRENCY_TOOL,
 )

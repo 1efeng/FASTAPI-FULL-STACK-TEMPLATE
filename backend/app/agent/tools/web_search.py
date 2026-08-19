@@ -1,7 +1,7 @@
 """Volcengine 豆包搜索 Global 版 Web Search tool owned by the Agent host.
 
 The provider returns concrete result URLs and per-document snippets, so Research
-evidence can be attested from the actual tool trajectory instead of trusting
+sources can be checked against the actual tool trajectory instead of trusting
 model-authored citations or provider-internal native search state.
 
 This module targets the 豆包搜索 Global 版 contract

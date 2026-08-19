@@ -1,4 +1,4 @@
-"""High-level Main capability that delegates one bounded research topic."""
+"""High-level Main capability that delegates one context-collection research topic."""
 
 from __future__ import annotations
 
@@ -15,11 +15,8 @@ from pydantic_ai_harness.dynamic_workflow import DynamicWorkflow
 from app.agent.agents.research_agent import (
     ResearchFindings,
     ResearchRequest,
-    VerificationItem,
-    VerificationResult,
     build_research_agent,
 )
-from app.agent.bounded_research import run_bounded_research
 from app.core.config import settings
 
 RESEARCH_AGENT_TOOL_NAME = "research_agent"
@@ -31,48 +28,44 @@ def build_research_agent_capability(
     *,
     model: Model | KnownModelName | str | None,
 ) -> Capability[object]:
-    """Expose ``research_agent`` to Main as a topic-level child-agent tool.
+    """Expose ``research_agent`` to Main as a context-collection child-agent tool.
 
-    Each call investigates one coherent research topic discovered from a domain
-    Skill's plan. Main may issue multiple independent calls in one model turn;
-    PydanticAI can execute them concurrently because this tool is non-sequential.
-    The child executes inline in the current Main tool await chain, so Product
-    cancellation naturally propagates. Only ``ResearchFindings`` is returned to
-    Main; the child model/tool trajectory remains inside the child run.
+    The child only searches + summarizes context for Main; it never verifies,
+    grades, or proves any fact. Main may issue multiple independent calls in one
+    model turn; PydanticAI executes them concurrently because this tool is
+    non-sequential.
     """
+
+    agent = build_research_agent(model=model)
+
     async def research_agent(
         objective: str,
-        verification_items: list[VerificationItem],
         title: str | None = None,
         context: str | None = None,
         constraints: list[str] | None = None,
     ) -> ResearchFindings:
-        """Investigate one bounded travel research topic and return evidence-backed findings."""
+        """Search and summarize enough context for one travel planning topic."""
         request = ResearchRequest(
             objective=objective,
             title=title,
-            verification_items=verification_items,
             context=context,
             constraints=constraints or [],
         )
         try:
-            return await run_bounded_research(request, model=model)
+            result = await agent.run(
+                request.model_dump_json(exclude_none=True),
+                usage_limits=UsageLimits(
+                    request_limit=settings.RESEARCH_AGENT_MODEL_REQUEST_LIMIT,
+                    tool_calls_limit=settings.RESEARCH_AGENT_TOOL_CALL_LIMIT,
+                ),
+            )
+            return result.output
         except (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded):
             # One independent research topic must not abort sibling topics or the
-            # whole Main plan when the child provider/output fails or exhausts its
-            # own bounded research budget. Cancellation is BaseException and still
-            # propagates to preserve Product runtime ownership.
+            # whole Main plan when the child provider/output fails.
             return ResearchFindings(
                 topic=request.objective,
-                verification_results=[
-                    VerificationResult(
-                        item_id=item.id,
-                        summary="当前研究主题暂时无法可靠完成。",
-                        status="unresolved",
-                    )
-                    for item in request.verification_items
-                ],
-                unresolved=["当前研究主题暂时无法可靠完成。"],
+                summary="当前主题未能搜索到足够上下文。",
             )
 
     tool = Tool[object](
@@ -81,17 +74,14 @@ def build_research_agent_capability(
         name=RESEARCH_AGENT_TOOL_NAME,
         sequential=False,
         description=(
-            "Use this tool for one bounded, evidence-heavy travel research topic "
-            "whose raw evidence should stay out of Main context and whose completion "
-            "criteria can be expressed as atomic verification_items. "
-            "Do not use it for isolated facts or lightweight predetermined batches "
-            "whose required tools/queries are already obvious to Main. "
-            "verification_items are required."
+            "Search and summarize enough context for one travel planning topic. "
+            "Use it when Main needs background that would otherwise bloat its "
+            "context. It never verifies or proves facts; it only collects context."
         ),
     )
     return Capability[object](
         id=RESEARCH_AGENT_CAPABILITY_ID,
-        description="Topic-level bounded context-isolated research delegation for Main.",
+        description="Context collection for Main via a bounded search + summarize child agent.",
         tools=(tool,),
     )
 

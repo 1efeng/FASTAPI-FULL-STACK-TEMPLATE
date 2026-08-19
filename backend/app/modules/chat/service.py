@@ -20,6 +20,7 @@ from app.agent.executor import (
     AgentStreamTerminalKind,
     stream_vercel_events,
 )
+from app.agent.usage import AgentUsage
 from app.core.config import settings
 from app.infra.database import AsyncSessionLocal
 from app.infra.stream_resume import StreamFactory
@@ -138,6 +139,39 @@ def _derive_conversation_title(message: str) -> str | None:
     if len(normalized) <= _TITLE_MAX_CHARS:
         return normalized
     return f"{normalized[:_TITLE_MAX_CHARS]}…"
+
+
+def _request_run_metrics(
+    *,
+    usage: AgentUsage | None,
+    enable_web_search: bool | None,
+    enable_thinking: bool | None,
+) -> dict[str, int | bool]:
+    """Map an Agent run's usage into durable RequestRun metric columns.
+
+    Token counters stay ``None`` when the provider did not report usage; unknown
+    must never be rewritten as zero (see ``AgentUsage`` contract).
+    """
+    metrics: dict[str, int | bool] = {}
+    if usage is not None:
+        metrics["model_requests"] = usage.model_requests
+        metrics["tool_calls"] = usage.tool_calls
+        metrics["research_runs"] = usage.research_runs
+        if usage.input_tokens is not None:
+            metrics["input_tokens"] = usage.input_tokens
+        if usage.output_tokens is not None:
+            metrics["output_tokens"] = usage.output_tokens
+        if usage.total_tokens is not None:
+            metrics["total_tokens"] = usage.total_tokens
+        if usage.cache_read_tokens is not None:
+            metrics["cache_read_tokens"] = usage.cache_read_tokens
+        if usage.cache_write_tokens is not None:
+            metrics["cache_write_tokens"] = usage.cache_write_tokens
+    if enable_web_search is not None:
+        metrics["enable_web_search"] = enable_web_search
+    if enable_thinking is not None:
+        metrics["enable_thinking"] = enable_thinking
+    return metrics
 
 
 # AgentExecutionError → Product error contract 映射。错误文案不泄露 provider 细节。
@@ -472,6 +506,9 @@ class ChatService:
         content: str,
         reasoning_summary: str | None = None,
         source_urls: tuple[str, ...] = (),
+        usage: AgentUsage | None = None,
+        enable_web_search: bool | None = None,
+        enable_thinking: bool | None = None,
     ) -> None:
         finished_at = datetime.now(UTC)
         try:
@@ -489,6 +526,11 @@ class ChatService:
                 status=RequestRunStatus.COMPLETED,
                 finished_at=finished_at,
                 error_code=None,
+                metrics=_request_run_metrics(
+                    usage=usage,
+                    enable_web_search=enable_web_search,
+                    enable_thinking=enable_thinking,
+                ),
             )
             if not transitioned:
                 raise RequestTerminalTransitionError("RequestRun is no longer running")
@@ -697,6 +739,9 @@ class ChatService:
                     content=result.content,
                     reasoning_summary=result.reasoning_summary,
                     source_urls=result.source_urls,
+                    usage=result.usage,
+                    enable_web_search=turn.enable_web_search,
+                    enable_thinking=turn.enable_thinking,
                 )
             except asyncio.CancelledError:
                 await asyncio.shield(
@@ -791,6 +836,9 @@ class ChatService:
                     content=result.content,
                     reasoning_summary=result.reasoning_summary,
                     source_urls=result.source_urls,
+                    usage=result.usage,
+                    enable_web_search=turn.enable_web_search,
+                    enable_thinking=turn.enable_thinking,
                 )
                 # #region agent log
                 debug_runtime_log(

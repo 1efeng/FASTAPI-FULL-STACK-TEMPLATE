@@ -7,7 +7,7 @@ future offline routing eval should use to score real Main routing.
 
 Expected values:
 - ``main_direct``: predetermined / lightweight fact work stays on Main parallel tools.
-- ``research_agent``: one bounded, evidence-heavy research topic delegated once.
+- ``research_agent``: one bounded, context-heavy research topic delegated once.
 - ``main_orchestrated_research``: Research A -> Main -> Research B path dependence.
 
 Single research_agent is never a free Search->Observe->Search-again explorer;
@@ -49,7 +49,7 @@ ROUTING_CASES: tuple[RoutingCase, ...] = (
     RoutingCase(
         id="case-4",
         scenario=(
-            "bounded evidence-heavy Pass comparison "
+            "bounded context-heavy Pass comparison "
             "(全国 JR Pass、区域 Pass 与单买组合的价格/覆盖/关键组合)"
         ),
         expected_architecture="research_agent",

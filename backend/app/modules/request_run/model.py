@@ -5,6 +5,8 @@ from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -68,6 +70,57 @@ class RequestRun(BaseModel):
         String(64),
         default=None,
         comment="产品错误码",
+    )
+    # ---- 运行指标（AgentUsage 总账，一次请求一行） ----
+    model_requests: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="模型请求总次数（Main + research 子 agent）",
+    )
+    tool_calls: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="工具调用总次数（Main + research 子 agent）",
+    )
+    input_tokens: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="输入 token 累计；provider 未报告时为 NULL",
+    )
+    output_tokens: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="输出 token 累计；provider 未报告时为 NULL",
+    )
+    total_tokens: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="输入 + 输出 token 累计；provider 未报告时为 NULL",
+    )
+    cache_read_tokens: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="缓存读 token 累计；provider 未报告时为 NULL",
+    )
+    cache_write_tokens: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="缓存写 token 累计；provider 未报告时为 NULL",
+    )
+    research_runs: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="本次请求触发的 research 子 agent 调用次数",
+    )
+    enable_web_search: Mapped[bool | None] = mapped_column(
+        Boolean,
+        default=None,
+        comment="请求是否开启联网搜索",
+    )
+    enable_thinking: Mapped[bool | None] = mapped_column(
+        Boolean,
+        default=None,
+        comment="请求是否开启模型 thinking",
     )
 
     __table_args__ = (

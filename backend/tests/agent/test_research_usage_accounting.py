@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import pytest
 from pydantic_ai import Agent
@@ -157,29 +156,21 @@ async def test_executor_end_to_end_includes_research_agent_usage() -> None:
         nonlocal research_calls
         research_calls += 1
         assert info.output_tools
-        if research_calls == 1:
-            payload: dict[str, Any] = {"actions": []}
-            response_id = "research-plan"
-        else:
-            payload = {
-                "topic": "箱根交通",
-                "summary": "方案 A 证据更完整",
-                "claims": [],
-                "sources": [],
-                "media": [],
-                "unresolved": [],
-            }
-            response_id = "research-final"
         return ModelResponse(
             parts=[
                 ToolCallPart(
                     tool_name=info.output_tools[0].name,
-                    args=payload,
+                    args={
+                        "topic": "箱根交通",
+                        "summary": "方案 A 背景更完整",
+                        "sources": [],
+                        "media": [],
+                    },
                     tool_call_id=f"structured-{research_calls}",
                 )
             ],
             usage=RequestUsage(input_tokens=40, output_tokens=4),
-            provider_response_id=response_id,
+            provider_response_id=f"research-final-{research_calls}",
         )
 
     def main_model(
@@ -198,20 +189,6 @@ async def test_executor_end_to_end_includes_research_agent_usage() -> None:
                     tool_name="research_agent",
                     args={
                         "objective": "比较东京到箱根交通 Pass",
-                        "verification_items": [
-                            {
-                                "id": "pass-price",
-                                "entity": "箱根周游券",
-                                "aspect": "当前票价",
-                                "question": "当前票价是多少？",
-                            },
-                            {
-                                "id": "pass-scope",
-                                "entity": "箱根周游券",
-                                "aspect": "覆盖范围",
-                                "question": "是否覆盖主要交通？",
-                            },
-                        ],
                         "context": "Candidate Plan: Day 2 去箱根",
                         "constraints": ["当前价格", "儿童政策"],
                     },
@@ -234,16 +211,16 @@ async def test_executor_end_to_end_includes_research_agent_usage() -> None:
     ).execute(_request())
 
     assert result.content == "main final"
-    assert research_calls == 2
-    assert result.usage.model_requests == 4
-    assert result.usage.input_tokens == 130
-    assert result.usage.output_tokens == 13
-    assert result.usage.total_tokens == 143
+    # The child is a single search + summarize pass (one model call).
+    assert research_calls == 1
+    assert result.usage.model_requests == 3
+    assert result.usage.input_tokens == 90
+    assert result.usage.output_tokens == 9
+    assert result.usage.total_tokens == 99
     assert {call.provider_response_id for call in result.usage.model_calls} == {
         "main-research",
         "main-final",
-        "research-plan",
-        "research-final",
+        "research-final-1",
     }
     assert result.usage.tool_calls >= 1
 
@@ -255,7 +232,7 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
 
     monkeypatch.setattr(settings, "APP_ENV", "test")
     # Main itself needs exactly two model requests and one research_agent tool.
-    # The bounded child adds two model requests plus four Host weather calls; Product
+    # The bounded child adds one model request plus four Host weather calls; Product
     # usage must exceed both Main-local limits without making Main fail.
     monkeypatch.setattr(settings, "MAIN_MODEL_REQUEST_LIMIT", 2)
     monkeypatch.setattr(settings, "MAIN_TOOL_CALL_LIMIT", 1)
@@ -269,43 +246,38 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
     def research_model(
         messages: list[ModelMessage], info: AgentInfo
     ) -> ModelResponse:
-        del messages
         nonlocal research_model_calls
         research_model_calls += 1
         assert info.output_tools
         if research_model_calls == 1:
-            payload: dict[str, Any] = {
-                "actions": [
-                    {
-                        "tool": "get_weather",
-                        "item_ids": ["route-weather"],
-                        "city": city,
-                        "forecast": False,
-                    }
+            # Planner turn: schedule four parallel weather lookups.
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="get_weather",
+                        args={"city": city},
+                        tool_call_id=f"weather-{city}",
+                    )
                     for city in ("东京", "横滨", "箱根", "镰仓")
-                ]
-            }
-            response_id = "research-plan"
-        else:
-            payload = {
-                "topic": "bounded research",
-                "summary": "天气核验完成",
-                "claims": [],
-                "sources": [],
-                "media": [],
-                "unresolved": [],
-            }
-            response_id = "research-final"
+                ],
+                usage=RequestUsage(input_tokens=10, output_tokens=1),
+                provider_response_id="research-weather",
+            )
         return ModelResponse(
             parts=[
                 ToolCallPart(
                     tool_name=info.output_tools[0].name,
-                    args=payload,
+                    args={
+                        "topic": "bounded research",
+                        "summary": "天气背景已整理",
+                        "sources": [],
+                        "media": [],
+                    },
                     tool_call_id=f"research-structured-{research_model_calls}",
                 )
             ],
             usage=RequestUsage(input_tokens=10, output_tokens=1),
-            provider_response_id=response_id,
+            provider_response_id="research-final",
         )
 
     def main_model(
@@ -323,15 +295,7 @@ async def test_role_limits_are_isolated_while_product_usage_aggregates_tree(
                 ToolCallPart(
                     tool_name="research_agent",
                     args={
-                        "objective": "核验东京天气",
-                        "verification_items": [
-                            {
-                                "id": "route-weather",
-                                "entity": "东京",
-                                "aspect": "天气",
-                                "question": "指定日期天气是否影响户外计划？",
-                            }
-                        ],
+                        "objective": "收集东京天气背景",
                         "constraints": [],
                     },
                     tool_call_id="research-heavy",

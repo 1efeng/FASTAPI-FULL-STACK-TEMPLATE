@@ -161,14 +161,6 @@ async def test_parent_cancellation_reaches_research_agent() -> None:
                     tool_name="research_agent",
                     args={
                         "objective": "复杂研究",
-                        "verification_items": [
-                            {
-                                "id": "complex-item",
-                                "entity": "复杂主题",
-                                "aspect": "核验维度",
-                                "question": "该主题需要核验什么？",
-                            }
-                        ],
                         "constraints": [],
                     },
                     tool_call_id="research-cancel",
@@ -224,14 +216,6 @@ async def test_parent_cancellation_reaches_parallel_research_agents() -> None:
                     tool_name="research_agent",
                     args={
                         "objective": "独立研究主题 A",
-                        "verification_items": [
-                            {
-                                "id": "topic-a-item",
-                                "entity": "主题 A",
-                                "aspect": "核验维度",
-                                "question": "该主题需要核验什么？",
-                            }
-                        ],
                         "constraints": [],
                     },
                     tool_call_id="research-cancel-a",
@@ -240,14 +224,6 @@ async def test_parent_cancellation_reaches_parallel_research_agents() -> None:
                     tool_name="research_agent",
                     args={
                         "objective": "独立研究主题 B",
-                        "verification_items": [
-                            {
-                                "id": "topic-b-item",
-                                "entity": "主题 B",
-                                "aspect": "核验维度",
-                                "question": "该主题需要核验什么？",
-                            }
-                        ],
                         "constraints": [],
                     },
                     tool_call_id="research-cancel-b",

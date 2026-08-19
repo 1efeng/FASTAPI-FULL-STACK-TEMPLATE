@@ -84,6 +84,7 @@ class RequestRunRepository(BaseRepository[RequestRun]):
         status: RequestRunStatus,
         finished_at: datetime,
         error_code: str | None,
+        metrics: dict[str, int | bool] | None = None,
     ) -> bool:
         statement = (
             update(RequestRun)
@@ -95,6 +96,7 @@ class RequestRunRepository(BaseRepository[RequestRun]):
                 status=status,
                 finished_at=finished_at,
                 error_code=error_code,
+                **(metrics or {}),
             )
             .returning(RequestRun.id)
         )
