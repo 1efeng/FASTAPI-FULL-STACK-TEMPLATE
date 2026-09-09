@@ -2,68 +2,103 @@
 
 > 执行分支：`agent101-foundation`
 >
-> 目标：完成第一个真正可运行、可演示、可面试讲解的 **LLM Streaming Chat vertical slice**。
+> 本章目标：完成 **AI SDK UI → FastAPI → LangChain ChatModel → AI SDK UI Message Stream** 的可运行流式 Chat vertical slice。
 >
-> 本章只解决 **Model Engineering**。不提前实现 Tool Calling、Agent Loop、LangGraph Checkpoint、HITL、MCP、Durable Runtime。
+> 本章不实现 Tool Calling、LangGraph Agent Loop、Checkpoint、HITL、MCP、Durable Runtime。
 
----
-
-## 1. 本章最终产物
-
-完成后系统链路应为：
+## 1. 本章最终链路
 
 ```text
 React Chat UI
-    ↓
+  ↓
 @ai-sdk/react useChat
-    ↓
+  ↓
 DefaultChatTransport
-    ↓ POST + SSE
+  ↓ POST { id, messages, ... }
 FastAPI /api/v1/chat/stream
-    ↓
-LangChain ChatModel
-    ↓
-OpenAI-compatible LLM
+  ↓
+chat/protocol/messages.py
+  ↓ AI SDK UIMessage[] → LangChain messages
+chat/agent.py
+  ↓
+LangChain ChatModel.astream()
+  ↓
+chat/protocol/stream.py
+  ↓ LangChain chunk → AI SDK UI Message Stream
+SSE
+  ↓
+useChat / UIMessage.parts
 ```
 
-并具备：
+核心原则：
 
-- 真正 token-by-token / chunk-by-chunk 流式输出
-- JWT 登录态透传
-- AI SDK UI Message Stream 协议
-- Travel Skill 作为 system instructions
-- Provider / Model 配置边界
-- 基础错误映射
-- latency / token usage / model 信息日志
-- 用户 Stop / HTTP disconnect 取消
-- structured output 示例
-- 不依赖真实付费模型的核心测试
+> 前端保持 AI SDK 原生协议；Python 后端通过一个 feature-local `protocol/` 目录做适配。协议适配层不是 Agent Runtime。
 
 ---
 
-# Stage 0 — 固定前后端协议
-
-## Task 0.1 — 验证前端 AI SDK Chat 基线
-
-检查：
+## 2. Chapter 1 当前目录
 
 ```text
-frontend/package.json
-frontend/src/components/Chat/ChatPage.tsx
-frontend/src/components/Chat/ChatMessages.tsx
-frontend/src/components/Chat/ChatComposer.tsx
+backend/app/chat/
+├── __init__.py
+├── api.py
+├── schema.py
+├── agent.py
+├── protocol/
+│   ├── __init__.py
+│   ├── messages.py
+│   └── stream.py
+└── skills/
+    └── travel-planning/
+        └── SKILL.md
 ```
 
-确认：
+职责：
 
-- 使用 `@ai-sdk/react` 的 `useChat`
-- 使用 `DefaultChatTransport`
-- 使用 `UIMessage.parts`
-- `stop()` 直接来自 `useChat`
-- 不存在自研 `useChatStream.ts`
-- 不存在第二套 Chat message store / stream parser
+- `api.py`: FastAPI、JWT dependency、`StreamingResponse`
+- `schema.py`: AI SDK transport 请求边界
+- `agent.py`: ChatModel、server-owned system instructions、Travel Skill
+- `protocol/messages.py`: `UIMessage[] → LangChain BaseMessage[]`
+- `protocol/stream.py`: `AIMessageChunk → AI SDK UI Message Stream SSE`
 
-完成标准：
+不要新增：
+
+```text
+ChatService
+AgentService
+RuntimeFacade
+ProviderRegistry
+EventBus
+StreamRuntime
+```
+
+---
+
+# Stage 0 — 前端 AI SDK 基线
+
+## Task 0.1 — AI SDK UI 基线
+
+状态：**已完成**
+
+前端已经使用：
+
+```text
+@ai-sdk/react useChat
+DefaultChatTransport
+UIMessage.parts
+ChatStatus
+useChat.stop()
+```
+
+并已删除自研：
+
+```text
+useChatStream.ts
+custom SSE parser
+custom ChatMessage store
+```
+
+仍需本地验证：
 
 ```bash
 cd frontend
@@ -71,261 +106,204 @@ bun install
 bun run build
 ```
 
-通过。
-
-预计：0.5h
-
 ---
 
-## Task 0.2 — 固定请求体边界
+## Task 0.2 — 请求协议保持 AI SDK 原生
 
-AI SDK `DefaultChatTransport` 默认会发送完整：
+状态：**已完成代码改造**
+
+不再使用：
+
+```json
+{
+  "thread_id": "...",
+  "message": "..."
+}
+```
+
+也不在前端用 `prepareSendMessagesRequest` 把 AI SDK 请求压成自定义协议。
+
+FastAPI 直接接收 AI SDK transport 的：
 
 ```json
 {
   "id": "chat-id",
-  "messages": [],
-  "trigger": "submit-message",
-  "messageId": "..."
+  "messages": [
+    {
+      "role": "user",
+      "parts": [{"type": "text", "text": "你好"}]
+    }
+  ],
+  "trigger": "submit-message"
 }
 ```
 
-第一章后端不需要理解完整 AI SDK `UIMessage` schema。
-
-在前端 `DefaultChatTransport` 使用 `prepareSendMessagesRequest`，转换成最小后端请求：
-
-```json
-{
-  "thread_id": "chat-id",
-  "message": "用户最新输入"
-}
-```
-
-继续匹配：
+当前 Python schema 只声明真正需要的：
 
 ```python
 class ChatRequest(BaseModel):
-    message: str
-    thread_id: str | None
+    messages: list[dict[str, Any]]
 ```
 
-原则：
-
-> AI SDK UIMessage 是前端 UI 数据结构，不直接成为 Python 业务 API schema。
-
-完成标准：
-
-- Browser Network 中 POST body 只有当前后端真实需要的数据
-- `Authorization: Bearer <token>` 保持存在
-- 后端不复制定义 AI SDK 完整 message schema
-
-预计：0.5h
+额外 transport 字段由 Pydantic 忽略。
 
 ---
 
-# Stage 1 — 先跑通 AI SDK ↔ FastAPI Streaming Protocol
+# Stage 1 — AI SDK ↔ LangChain 协议层
 
-## Task 1.1 — 实现最小 `/chat/stream`
+## Task 1.1 — `protocol/messages.py`
 
-修改：
+状态：**已完成第一章文本能力**
 
-```text
-backend/app/chat/api.py
-```
-
-新增：
+完整负责：
 
 ```text
-POST /api/v1/chat/stream
+AI SDK UIMessage[]
+        ↓
+LangChain BaseMessage[]
 ```
 
-先不要接 LLM，使用异步生成器输出固定文本：
+Chapter 1 支持：
+
+- user text → `HumanMessage`
+- assistant text history → `AIMessage`
+- 多个 text part 合并
+- 忽略当前章节未支持的 file/tool/reasoning part
+
+产品 system instructions 由后端 `agent.py` 持有，不依赖浏览器决定。
+
+进入 Tool 章节后，再参考成熟 FastAPI + LangGraph 社区实现扩展 tool history 的：
 
 ```text
-你好，这是流式响应。
+AIMessage(tool_calls)
+→ ToolMessage
+→ AIMessage(text)
 ```
 
-响应头必须包含：
+不要现在提前加入。
+
+---
+
+## Task 1.2 — `protocol/stream.py`
+
+状态：**已完成第一章文本能力**
+
+输出标准 AI SDK UI Message Stream：
+
+```text
+data: {"type":"start"}
+
+data: {"type":"start-step"}
+
+data: {"type":"text-start","id":"..."}
+
+data: {"type":"text-delta","id":"...","delta":"你"}
+
+data: {"type":"text-delta","id":"...","delta":"好"}
+
+data: {"type":"text-end","id":"..."}
+
+data: {"type":"finish-step"}
+
+data: {"type":"finish"}
+
+data: [DONE]
+```
+
+响应：
 
 ```text
 Content-Type: text/event-stream
 Cache-Control: no-cache
 Connection: keep-alive
-x-vercel-ai-ui-message-stream: v1
 X-Accel-Buffering: no
+x-vercel-ai-ui-message-stream: v1
 ```
 
-AI SDK UI Message Stream 最小序列：
-
-```text
-data: {"type":"start","messageId":"..."}
-
-data: {"type":"text-start","id":"text-1"}
-
-data: {"type":"text-delta","id":"text-1","delta":"你"}
-
-data: {"type":"text-delta","id":"text-1","delta":"好"}
-
-data: {"type":"text-end","id":"text-1"}
-
-data: {"type":"finish","finishReason":"stop"}
-
-data: [DONE]
-```
-
-注意每条 SSE 后保留空行。
-
-完成标准：
-
-- 前端 `useChat` 能显示 assistant message
-- 文本是逐步出现而不是最后一次性出现
-- Network 面板 response 为 streaming
-- 不出现 AI SDK protocol parse error
-
-预计：1h
+LangChain 原始 chunk 不直接暴露给浏览器。
 
 ---
 
-## Task 1.2 — 抽出轻量 UI Message Stream helper
+# Stage 2 — LangChain Model Boundary
 
-如果 `api.py` 开始出现重复 JSON + SSE 拼接，新增：
+## Task 2.1 — 最小依赖
 
-```text
-backend/app/chat/events.py
-```
+状态：**代码已更新，等待本地 `uv sync` 验证**
 
-仅负责：
-
-```python
-encode_ui_message_chunk(...)
-encode_done()
-```
-
-不要创建：
+新增：
 
 ```text
-ProtocolManager
-StreamRuntime
-EventBus
-MessageBroker
+langchain
+langchain-openai
 ```
 
-`events.py` 只是 **LangChain/Python event → AI SDK UI Message Stream chunk** 的适配层。
+不提前安装：
 
-完成标准：
+```text
+langgraph-checkpoint-postgres
+MCP
+RAG packages
+```
 
-`api.py` 中看不到大量重复 `json.dumps + data:` 拼接。
-
-预计：0.5h
-
----
-
-## Task 1.3 — Streaming contract test
-
-新增后端测试，至少验证：
-
-- status 200
-- `content-type` 为 event stream
-- `x-vercel-ai-ui-message-stream: v1`
-- 存在 `text-start`
-- 存在 `text-delta`
-- 存在 `text-end`
-- 存在 `finish`
-- 最后存在 `[DONE]`
-
-此测试不调用真实模型。
-
-预计：0.5h
-
----
-
-# Stage 2 — 接入 LangChain ChatModel
-
-## Task 2.1 — 安装最小 Agent 依赖
-
-在 `backend/`：
+需要本地执行：
 
 ```bash
-uv add langchain langchain-openai
+cd backend
 uv sync
-```
-
-第一章先不要为了未来能力额外安装一大批 LangGraph / MCP / RAG 包。
-
-如果当前 LangChain 依赖自动带入 LangGraph，不等于本章需要使用 Graph API。
-
-完成标准：
-
-```bash
 pytest
 ruff check .
 mypy app
 ```
 
-现有质量门禁不因依赖升级破坏。
-
-预计：0.5h
-
 ---
 
-## Task 2.2 — 增加模型配置
+## Task 2.2 — Provider 配置
 
-修改：
-
-```text
-backend/app/core/config.py
-```
-
-只增加真实需要的配置，例如：
+状态：**已完成基础配置**
 
 ```text
-LLM_BASE_URL
-LLM_API_KEY
 LLM_MODEL
-LLM_TIMEOUT_SECONDS
+LLM_API_KEY
+LLM_BASE_URL
 ```
 
-如果当前使用 OpenAI-compatible 国内模型，仍通过 LangChain `ChatOpenAI` 的兼容接口接入。
-
-不要创建自研：
+其中：
 
 ```text
-ProviderRegistry
-ModelFactoryFramework
-LLMGateway
-ProviderAdapter hierarchy
+LangChain ChatOpenAI
++
+LLM_BASE_URL
 ```
 
-Provider boundary 保持一个非常薄的初始化函数即可。
+用于接 OpenAI-compatible provider。
 
-预计：0.5h
+不要在第一章增加 Model Gateway / LiteLLM / Provider Registry。
 
 ---
 
-## Task 2.3 — 实现 `agent.py` 的 Model boundary
+## Task 2.3 — `chat/agent.py`
 
-目标文件：
-
-```text
-backend/app/chat/agent.py
-```
+状态：**已完成基础实现**
 
 职责：
 
-- 创建/获取 ChatModel
-- 组合 system instructions
-- 接受用户消息
-- 提供 async streaming iterator
-
-第一版形态保持简单：
-
 ```text
-stream_chat(...)
-    ↓
-ChatModel.astream(...)
+Travel Skill
+   ↓
+SystemMessage
+   ↓
+ChatOpenAI
 ```
 
-不要在本章使用：
+`api.py` 不直接初始化 Provider SDK。
+
+第一章调用方式：
+
+```text
+ChatModel.astream(messages)
+```
+
+不要使用：
 
 ```text
 create_agent
@@ -334,127 +312,134 @@ ToolNode
 checkpointer
 ```
 
-因为本章目标是先把 **LLM 本身的调用链学明白**。
-
-完成标准：
-
-`api.py` 不直接初始化 `ChatOpenAI`。
-
-预计：1h
-
 ---
 
-## Task 2.4 — 把 LangChain chunk 转成 AI SDK chunk
+## Task 2.4 — FastAPI `/chat/stream`
+
+状态：**已完成代码实现**
+
+```text
+POST /api/v1/chat/stream
+```
 
 链路：
 
 ```text
-LangChain AIMessageChunk
-        ↓
-extract text delta
-        ↓
-AI SDK text-delta
-        ↓
-SSE
+CurrentUser auth
+   ↓
+ChatRequest.messages
+   ↓
+ui_message_stream()
+   ↓
+StreamingResponse
 ```
 
-至少处理：
-
-- 正常 text chunk
-- 空 chunk
-- model exception
-- stream completion
-
-第一章不需要支持：
-
-- tool-input-* / tool-output-*
-- approval
-- reasoning
-- source
-- file
-
-这些在真实需求出现后再增加。
-
-完成标准：
-
-浏览器真实调用 LLM，assistant 文本持续增量出现。
-
-预计：1h
+浏览器请求 body 不允许决定受保护的 `user_id`。
 
 ---
 
-# Stage 3 — Travel Skill / Prompt Engineering
+# Stage 3 — Contract Tests
 
-## Task 3.1 — 加载 Travel Skill
+## Task 3.1 — Message adapter tests
 
-运行时 Skill 固定在：
-
-```text
-backend/app/chat/skills/travel-planning/SKILL.md
-```
-
-由 `agent.py` 加载。
-
-不要使用：
+状态：**已添加**
 
 ```text
-.agents/skills/
-.claude/skills/
+backend/tests/chat/test_protocol_messages.py
 ```
 
-作为产品 Runtime Skill。
+验证：
 
-第一阶段 Travel Skill 只用于证明：
-
-```text
-system instructions
-    +
-user message
-    ↓
-model
-```
-
-能产生具有业务风格的回答。
-
-预计：0.5h
+- UI text history 转成 LangChain messages
+- assistant 历史可回传给模型
+- 非文本 part 在 Chapter 1 被安全忽略
 
 ---
 
-## Task 3.2 — 明确 Prompt boundary
+## Task 3.2 — Stream adapter tests
 
-本章理解并能讲清：
+状态：**已添加**
 
 ```text
-System Instructions
-       ↓
-Travel Skill
-       ↓
-User Input
-       ↓
-Model
+backend/tests/chat/test_protocol_stream.py
 ```
 
-不要做 Prompt SaaS / Prompt DB / Prompt version platform。
+使用 fake streaming model，不访问付费模型。
 
-如果未来确实需要版本管理，再增加显式 `PROMPT_VERSION` 或文件版本即可。
+验证：
 
-完成标准：
+```text
+start
+start-step
+text-start
+text-delta
+text-end
+finish-step
+finish
+[DONE]
+```
 
-- 普通问候可以正常回答
-- 旅游规划请求明显遵循 Travel Skill 约束
-- Skill 修改后无需修改 Agent Runtime 代码
-
-预计：0.5h
+以及 provider exception → AI SDK `error` chunk。
 
 ---
 
-# Stage 4 — Model Engineering Governance
+# Stage 4 — Chapter 1 剩余工程化任务
 
-## Task 4.1 — 错误映射
+下面这些还没有完成，按顺序继续。
 
-把 Provider / LangChain 异常映射到应用可理解的错误类别。
+## Task 4.1 — 本地构建与依赖锁验证
 
-第一版至少区分：
+执行：
+
+```bash
+cd backend
+uv sync
+pytest tests/chat -q
+ruff check app/chat tests/chat
+mypy app
+
+cd ../frontend
+bun install
+bun run build
+```
+
+完成标准：全部通过。
+
+> 当前 ChatGPT 执行环境无法访问 GitHub 网络，因此不能把远端代码 clone 下来代替你的本地/CI 验证。
+
+---
+
+## Task 4.2 — 真实模型 E2E
+
+在 `.env` 配置：
+
+```text
+LLM_MODEL=<model>
+LLM_API_KEY=<key>
+LLM_BASE_URL=<OpenAI-compatible base url, optional>
+```
+
+验证：
+
+1. 登录。
+2. 首页输入“你好”。
+3. Network 看到 `POST /api/v1/chat/stream`。
+4. request body 是 AI SDK `messages`。
+5. response 为持续 SSE。
+6. assistant 文本逐步出现。
+7. status 最终回到 ready。
+
+---
+
+## Task 4.3 — Error Mapping
+
+当前只有统一用户错误：
+
+```text
+模型调用失败，请稍后重试。
+```
+
+下一步至少区分：
 
 ```text
 AUTH_ERROR
@@ -465,128 +450,58 @@ CANCELLED
 UNKNOWN
 ```
 
-不要把 provider 的完整原始异常、API key、request body 直接透传前端。
-
-流已经开始后发生错误：
-
-```text
-AI SDK error chunk
-→ finish / stream termination
-```
-
-流开始前错误：
-
-返回正常 HTTP error response。
-
-预计：1h
-
----
-
-## Task 4.2 — Latency / Usage / Model 日志
-
-每次请求至少记录：
-
-```text
-request_id / thread_id
-user_id
-model
-started_at
-first_token_latency（可以获得时）
-total_latency
-input_tokens（可以获得时）
-output_tokens（可以获得时）
-status
-error_type
-```
-
 原则：
 
-- 使用结构化日志
-- 不打印 JWT
-- 不打印 API key
-- 默认不完整记录用户 prompt / model response
-- usage 获取不到时允许为空，不为了 usage 造复杂 Runtime
-
-完成标准：
-
-完成一次 Chat 后，可以从后端日志解释：
-
-> 调了哪个模型、多久首 token、多久完成、多少 token、是否成功。
-
-预计：1h
+- 原始异常写日志
+- 用户只接收稳定文案
+- 不泄露 API key / JWT / provider request body
 
 ---
 
-## Task 4.3 — Client disconnect / Stop cancellation
+## Task 4.4 — Stop / Cancellation
 
-前端：
+前端已经：
 
 ```text
 useChat.stop()
 ```
 
-会取消当前 transport request。
-
-后端需要确保：
+需要真实 E2E 验证：
 
 ```text
-HTTP client disconnect
-        ↓
-cancel async generator / model stream
-        ↓
-不继续无意义消费模型输出
+Abort request
+→ FastAPI async stream cancelled
+→ model stream 不继续后台消费
 ```
 
-测试：
-
-1. 发一个明显会长回答的问题
-2. 流式输出过程中点击 Stop
-3. UI 停止继续追加
-4. 后端请求尽快结束
-5. 日志标记 cancelled，而不是 provider error
-
-不要为了本章 Stop 引入：
-
-- Redis control channel
-- run database
-- worker event bus
-- durable abort system
-
-预计：1h
+本章不为 Stop 引入 Redis / run table / worker control channel。
 
 ---
 
-## Task 4.4 — Timeout
+## Task 4.5 — Latency / Usage Logging
 
-给模型调用配置合理 timeout。
-
-必须理解：
+每次 Chat 最少记录：
 
 ```text
-Model READ-like generation timeout
+user_id
+model
+first_token_latency_ms
+total_latency_ms
+input_tokens
+output_tokens
+status
+error_type
 ```
 
-与后面章节的：
+usage 获取不到允许为空。
 
-```text
-Write Tool timeout → unknown outcome
-```
-
-不是同一个问题。
-
-第一章只处理模型请求超时。
-
-预计：0.5h
+第一章不引入 LangSmith。
 
 ---
 
-# Stage 5 — Structured Output
+## Task 4.6 — Structured Output 示例
 
-## Task 5.1 — 做一个独立 structured output 示例
-
-不要把主 Chat 强行改成 JSON。
-
-增加一个很小的演示/测试，例如：
+单独做一个小测试，例如：
 
 ```python
 class TravelIntent(BaseModel):
@@ -595,228 +510,38 @@ class TravelIntent(BaseModel):
     budget: str | None
 ```
 
-使用 LangChain 当前官方 structured output API 验证：
+学习：
 
 ```text
-自然语言
-   ↓
-Pydantic object
+natural language
+→ LangChain structured output
+→ Pydantic validation
 ```
 
-目的：掌握：
-
-- schema
-- validation
-- model structured output
-- parse failure
-
-不是为了本章提前做 intent classifier workflow。
-
-完成标准：
-
-有自动化测试证明有效输入可以获得 Pydantic 结果，异常输出有明确处理。
-
-预计：1h
+不要把主 Chat 改成 JSON workflow。
 
 ---
 
-# Stage 6 — Provider Boundary / Fallback 基础认知
+# Chapter 1 完成标准
 
-## Task 6.1 — 保持 Provider 可替换，但不造平台
+以下全部满足后再进入 Tool Calling：
 
-当前只需保证：
+- [ ] frontend build 通过
+- [ ] backend `uv sync` 通过
+- [ ] protocol tests 通过
+- [ ] ruff / mypy 无本次新增错误
+- [ ] AI SDK 原生 `UIMessage[]` 请求成功进入 FastAPI
+- [ ] `protocol/messages.py` 成功转换 LangChain messages
+- [ ] LangChain 真实模型流式返回
+- [ ] `protocol/stream.py` 输出合法 AI SDK UI Message Stream
+- [ ] Travel Skill 生效
+- [ ] Provider error 有稳定映射
+- [ ] Stop 能停止实际模型 stream
+- [ ] latency / usage 基础日志可见
+- [ ] structured output demo 有测试
 
-```text
-LLM_BASE_URL
-LLM_API_KEY
-LLM_MODEL
-```
+到这里第一章才算完成。
 
-变化时，Chat 业务代码基本不变。
+面试表述：
 
-可以验证两个 OpenAI-compatible model 配置，但不要实现动态模型控制台。
-
-面试要能说明：
-
-> LangChain 提供 Model abstraction；项目用配置隔离 Provider，业务层不依赖厂商 SDK。当前没有需求，所以没有再造 LiteLLM 或 Model Gateway。
-
-预计：0.5h
-
----
-
-## Task 6.2 — Retry / Fallback 只做最小策略
-
-第一章理解即可：
-
-- rate limit / transient provider failure 可以有限 retry
-- invalid auth / bad request 不 retry
-- timeout 是否 retry 必须考虑整体延迟预算
-- fallback 必须明确模型能力/成本差异
-
-若当前 LangChain 官方 retry 能力已经满足，直接使用官方能力。
-
-不要实现通用 `RetryEngine`。
-
-预计：0.5h
-
----
-
-# Stage 7 — 测试与 E2E
-
-## Task 7.1 — Model fake
-
-测试中提供 fake streaming model，至少可以产生：
-
-```text
-你
-好
-，
-世
-界
-```
-
-核心 CI 不依赖真实 API key。
-
-用于测试：
-
-- LangChain chunk adapter
-- AI SDK SSE protocol
-- cancellation
-- error mapping
-
-预计：1h
-
----
-
-## Task 7.2 — Backend integration tests
-
-至少覆盖：
-
-- 未登录访问 Chat → 401
-- 空 message → 422
-- 正常 fake model stream → 200 + AI SDK chunks
-- model failure → 正确 error behavior
-- disconnect/cancel 不产生服务器异常
-
-预计：1h
-
----
-
-## Task 7.3 — Playwright Chat E2E
-
-至少覆盖：
-
-```text
-login
-→ 打开 /
-→ 输入消息
-→ 点击发送
-→ 用户消息出现
-→ assistant 流式文本出现
-→ 最终完成
-```
-
-再增加 Stop 测试：
-
-```text
-发送长回答
-→ streaming
-→ Stop
-→ 不再继续追加
-```
-
-E2E 优先使用可控 fake/test model，不依赖公网 LLM。
-
-预计：1.5h
-
----
-
-# Stage 8 — 第一章收尾
-
-## Task 8.1 — README / Architecture 更新
-
-README 只需要说明第一章实际完成的架构：
-
-```text
-React
-  ↓ AI SDK UI
-FastAPI
-  ↓ LangChain
-LLM Provider
-```
-
-明确：
-
-- AI SDK 仅负责前端 Chat UI/Transport
-- LangChain 负责 Python model abstraction
-- 尚未进入 Tool / Agent / LangGraph Runtime 阶段
-
-预计：0.5h
-
----
-
-## Task 8.2 — 第一章最终质量门禁
-
-运行：
-
-```bash
-cd backend
-uv sync
-pytest
-ruff check .
-mypy app
-
-cd ../frontend
-bun install
-bun run build
-bunx playwright test
-```
-
-要求全部通过。
-
----
-
-# 第一章完成定义（DoD）
-
-只有下面全部满足，才进入 Chapter 2：
-
-- [ ] 前端 `useChat + DefaultChatTransport` 正常工作
-- [ ] FastAPI AI SDK UI Message Stream 协议测试通过
-- [ ] 真实 LangChain ChatModel 能流式回答
-- [ ] Travel Skill 已进入 system instructions
-- [ ] JWT user context 已接入 Chat 请求
-- [ ] Stop 能取消当前非 durable 流式请求
-- [ ] provider error / timeout / cancellation 有清晰映射
-- [ ] latency / model / usage 基础观测存在
-- [ ] structured output 有独立可运行示例
-- [ ] 核心测试不依赖真实付费 LLM
-- [ ] backend lint/type/test 通过
-- [ ] frontend build/E2E 通过
-
----
-
-# 第一章明确不做
-
-以下内容全部留到后续章节：
-
-```text
-❌ LangChain create_agent
-❌ @tool / Tool Calling
-❌ Tool Governance
-❌ MCP
-❌ HITL
-❌ LangGraph StateGraph
-❌ ToolNode
-❌ Postgres Checkpointer
-❌ interrupt / resume
-❌ Durable Execution
-❌ run / step tables
-❌ Redis / Celery / Inngest / Temporal
-❌ RAG / Vector DB
-```
-
-第一章只回答一个问题：
-
-> **如何把一个 LLM 模型调用做成具备清晰 Provider 边界、流式传输、错误治理、可观测性、取消和测试能力的生产化 Chat Model Layer。**
-
-完成后再进入 Chapter 2：Tool / Agent Engineering。
+> 前端我没有自己维护流式 Chat 状态机，而是使用 Vercel AI SDK `useChat`。Python 后端保持 LangChain/LangGraph 主线，通过 feature-local `protocol/messages.py` 和 `protocol/stream.py` 适配 AI SDK UI 协议。这样 UI 协议与 Agent Runtime 解耦：后续从普通 ChatModel 升级到 LangGraph Tool Agent 时，React 不需要重写通信层。
