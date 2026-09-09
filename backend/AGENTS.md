@@ -44,7 +44,7 @@ backend/
 - request validation
 - auth dependency
 - HTTP status / response
-- SSE boundary
+- AI SDK UI Message Stream / SSE boundary
 - client disconnect / cancellation
 
 不要在 `api.py` 内堆模型初始化、LangGraph node、业务数据访问等执行细节。
@@ -74,7 +74,7 @@ app/chat/
 
 文件只在真实需求出现时新增：
 
-- `events.py`: 有稳定 SSE event protocol 时
+- `events.py`: 真正开始做 LangGraph → AI SDK UI stream adaptation 时
 - `tools.py`: 有 Tool 时
 - `middleware.py`: 有 Tool/Agent 横切治理时
 - `graph.py`: 开始低层 StateGraph orchestration 时
@@ -82,6 +82,50 @@ app/chat/
 - `runtime.py`: API 已被 checkpoint/thread/resume/stream lifecycle 明显撑大时
 
 不要创建空目录或占位抽象预测未来复杂度。
+
+## Chat Streaming Protocol
+
+前端使用 Vercel AI SDK `useChat + DefaultChatTransport`，因此 `/chat/stream` 返回 **AI SDK UI Message Stream**，而不是应用自定义 SSE event names。
+
+响应至少遵循当前 AI SDK wire contract：
+
+```text
+Content-Type: text/event-stream
+x-vercel-ai-ui-message-stream: v1
+```
+
+SSE frame：
+
+```text
+data: {"type":"text-start","id":"..."}
+
+data: {"type":"text-delta","id":"...","delta":"..."}
+
+data: {"type":"text-end","id":"..."}
+
+data: {"type":"finish"}
+
+data: [DONE]
+
+```
+
+同一个文本 part 必须先 `text-start`，再零个或多个 `text-delta`，最后 `text-end`，并保持相同 part id。
+
+LangChain/LangGraph 原始 chunk 不直接透传给浏览器。边界必须是：
+
+```text
+LangGraph stream
+  ↓
+chat adapter
+  ↓
+AI SDK UIMessageChunk
+  ↓
+SSE
+```
+
+Tool、Approval、Reasoning、Sources 等优先转换成 AI SDK 已定义的 part；产品特有 progress/activity 使用 typed `data-*` part，不再维护平行 `run.started/message.delta/tool.started` 协议。
+
+AI SDK 仅是前后端 Chat UI 协议，不参与后端 Agent Runtime。
 
 ## Tool Governance
 
@@ -125,7 +169,7 @@ mypy app
 新增 Agent 能力时优先补：
 
 - unit tests for policy/business boundaries
-- streaming contract tests
+- AI SDK UI message stream contract tests
 - tool side-effect/idempotency tests
 - interrupt/resume tests
 - recovery tests
