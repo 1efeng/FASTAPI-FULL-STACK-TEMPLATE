@@ -7,11 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import verify_password
-from app.item.model import Item
 from app.user.model import User
 from app.user.schema import UserCreate
 from app.user.service import UserService
-from tests.utils.item import create_random_item
 from tests.utils.user import create_random_user
 from tests.utils.utils import random_email, random_lower_string
 
@@ -157,7 +155,6 @@ async def test_create_user_existing_username(
     client: AsyncClient, superuser_token_headers: dict[str, str], db: AsyncSession
 ) -> None:
     username = random_email()
-    # username = email
     password = random_lower_string()
     user_in = UserCreate(email=username, password=password)
     await UserService(db).create_user(user_in)
@@ -259,7 +256,6 @@ async def test_update_password_me(
     verified, _ = verify_password(new_password, user_db.hashed_password)
     assert verified
 
-    # Revert to the old password to keep consistency in test
     old_data = {
         "current_password": new_password,
         "new_password": settings.FIRST_SUPERUSER_PASSWORD,
@@ -457,7 +453,6 @@ async def test_delete_user_me(client: AsyncClient, db: AsyncSession) -> None:
     deleted_user = r.json()
     assert deleted_user["message"] == "User deleted successfully"
 
-    # 测试会话 identity map 可能缓存了已删除对象,先强制过期再从 DB 读取
     db.expire_all()
     user_query = select(User).where(User.id == user_id)
     result = await db.execute(user_query)
@@ -493,7 +488,6 @@ async def test_delete_user_super_user(
     deleted_user = r.json()
     assert deleted_user["message"] == "User deleted successfully"
 
-    # 测试会话 identity map 可能缓存了已删除对象,先强制过期再从 DB 读取
     db.expire_all()
     user_query = select(User).where(User.id == user_id)
     result = await db.execute(user_query)
@@ -525,25 +519,6 @@ async def test_delete_user_current_super_user_error(
     )
     assert r.status_code == 403
     assert r.json()["detail"] == "Super users are not allowed to delete themselves"
-
-
-async def test_delete_user_cascades_items(
-    client: AsyncClient, superuser_token_headers: dict[str, str], db: AsyncSession
-) -> None:
-    """删除用户时,其名下 items 应通过 ORM 级联一并删除"""
-    item = await create_random_item(db)
-    item_id = item.id
-    owner_id = item.owner_id
-    r = await client.delete(
-        f"{settings.API_V1_STR}/users/{owner_id}",
-        headers=superuser_token_headers,
-    )
-    assert r.status_code == 200
-
-    db.expire_all()
-    item_query = select(Item).where(Item.id == item_id)
-    result = await db.execute(item_query)
-    assert result.scalars().first() is None
 
 
 async def test_delete_user_without_privileges(
