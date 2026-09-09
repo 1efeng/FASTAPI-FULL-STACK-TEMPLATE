@@ -23,8 +23,8 @@ def to_langchain_messages(ui_messages: list[dict[str, Any]]) -> list[BaseMessage
     """Convert trusted text history from AI SDK `UIMessage[]` to LangChain.
 
     The frontend keeps AI SDK's native request shape. System instructions are
-    deliberately not accepted from the browser; the server owns them in
-    `chat/agent.py` through the runtime Skill.
+    deliberately not accepted from the browser; the server owns the base
+    conversation prompt in `agent/agent.py`.
     """
     messages: list[BaseMessage] = []
 

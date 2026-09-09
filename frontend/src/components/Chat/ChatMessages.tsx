@@ -1,8 +1,4 @@
-import {
-  getToolName,
-  isToolUIPart,
-  type UIMessage,
-} from "ai"
+import { getToolName, isToolUIPart, type UIMessage } from "ai"
 
 interface ChatMessagesProps {
   messages: UIMessage[]

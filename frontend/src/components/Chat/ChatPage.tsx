@@ -1,9 +1,9 @@
 import { useChat } from "@ai-sdk/react"
 import {
+  type ChatStatus,
   DefaultChatTransport,
   getToolName,
   isToolUIPart,
-  type ChatStatus,
   type UIMessage,
 } from "ai"
 import { MessageSquarePlus } from "lucide-react"
@@ -28,7 +28,9 @@ const chatTransport = new DefaultChatTransport({
   api: apiUrl("/api/v1/chat/stream"),
   headers: () => {
     const token = localStorage.getItem("access_token")
-    return token ? { Authorization: `Bearer ${token}` } : {}
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    return headers
   },
 })
 
@@ -88,7 +90,7 @@ function ChatSession({
     const viewport = scrollRef.current
     if (!viewport) return
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" })
-  }, [activityLabel, messages])
+  }, [])
 
   const handleNewChat = () => {
     void stop()
@@ -105,7 +107,9 @@ function ChatSession({
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur md:hidden">
-          <h1 className="min-w-0 flex-1 truncate text-sm font-medium">Agent Platform</h1>
+          <h1 className="min-w-0 flex-1 truncate text-sm font-medium">
+            Agent Platform
+          </h1>
           <Button
             aria-label="新建对话"
             className="size-8"
@@ -122,7 +126,10 @@ function ChatSession({
           <ChatMessages messages={messages} />
           <ChatActivity label={activityLabel} />
           {error && (
-            <div className="mx-auto w-full max-w-3xl px-4 pb-4 md:px-6" role="alert">
+            <div
+              className="mx-auto w-full max-w-3xl px-4 pb-4 md:px-6"
+              role="alert"
+            >
               <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
                 对话请求失败，请稍后重试。
               </div>

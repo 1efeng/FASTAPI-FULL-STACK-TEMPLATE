@@ -4,9 +4,11 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
+    AliasChoices,
     AnyUrl,
     BeforeValidator,
     EmailStr,
+    Field,
     HttpUrl,
     PostgresDsn,
     SecretStr,
@@ -56,9 +58,18 @@ class Settings(BaseSettings):
 
     # LangChain ChatModel. `LLM_BASE_URL` keeps the integration compatible with
     # OpenAI-compatible providers while LangChain remains the model abstraction.
-    LLM_MODEL: str = "gpt-4o-mini"
-    LLM_API_KEY: SecretStr | None = None
-    LLM_BASE_URL: str | None = None
+    LLM_MODEL: str = Field(
+        default="deepseek-v4-flash",
+        validation_alias=AliasChoices("LLM_MODEL", "CHAT_MODEL"),
+    )
+    LLM_API_KEY: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_API_KEY", "DOUBAO_PLAN_API_KEY"),
+    )
+    LLM_BASE_URL: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_BASE_URL", "DOUBAO_PLAN_BASE_URL"),
+    )
 
     POSTGRES_SERVER: str
     POSTGRES_PORT: int = 5432

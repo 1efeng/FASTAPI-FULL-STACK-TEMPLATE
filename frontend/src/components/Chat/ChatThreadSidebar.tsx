@@ -1,8 +1,4 @@
-import {
-  MessageSquarePlus,
-  PanelLeftClose,
-  PanelLeftOpen,
-} from "lucide-react"
+import { MessageSquarePlus, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import useAuth from "@/hooks/useAuth"
@@ -71,8 +67,12 @@ export function ChatThreadSidebar({
 
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
             <div className="mt-3">
-              <p className="px-2 text-xs font-medium text-muted-foreground/80">对话</p>
-              <p className="mt-2 px-2 text-xs text-muted-foreground">暂无历史对话</p>
+              <p className="px-2 text-xs font-medium text-muted-foreground/80">
+                对话
+              </p>
+              <p className="mt-2 px-2 text-xs text-muted-foreground">
+                暂无历史对话
+              </p>
             </div>
           </div>
 

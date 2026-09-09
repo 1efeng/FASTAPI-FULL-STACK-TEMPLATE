@@ -62,33 +62,37 @@ backend/
 
 ## Chat / Agent
 
-Chapter 1 当前结构固定为：
+Chapter 1 当前结构为：
 
 ```text
+app/agent/
+├── __init__.py
+├── agent.py
+├── middleware.py
+└── skills/
 app/chat/
 ├── api.py
 ├── schema.py
-├── agent.py
 ├── protocol/
 │   ├── __init__.py
 │   ├── messages.py
 │   └── stream.py
-└── skills/
 ```
 
 职责：
 
 - `api.py`: FastAPI/auth/StreamingResponse
 - `schema.py`: AI SDK transport request boundary
-- `agent.py`: LangChain ChatModel + server-owned system instructions
+- `agent/agent.py`: LangChain ChatModel + create_agent + server-owned system instructions
+- `agent/middleware.py`: Skill catalog and read-only skill file middleware
 - `protocol/messages.py`: AI SDK `UIMessage[]` → LangChain messages
 - `protocol/stream.py`: LangChain/LangGraph output → AI SDK UI Message Stream
-- `skills/`: 产品运行时 Skill
+- `agent/skills/`: 产品运行时 Skill
 
 后续文件只在真实需求出现时新增：
 
-- `tools.py`: 有 Tool 时
-- `middleware.py`: 有 Tool/Agent 横切治理时
+- `agent/tools.py`: 有 Tool 时
+- `agent/middleware.py`: 有 Tool/Agent 横切治理时
 - `graph.py`: 开始低层 StateGraph orchestration 时
 - `state.py`: Graph state 独立后
 - `runtime.py`: API 已被 checkpoint/thread/resume/stream lifecycle 明显撑大时

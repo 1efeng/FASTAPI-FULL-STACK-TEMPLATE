@@ -42,15 +42,18 @@ PostgreSQL
 当前已经落地：
 
 ```text
-backend/app/chat/
-├── api.py
-├── schema.py
-├── agent.py
-├── protocol/
-│   ├── __init__.py
-│   ├── messages.py
-│   └── stream.py
-└── skills/
+backend/app/
+├── agent/
+│   ├── agent.py
+│   ├── middleware.py
+│   └── skills/
+└── chat/
+    ├── api.py
+    ├── schema.py
+    └── protocol/
+        ├── __init__.py
+        ├── messages.py
+        └── stream.py
 ```
 
 已实现：
@@ -59,7 +62,9 @@ backend/app/chat/
 - `UIMessage[] → LangChain messages`
 - LangChain `ChatModel.astream()`
 - `AIMessageChunk → AI SDK UI Message Stream`
-- Travel Skill server-side system instruction
+- 基础 system prompt
+- `create_agent` + feature-local Skills/Filesystem middleware
+- Travel Skill 由主 Agent 按需读取
 - JWT `CurrentUser` boundary
 - fake model protocol tests
 

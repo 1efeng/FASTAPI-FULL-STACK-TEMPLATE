@@ -19,7 +19,7 @@ FastAPI /api/v1/chat/stream
   ↓
 chat/protocol/messages.py
   ↓ AI SDK UIMessage[] → LangChain messages
-chat/agent.py
+agent/agent.py
   ↓
 LangChain ChatModel.astream()
   ↓
@@ -39,25 +39,29 @@ useChat / UIMessage.parts
 ## 2. Chapter 1 当前目录
 
 ```text
-backend/app/chat/
-├── __init__.py
-├── api.py
-├── schema.py
-├── agent.py
-├── protocol/
+backend/app/
+├── agent/
 │   ├── __init__.py
-│   ├── messages.py
-│   └── stream.py
-└── skills/
-    └── travel-planning/
-        └── SKILL.md
+│   ├── agent.py
+│   ├── middleware.py
+│   └── skills/
+│       └── travel-planning/
+│           └── SKILL.md
+└── chat/
+    ├── api.py
+    ├── schema.py
+    └── protocol/
+        ├── __init__.py
+        ├── messages.py
+        └── stream.py
 ```
 
 职责：
 
 - `api.py`: FastAPI、JWT dependency、`StreamingResponse`
 - `schema.py`: AI SDK transport 请求边界
-- `agent.py`: ChatModel、server-owned system instructions、Travel Skill
+- `agent/agent.py`: ChatModel、create_agent、server-owned 基础 system prompt
+- `agent/middleware.py`: Skill catalog 和只读 `read_file` middleware
 - `protocol/messages.py`: `UIMessage[] → LangChain BaseMessage[]`
 - `protocol/stream.py`: `AIMessageChunk → AI SDK UI Message Stream SSE`
 
@@ -170,7 +174,12 @@ Chapter 1 支持：
 - 多个 text part 合并
 - 忽略当前章节未支持的 file/tool/reasoning part
 
-产品 system instructions 由后端 `agent.py` 持有，不依赖浏览器决定。
+产品 system instructions 由后端 `agent/agent.py` 持有，不依赖浏览器决定。
+
+当前使用 LangChain `create_agent` 接通用 Chat。基础 system prompt 由后端
+`agent/agent.py` 持有；产品运行时 Skill 通过 `agent/middleware.py` 的
+`SkillsMiddleware` / `FilesystemMiddleware` 提供技能目录和只读加载工具。
+主 Agent 只有在任务匹配时才主动读取 `travel-planning/SKILL.md`。
 
 进入 Tool 章节后，再参考成熟 FastAPI + LangGraph 社区实现扩展 tool history 的：
 
@@ -281,35 +290,26 @@ LLM_BASE_URL
 
 ---
 
-## Task 2.3 — `chat/agent.py`
+## Task 2.3 — `agent/agent.py`
 
 状态：**已完成基础实现**
 
 职责：
 
 ```text
-Travel Skill
+create_agent
    ↓
-SystemMessage
+SkillsMiddleware + FilesystemMiddleware
    ↓
-ChatOpenAI
+LangGraph-backed Agent Runtime
 ```
 
 `api.py` 不直接初始化 Provider SDK。
 
-第一章调用方式：
+当前调用方式：
 
 ```text
-ChatModel.astream(messages)
-```
-
-不要使用：
-
-```text
-create_agent
-StateGraph
-ToolNode
-checkpointer
+Agent.astream({"messages": messages}, stream_mode="messages")
 ```
 
 ---
@@ -395,7 +395,7 @@ finish
 cd backend
 uv sync
 pytest tests/chat -q
-ruff check app/chat tests/chat
+ruff check app/agent app/chat tests/chat
 mypy app
 
 cd ../frontend
@@ -534,7 +534,7 @@ natural language
 - [ ] `protocol/messages.py` 成功转换 LangChain messages
 - [ ] LangChain 真实模型流式返回
 - [ ] `protocol/stream.py` 输出合法 AI SDK UI Message Stream
-- [ ] Travel Skill 生效
+- [x] Travel Skill 通过 Agent 主动加载生效
 - [ ] Provider error 有稳定映射
 - [ ] Stop 能停止实际模型 stream
 - [ ] latency / usage 基础日志可见

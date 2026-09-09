@@ -207,25 +207,27 @@ Lease / heartbeat / fencing 只有出现真实多 Worker 竞争接管问题时�
 
 ## Chat 模块约束
 
-Chat、Agent、Tool、Graph 属于同一个业务 feature，不额外创建全局 `agents/`、`runtime/`、`orchestration/` 层。
+Chat、Agent、Tool、Graph 属于同一个业务 feature；Chat 负责交互协议，Agent 负责执行能力。不额外创建全局 `agents/`、`runtime/`、`orchestration/` 层。
 
 结构按需求自然增长：
 
 ```text
 Ch1
+agent/
+├── agent.py
+├── middleware.py
+└── skills/
 chat/
 ├── api.py
 ├── schema.py
-├── agent.py
 ├── protocol/
 │   ├── __init__.py
 │   ├── messages.py   # AI SDK UIMessage[] → LangChain messages
 │   └── stream.py     # LangChain stream → AI SDK UI Message Stream
-└── skills/
 
 Ch2
-+ tools.py       # 少量工具时
-+ middleware.py  # 真正出现治理需求时
++ agent/tools.py       # 少量工具时
++ agent/middleware.py  # Agent 横切治理
 
 Ch3
 + graph.py
@@ -253,16 +255,16 @@ LangGraph execution/message state 优先由 LangGraph checkpointer 管理。
 
 ## Skill 约束
 
-产品运行时 Skill 放在：
+产品运行时 Skill 放在 Agent 模块：
 
 ```text
-backend/app/chat/skills/
+backend/app/agent/skills/
 ```
 
 例如：
 
 ```text
-backend/app/chat/skills/travel-planning/SKILL.md
+backend/app/agent/skills/travel-planning/SKILL.md
 ```
 
 `.agents/skills/` 仅用于开发 Agent / Codex 的工作流 Skill，不属于产品运行时。

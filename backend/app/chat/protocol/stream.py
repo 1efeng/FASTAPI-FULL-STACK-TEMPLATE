@@ -8,7 +8,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessageChunk
 
-from app.chat.agent import get_chat_model, system_message
+from app.agent.agent import get_agent
 from app.chat.protocol.messages import to_langchain_messages
 
 logger = logging.getLogger("app.chat.stream")
@@ -46,7 +46,7 @@ def _chunk_text(chunk: AIMessageChunk) -> str:
 async def ui_message_stream(
     ui_messages: list[dict[str, Any]],
     *,
-    model: Any | None = None,
+    agent: Any | None = None,
 ) -> AsyncIterator[str]:
     """Stream LangChain text output using AI SDK's UI Message Stream protocol.
 
@@ -54,8 +54,7 @@ async def ui_message_stream(
     already in its final location; later chapters extend this adapter with tool,
     reasoning and approval chunks instead of changing the frontend contract.
     """
-    chat_model = model or get_chat_model()
-    history = [system_message(), *to_langchain_messages(ui_messages)]
+    chat_agent = agent or get_agent()
 
     yield sse({"type": "start"})
     yield sse({"type": "start-step"})
@@ -64,7 +63,11 @@ async def ui_message_stream(
     text_started = False
 
     try:
-        async for chunk in chat_model.astream(history):
+        async for event in chat_agent.astream(
+            {"messages": to_langchain_messages(ui_messages)},
+            stream_mode="messages",
+        ):
+            chunk = event[0] if isinstance(event, tuple) else event
             if not isinstance(chunk, AIMessageChunk):
                 continue
 
