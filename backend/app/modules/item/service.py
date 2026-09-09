@@ -1,9 +1,9 @@
 import uuid
 
-from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import PermissionDeniedError, ResourceNotFoundError
 from app.modules.item.model import Item
 from app.modules.item.repository import ItemRepository
 from app.modules.item.schema import ItemCreate, ItemUpdate
@@ -40,12 +40,12 @@ class ItemService:
         return list(items), count
 
     async def get_item_by_id(self, item_id: uuid.UUID, current_user: User) -> Item:
-        """读取指定 item,普通用户只能看自己的,超管看任意;不存在 404,无权限 403"""
+        """读取指定 item,普通用户只能看自己的,超管看任意。"""
         item = await self.repo.get_by_id(item_id)
         if not item:
-            raise HTTPException(status_code=404, detail="Item not found")
+            raise ResourceNotFoundError("Item not found")
         if not current_user.is_superuser and (item.owner_id != current_user.id):
-            raise HTTPException(status_code=403, detail="Not enough permissions")
+            raise PermissionDeniedError("Not enough permissions")
         return item
 
     async def create_item(self, item_in: ItemCreate, owner_id: uuid.UUID) -> Item:
