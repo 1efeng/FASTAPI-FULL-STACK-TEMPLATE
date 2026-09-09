@@ -12,6 +12,7 @@ from app.core.exceptions import (
 from app.modules.auth.service import AuthService
 from app.modules.item.schema import ItemCreate
 from app.modules.item.service import ItemService
+from app.modules.user.model import User
 from app.modules.user.schema import UserCreate, UserUpdate, UserUpdateMe
 from app.modules.user.service import UserService
 from app.utils.email import generate_password_reset_token
@@ -20,7 +21,7 @@ from tests.utils.utils import random_email, random_lower_string
 
 async def _create_user(
     db: AsyncSession, *, is_superuser: bool = False, is_active: bool = True
-):
+) -> tuple[User, str]:
     password = random_lower_string()
     user = await UserService(db).create_user(
         UserCreate(
