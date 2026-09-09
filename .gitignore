@@ -11,3 +11,9 @@ backend/app/frontend/
 .agents/skills/sqlmodel
 .claude/skills/fastapi
 .claude/skills/sqlmodel
+frontend/.tanstack/
+pnpm-lock.yaml
+tw-compile-test.mjs
+tw-issue-out.css
+tw-issue.css
+references/

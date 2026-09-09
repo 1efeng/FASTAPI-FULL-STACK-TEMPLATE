@@ -9,10 +9,49 @@ export type Body_login_login_access_token = {
     client_secret?: (string | null);
 };
 
+/**
+ * Request shape emitted by AI SDK `DefaultChatTransport`.
+ *
+ * AI SDK may include additional top-level fields such as `id` or `trigger`;
+ * Pydantic ignores them. The backend keeps the native `messages` array so the
+ * protocol adapter, not the React client, owns the LangChain conversion.
+ */
+export type ChatRequest = {
+    messages: Array<{
+        [key: string]: unknown;
+    }>;
+};
+
+export type DemoCreate = {
+    title: string;
+    description?: (string | null);
+};
+
+export type DemoPublic = {
+    id: string;
+    title: string;
+    description?: (string | null);
+    owner_id: string;
+    created_at: string;
+};
+
+export type DemosPublic = {
+    data: Array<DemoPublic>;
+    count: number;
+};
+
+export type DemoUpdate = {
+    title?: (string | null);
+    description?: (string | null);
+};
+
 export type HTTPValidationError = {
     detail?: Array<ValidationError>;
 };
 
+/**
+ * Generic API message response.
+ */
 export type Message = {
     message: string;
 };
@@ -41,19 +80,19 @@ export type UpdatePassword = {
 
 export type UserCreate = {
     email: string;
+    password: string;
     is_active?: boolean;
     is_superuser?: boolean;
     full_name?: (string | null);
-    password: string;
 };
 
 export type UserPublic = {
-    email: string;
-    is_active?: boolean;
-    is_superuser?: boolean;
-    full_name?: (string | null);
     id: string;
-    created_at?: (string | null);
+    email: string;
+    is_active: boolean;
+    is_superuser: boolean;
+    full_name?: (string | null);
+    created_at: string;
 };
 
 export type UserRegister = {
@@ -90,6 +129,44 @@ export type ValidationError = {
     };
 };
 
+export type ChatStreamChatData = {
+    requestBody: ChatRequest;
+};
+
+export type ChatStreamChatResponse = (unknown);
+
+export type DemosReadDemosData = {
+    limit?: number;
+    skip?: number;
+};
+
+export type DemosReadDemosResponse = (DemosPublic);
+
+export type DemosCreateDemoData = {
+    requestBody: DemoCreate;
+};
+
+export type DemosCreateDemoResponse = (DemoPublic);
+
+export type DemosReadDemoData = {
+    demoId: string;
+};
+
+export type DemosReadDemoResponse = (DemoPublic);
+
+export type DemosUpdateDemoData = {
+    demoId: string;
+    requestBody: DemoUpdate;
+};
+
+export type DemosUpdateDemoResponse = (DemoPublic);
+
+export type DemosDeleteDemoData = {
+    demoId: string;
+};
+
+export type DemosDeleteDemoResponse = (Message);
+
 export type LoginLoginAccessTokenData = {
     formData: Body_login_login_access_token;
 };
@@ -121,6 +198,16 @@ export type PrivateCreateUserData = {
 };
 
 export type PrivateCreateUserResponse = (UserPublic);
+
+export type SystemTestEmailData = {
+    emailTo: string;
+};
+
+export type SystemTestEmailResponse = (Message);
+
+export type SystemHealthLiveResponse = (boolean);
+
+export type SystemHealthReadyResponse = (boolean);
 
 export type UsersReadUsersData = {
     limit?: number;
@@ -175,11 +262,3 @@ export type UsersDeleteUserData = {
 };
 
 export type UsersDeleteUserResponse = (Message);
-
-export type UtilsTestEmailData = {
-    emailTo: string;
-};
-
-export type UtilsTestEmailResponse = (Message);
-
-export type UtilsHealthCheckResponse = (boolean);
