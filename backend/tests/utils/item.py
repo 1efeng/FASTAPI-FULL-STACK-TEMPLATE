@@ -1,8 +1,8 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.item.model import Item
-from app.modules.item.schema import ItemCreate
-from app.modules.item.service import ItemService
+from app.item.model import Item
+from app.item.schema import ItemCreate
+from app.item.service import ItemService
 from tests.utils.user import create_random_user
 from tests.utils.utils import random_lower_string
 
