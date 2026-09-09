@@ -16,7 +16,8 @@ backend/
 │   ├── common/        # 真正共享且稳定的少量代码
 │   ├── auth/          # 认证业务
 │   ├── user/          # 用户业务
-│   ├── chat/          # Agent 主业务
+│   ├── agent/         # Agent 执行能力
+│   ├── chat/          # Chat HTTP / AI SDK 协议
 │   ├── system/        # health/ops endpoints
 │   ├── integrations/  # 第三方集成
 │   └── main.py
@@ -93,9 +94,9 @@ app/chat/
 
 - `agent/tools.py`: 有 Tool 时
 - `agent/middleware.py`: 有 Tool/Agent 横切治理时
-- `graph.py`: 开始低层 StateGraph orchestration 时
-- `state.py`: Graph state 独立后
-- `runtime.py`: API 已被 checkpoint/thread/resume/stream lifecycle 明显撑大时
+- `agent/graph.py`: 开始低层 StateGraph orchestration 时
+- `agent/state.py`: Graph state 独立后
+- `agent/runtime.py`: Agent lifecycle 已被 checkpoint/thread/resume/stream 明显撑大时
 
 `protocol/` 是协议适配，不是第二套 Runtime。不要另建 `events.py` 再维护平行事件协议。
 

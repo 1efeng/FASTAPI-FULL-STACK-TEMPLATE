@@ -230,8 +230,8 @@ Ch2
 + agent/middleware.py  # Agent 横切治理
 
 Ch3
-+ graph.py
-+ state.py
++ agent/graph.py
++ agent/state.py
 ```
 
 `protocol/` 只解决前后端协议边界，不是 Agent Runtime。进入 Chapter 2/3 后在同一目录扩展 tool / reasoning / approval chunk，不再另建第二套事件协议。
