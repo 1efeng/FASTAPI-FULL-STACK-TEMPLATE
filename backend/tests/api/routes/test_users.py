@@ -7,10 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import verify_password
-from app.modules.item.model import Item
-from app.modules.user.model import User
-from app.modules.user.schema import UserCreate
-from app.modules.user.service import UserService
+from app.item.model import Item
+from app.user.model import User
+from app.user.schema import UserCreate
+from app.user.service import UserService
 from tests.utils.item import create_random_item
 from tests.utils.user import create_random_user
 from tests.utils.utils import random_email, random_lower_string
@@ -46,7 +46,7 @@ async def test_create_user_new_email(
     client: AsyncClient, superuser_token_headers: dict[str, str], db: AsyncSession
 ) -> None:
     with (
-        patch("app.modules.user.api.send_new_account_email", return_value=None),
+        patch("app.user.api.send_new_account_email", return_value=None),
         patch("app.core.config.settings.SMTP_HOST", "smtp.example.com"),
         patch("app.core.config.settings.SMTP_USER", "admin@example.com"),
     ):
