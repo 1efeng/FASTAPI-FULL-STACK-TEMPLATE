@@ -6,6 +6,7 @@ from fastapi.routing import APIRoute
 from starlette.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.exception_handlers import register_exception_handlers
 from app.db import (
     models as _models,  # noqa: F401   # 显式注册所有模型,不依赖 router 链路传递加载
 )
@@ -30,6 +31,9 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     generate_unique_id_function=custom_generate_unique_id,
 )
+
+# Service/domain errors are translated to HTTP responses only at the API boundary.
+register_exception_handlers(app)
 
 # Set all CORS enabled origins
 if settings.all_cors_origins:
