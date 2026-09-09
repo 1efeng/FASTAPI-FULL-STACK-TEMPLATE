@@ -1,7 +1,26 @@
-import type { ChatMessage } from "@/hooks/useChatStream"
+import {
+  getToolName,
+  isToolUIPart,
+  type UIMessage,
+} from "ai"
 
 interface ChatMessagesProps {
-  messages: ChatMessage[]
+  messages: UIMessage[]
+}
+
+function formatToolState(state: string) {
+  switch (state) {
+    case "input-streaming":
+      return "正在准备参数"
+    case "input-available":
+      return "正在执行"
+    case "output-available":
+      return "已完成"
+    case "output-error":
+      return "执行失败"
+    default:
+      return state
+  }
 }
 
 export function ChatMessages({ messages }: ChatMessagesProps) {
@@ -28,7 +47,36 @@ export function ChatMessages({ messages }: ChatMessagesProps) {
           }
           key={message.id}
         >
-          <div className="whitespace-pre-wrap break-words">{message.content}</div>
+          <div className="space-y-3">
+            {message.parts.map((part, index) => {
+              if (part.type === "text") {
+                return (
+                  <div
+                    className="whitespace-pre-wrap break-words"
+                    key={`${message.id}-text-${index}`}
+                  >
+                    {part.text}
+                  </div>
+                )
+              }
+
+              if (isToolUIPart(part)) {
+                return (
+                  <div
+                    className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+                    key={`${message.id}-tool-${index}`}
+                  >
+                    <span className="font-medium text-foreground">
+                      {getToolName(part)}
+                    </span>
+                    <span className="ml-2">{formatToolState(part.state)}</span>
+                  </div>
+                )
+              }
+
+              return null
+            })}
+          </div>
         </article>
       ))}
     </div>
