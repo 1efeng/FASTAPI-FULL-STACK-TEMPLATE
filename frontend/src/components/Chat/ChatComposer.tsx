@@ -1,8 +1,8 @@
+import type { ChatStatus } from "ai"
 import { ArrowUp, Square } from "lucide-react"
 import { useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
-import type { ChatStatus } from "@/hooks/useChatStream"
 
 interface ChatComposerProps {
   onStop: () => void
