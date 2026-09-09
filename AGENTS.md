@@ -41,7 +41,7 @@
 - unknown outcome handling
 - reconciliation
 - audit
-- LangGraph → AI SDK UI stream adaptation
+- AI SDK UI protocol adaptation
 - product-specific business rules
 
 不要因为课程中存在手写实现，就同时维护“课程 Runtime + LangGraph Runtime”两套实现。
@@ -217,7 +217,10 @@ chat/
 ├── api.py
 ├── schema.py
 ├── agent.py
-├── events.py
+├── protocol/
+│   ├── __init__.py
+│   ├── messages.py   # AI SDK UIMessage[] → LangChain messages
+│   └── stream.py     # LangChain stream → AI SDK UI Message Stream
 └── skills/
 
 Ch2
@@ -228,6 +231,8 @@ Ch3
 + graph.py
 + state.py
 ```
+
+`protocol/` 只解决前后端协议边界，不是 Agent Runtime。进入 Chapter 2/3 后在同一目录扩展 tool / reasoning / approval chunk，不再另建第二套事件协议。
 
 Tool 数量明显增长后，`tools.py` 才拆成 `tools/`。
 
@@ -310,6 +315,18 @@ HTTP POST + SSE
 FastAPI
 ```
 
+前端保持 AI SDK 原生请求形状，发送 `UIMessage[]`；不要为了 Python 后端在 React 中额外压缩成自定义 `message + thread_id` 协议。
+
+后端协议边界固定在：
+
+```text
+chat/protocol/messages.py
+AI SDK UIMessage[] → LangChain messages
+
+chat/protocol/stream.py
+LangChain/LangGraph output → AI SDK UI Message Stream
+```
+
 网络协议使用 **AI SDK UI Message Stream**，后端响应必须遵循当前 AI SDK 协议，例如：
 
 - `Content-Type: text/event-stream`
@@ -323,12 +340,12 @@ FastAPI
 
 AI SDK 只承担 **Frontend Chat Protocol / UI abstraction**，不得成为第二套 Agent Runtime。后端仍然只有 FastAPI + LangChain/LangGraph。
 
-前端不得直接依赖 LangChain/LangGraph 原始 stream chunk。FastAPI 在边界处把 LangGraph stream 转换为 AI SDK UI message chunks：
+前端不得直接依赖 LangChain/LangGraph 原始 stream chunk：
 
 ```text
-LangGraph internal stream
+LangChain / LangGraph internal stream
   ↓
-FastAPI chat adapter
+chat/protocol/
   ↓
 AI SDK UI Message Stream
   ↓
