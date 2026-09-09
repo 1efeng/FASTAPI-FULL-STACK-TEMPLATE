@@ -4,13 +4,13 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.auth.service import AuthService
-from app.modules.item.schema import ItemCreate
-from app.modules.item.service import ItemService
-from app.modules.user.model import User
-from app.modules.user.schema import UserCreate, UserUpdate, UserUpdateMe
-from app.modules.user.service import UserService
-from app.utils.email import generate_password_reset_token
+from app.auth.service import AuthService
+from app.infra.email import generate_password_reset_token
+from app.item.schema import ItemCreate
+from app.item.service import ItemService
+from app.user.model import User
+from app.user.schema import UserCreate, UserUpdate, UserUpdateMe
+from app.user.service import UserService
 from tests.utils.utils import random_email, random_lower_string
 
 
