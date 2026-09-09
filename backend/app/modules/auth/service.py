@@ -1,10 +1,10 @@
 import uuid
 from datetime import timedelta
 
-from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.exceptions import InvalidRequestError
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.modules.user.model import User
 from app.modules.user.repository import UserRepository
@@ -57,13 +57,13 @@ class AuthService:
     async def reset_password(self, token: str, new_password: str) -> None:
         email = verify_password_reset_token(token=token)
         if not email:
-            raise HTTPException(status_code=400, detail="Invalid token")
+            raise InvalidRequestError("Invalid token")
         user = await self.user_repo.get_by_email(email)
         if not user:
             # Don't reveal that the user doesn't exist - use same error as invalid token
-            raise HTTPException(status_code=400, detail="Invalid token")
-        elif not user.is_active:
-            raise HTTPException(status_code=400, detail="Inactive user")
+            raise InvalidRequestError("Invalid token")
+        if not user.is_active:
+            raise InvalidRequestError("Inactive user")
         user.hashed_password = get_password_hash(new_password)
         self.db.add(user)
         await self.db.commit()
