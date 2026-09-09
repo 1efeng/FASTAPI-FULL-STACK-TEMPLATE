@@ -8,8 +8,8 @@
 
 - Backend: Python + FastAPI + SQLAlchemy 2 Async + PostgreSQL
 - Agent: LangChain + LangGraph
-- Frontend: React + TypeScript + TanStack Router/Query
-- Transport: REST + SSE streaming
+- Frontend: React + TypeScript + TanStack Router/Query + Vercel AI SDK UI
+- Transport: REST + AI SDK UI Message Stream over SSE
 
 第一阶段只做一个可运行、可演示的 Chat Agent，`travel-planning` 作为首个业务 Skill。不要把旅行场景扩展成复杂旅游 SaaS。
 
@@ -41,7 +41,7 @@
 - unknown outcome handling
 - reconciliation
 - audit
-- stable frontend event protocol
+- LangGraph → AI SDK UI stream adaptation
 - product-specific business rules
 
 不要因为课程中存在手写实现，就同时维护“课程 Runtime + LangGraph Runtime”两套实现。
@@ -294,27 +294,50 @@ Repository 不负责 commit；业务 service / transaction boundary 决定 commi
 
 ---
 
-## SSE / 前后端协议
+## 前后端 Chat 协议
 
 普通 REST 继续使用 OpenAPI generated client。
 
-Agent streaming 使用独立 `fetch + ReadableStream/SSE` 适配，不强行塞进 generated REST client。
-
-前端不得直接依赖 LangChain/LangGraph 原始 stream chunk。
-
-后端转换为稳定应用事件，例如：
+Agent Chat 前端统一使用：
 
 ```text
-run.started
-message.delta
-tool.started
-tool.completed
-approval.required
-run.completed
-run.failed
+@ai-sdk/react useChat
+  ↓
+DefaultChatTransport
+  ↓
+HTTP POST + SSE
+  ↓
+FastAPI
 ```
 
-事件名可以随真实需求调整，但必须保持“框架事件 → 应用协议 → 前端”的隔离。
+网络协议使用 **AI SDK UI Message Stream**，后端响应必须遵循当前 AI SDK 协议，例如：
+
+- `Content-Type: text/event-stream`
+- `x-vercel-ai-ui-message-stream: v1`
+- SSE `data: {JSON}\n\n`
+- 最后 `data: [DONE]\n\n`
+
+文本流遵循 `text-start → text-delta → text-end`，同一文本 part 使用稳定 id。
+
+前端使用 AI SDK 的 `UIMessage` / message parts / `ChatStatus`，不要再维护一套自研 `ChatMessage + useChatStream + SSE parser` 状态机。
+
+AI SDK 只承担 **Frontend Chat Protocol / UI abstraction**，不得成为第二套 Agent Runtime。后端仍然只有 FastAPI + LangChain/LangGraph。
+
+前端不得直接依赖 LangChain/LangGraph 原始 stream chunk。FastAPI 在边界处把 LangGraph stream 转换为 AI SDK UI message chunks：
+
+```text
+LangGraph internal stream
+  ↓
+FastAPI chat adapter
+  ↓
+AI SDK UI Message Stream
+  ↓
+useChat / UIMessage
+  ↓
+React UI
+```
+
+业务特有的 activity、progress、approval 等信息优先通过 AI SDK typed `data-*` parts 或标准 tool/approval parts 表达，不另造平行事件协议。
 
 ---
 
@@ -339,7 +362,7 @@ run.failed
 
 ## 官方 API 与文档
 
-LangChain / LangGraph API 变化较快。
+LangChain / LangGraph / Vercel AI SDK API 变化较快。
 
 实现新能力前必须优先检查 **当前官方文档和当前安装版本**，不要仅凭旧课程、旧示例或模型记忆猜 API。
 
