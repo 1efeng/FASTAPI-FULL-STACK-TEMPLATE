@@ -62,30 +62,46 @@ backend/
 
 ## Chat / Agent
 
-优先保持 feature-local：
+Chapter 1 当前结构固定为：
 
 ```text
 app/chat/
 ├── api.py
 ├── schema.py
 ├── agent.py
+├── protocol/
+│   ├── __init__.py
+│   ├── messages.py
+│   └── stream.py
 └── skills/
 ```
 
-文件只在真实需求出现时新增：
+职责：
 
-- `events.py`: 真正开始做 LangGraph → AI SDK UI stream adaptation 时
+- `api.py`: FastAPI/auth/StreamingResponse
+- `schema.py`: AI SDK transport request boundary
+- `agent.py`: LangChain ChatModel + server-owned system instructions
+- `protocol/messages.py`: AI SDK `UIMessage[]` → LangChain messages
+- `protocol/stream.py`: LangChain/LangGraph output → AI SDK UI Message Stream
+- `skills/`: 产品运行时 Skill
+
+后续文件只在真实需求出现时新增：
+
 - `tools.py`: 有 Tool 时
 - `middleware.py`: 有 Tool/Agent 横切治理时
 - `graph.py`: 开始低层 StateGraph orchestration 时
 - `state.py`: Graph state 独立后
 - `runtime.py`: API 已被 checkpoint/thread/resume/stream lifecycle 明显撑大时
 
+`protocol/` 是协议适配，不是第二套 Runtime。不要另建 `events.py` 再维护平行事件协议。
+
 不要创建空目录或占位抽象预测未来复杂度。
 
 ## Chat Streaming Protocol
 
-前端使用 Vercel AI SDK `useChat + DefaultChatTransport`，因此 `/chat/stream` 返回 **AI SDK UI Message Stream**，而不是应用自定义 SSE event names。
+前端使用 Vercel AI SDK `useChat + DefaultChatTransport`。请求保持 AI SDK 原生 `UIMessage[]`，后端在 `protocol/messages.py` 转为 LangChain messages。
+
+`/chat/stream` 返回 **AI SDK UI Message Stream**，而不是应用自定义 SSE event names。
 
 响应至少遵循当前 AI SDK wire contract：
 
@@ -94,14 +110,20 @@ Content-Type: text/event-stream
 x-vercel-ai-ui-message-stream: v1
 ```
 
-SSE frame：
+文本 SSE frame：
 
 ```text
+data: {"type":"start"}
+
+data: {"type":"start-step"}
+
 data: {"type":"text-start","id":"..."}
 
 data: {"type":"text-delta","id":"...","delta":"..."}
 
 data: {"type":"text-end","id":"..."}
+
+data: {"type":"finish-step"}
 
 data: {"type":"finish"}
 
@@ -114,16 +136,16 @@ data: [DONE]
 LangChain/LangGraph 原始 chunk 不直接透传给浏览器。边界必须是：
 
 ```text
-LangGraph stream
+LangChain / LangGraph stream
   ↓
-chat adapter
+chat/protocol/
   ↓
 AI SDK UIMessageChunk
   ↓
 SSE
 ```
 
-Tool、Approval、Reasoning、Sources 等优先转换成 AI SDK 已定义的 part；产品特有 progress/activity 使用 typed `data-*` part，不再维护平行 `run.started/message.delta/tool.started` 协议。
+Chapter 1 只实现完整文本 Chat subset。Tool、Approval、Reasoning、Sources 等在对应章节出现时，再在同一个 `protocol/` 目录扩展 AI SDK 已定义的 part；产品特有 progress/activity 使用 typed `data-*` part，不再维护平行 `run.started/message.delta/tool.started` 协议。
 
 AI SDK 仅是前后端 Chat UI 协议，不参与后端 Agent Runtime。
 
@@ -168,10 +190,10 @@ mypy app
 
 新增 Agent 能力时优先补：
 
+- protocol contract tests
 - unit tests for policy/business boundaries
-- AI SDK UI message stream contract tests
 - tool side-effect/idempotency tests
 - interrupt/resume tests
 - recovery tests
 
-不要依赖真实付费模型才能跑完核心测试；为模型调用提供测试 fake/mock。
+不要依赖真实付费模型才能跑完核心测试；模型调用使用 fake/mock。
