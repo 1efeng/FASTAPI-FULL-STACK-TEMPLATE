@@ -1,14 +1,9 @@
 import uuid
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import (
-    ConflictError,
-    InvalidRequestError,
-    PermissionDeniedError,
-    ResourceNotFoundError,
-)
 from app.modules.auth.service import AuthService
 from app.modules.item.schema import ItemCreate
 from app.modules.item.service import ItemService
@@ -34,72 +29,89 @@ async def _create_user(
     return user, password
 
 
-async def test_item_service_raises_application_errors(db: AsyncSession) -> None:
+async def test_item_service_http_errors(db: AsyncSession) -> None:
     owner, _ = await _create_user(db)
     other_user, _ = await _create_user(db)
     service = ItemService(db)
 
-    with pytest.raises(ResourceNotFoundError, match="Item not found"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.get_item_by_id(uuid.uuid4(), owner)
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Item not found"
 
     item = await service.create_item(ItemCreate(title="private item"), owner.id)
 
-    with pytest.raises(PermissionDeniedError, match="Not enough permissions"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.get_item_by_id(item.id, other_user)
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Not enough permissions"
 
 
-async def test_user_service_raises_application_errors(db: AsyncSession) -> None:
+async def test_user_service_http_errors(db: AsyncSession) -> None:
     service = UserService(db)
     user, password = await _create_user(db)
     other_user, _ = await _create_user(db)
     superuser, _ = await _create_user(db, is_superuser=True)
 
-    with pytest.raises(ConflictError, match="already exists"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.create_user(UserCreate(email=user.email, password=random_lower_string()))
+    assert exc_info.value.status_code == 409
 
-    with pytest.raises(PermissionDeniedError, match="enough privileges"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.get_user_by_id(uuid.uuid4(), user)
+    assert exc_info.value.status_code == 403
 
-    with pytest.raises(ResourceNotFoundError, match="User not found"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.get_user_by_id(uuid.uuid4(), superuser)
+    assert exc_info.value.status_code == 404
 
-    with pytest.raises(ResourceNotFoundError, match="does not exist"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.update_user_by_id(uuid.uuid4(), UserUpdate(full_name="missing"))
+    assert exc_info.value.status_code == 404
 
-    with pytest.raises(ResourceNotFoundError, match="User not found"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.delete_user_by_id(uuid.uuid4(), superuser)
+    assert exc_info.value.status_code == 404
 
-    with pytest.raises(PermissionDeniedError, match="delete themselves"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.delete_user_by_id(superuser.id, superuser)
+    assert exc_info.value.status_code == 403
 
-    with pytest.raises(ConflictError, match="already exists"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.update_user(user, UserUpdate(email=other_user.email))
+    assert exc_info.value.status_code == 409
 
-    with pytest.raises(ConflictError, match="already exists"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.update_user_me(user, UserUpdateMe(email=other_user.email))
+    assert exc_info.value.status_code == 409
 
-    with pytest.raises(InvalidRequestError, match="Incorrect password"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.update_password_me(user, random_lower_string(), random_lower_string())
+    assert exc_info.value.status_code == 400
 
-    with pytest.raises(InvalidRequestError, match="cannot be the same"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.update_password_me(user, password, password)
+    assert exc_info.value.status_code == 400
 
 
-async def test_auth_service_raises_application_errors(db: AsyncSession) -> None:
+async def test_auth_service_http_errors(db: AsyncSession) -> None:
     service = AuthService(db)
 
-    with pytest.raises(InvalidRequestError, match="Invalid token"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.reset_password("invalid-token", random_lower_string())
+    assert exc_info.value.status_code == 400
 
     missing_email = random_email()
     missing_token = generate_password_reset_token(missing_email)
-    with pytest.raises(InvalidRequestError, match="Invalid token"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.reset_password(missing_token, random_lower_string())
+    assert exc_info.value.status_code == 400
 
     inactive_user, _ = await _create_user(db, is_active=False)
     inactive_token = generate_password_reset_token(inactive_user.email)
-    with pytest.raises(InvalidRequestError, match="Inactive user"):
+    with pytest.raises(HTTPException) as exc_info:
         await service.reset_password(inactive_token, random_lower_string())
+    assert exc_info.value.status_code == 400
 
 
 async def test_service_query_and_recovery_paths(db: AsyncSession) -> None:

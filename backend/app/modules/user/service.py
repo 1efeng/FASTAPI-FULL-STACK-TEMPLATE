@@ -2,16 +2,11 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import (
-    ConflictError,
-    InvalidRequestError,
-    PermissionDeniedError,
-    ResourceNotFoundError,
-)
 from app.core.security import get_password_hash, verify_password
 from app.modules.user.model import User
 from app.modules.user.repository import UserRepository
@@ -33,7 +28,9 @@ class UserService:
         except IntegrityError as exc:
             await self.db.rollback()
             if "email" in str(exc).lower():
-                raise ConflictError("User with this email already exists") from exc
+                raise HTTPException(
+                    status_code=409, detail="User with this email already exists"
+                ) from exc
             raise
 
     async def list_users(self, skip: int, limit: int) -> tuple[list[User], int]:
@@ -50,26 +47,31 @@ class UserService:
         if user is not None and user == current_user:
             return user
         if not current_user.is_superuser:
-            raise PermissionDeniedError("The user doesn't have enough privileges")
+            raise HTTPException(
+                status_code=403,
+                detail="The user doesn't have enough privileges",
+            )
         if user is None:
-            raise ResourceNotFoundError("User not found")
+            raise HTTPException(status_code=404, detail="User not found")
         return user
 
     async def update_user_by_id(self, user_id: uuid.UUID, user_in: UserUpdate) -> User:
         db_user = await self.repo.get_by_id(user_id)
         if not db_user:
-            raise ResourceNotFoundError(
-                "The user with this id does not exist in the system"
+            raise HTTPException(
+                status_code=404,
+                detail="The user with this id does not exist in the system",
             )
         return await self.update_user(db_user, user_in)
 
     async def delete_user_by_id(self, user_id: uuid.UUID, current_user: User) -> None:
         user = await self.repo.get_by_id(user_id)
         if not user:
-            raise ResourceNotFoundError("User not found")
+            raise HTTPException(status_code=404, detail="User not found")
         if user == current_user:
-            raise PermissionDeniedError(
-                "Super users are not allowed to delete themselves"
+            raise HTTPException(
+                status_code=403,
+                detail="Super users are not allowed to delete themselves",
             )
         await self.delete_user(user)
 
@@ -77,7 +79,9 @@ class UserService:
         email = user_create.email.casefold()
         existing = await self.repo.get_by_email(email)
         if existing:
-            raise ConflictError("User with this email already exists")
+            raise HTTPException(
+                status_code=409, detail="User with this email already exists"
+            )
         user = User(
             email=email,
             is_active=user_create.is_active,
@@ -92,7 +96,9 @@ class UserService:
         if email:
             existing_user = await self.repo.get_by_email(email)
             if existing_user and existing_user.id != db_user.id:
-                raise ConflictError("User with this email already exists")
+                raise HTTPException(
+                    status_code=409, detail="User with this email already exists"
+                )
         user_data = user_in.model_dump(exclude_unset=True, exclude={"password"})
         if email:
             user_data["email"] = email
@@ -107,7 +113,9 @@ class UserService:
         if email:
             existing_user = await self.repo.get_by_email(email)
             if existing_user and existing_user.id != current_user.id:
-                raise ConflictError("User with this email already exists")
+                raise HTTPException(
+                    status_code=409, detail="User with this email already exists"
+                )
         user_data = user_in.model_dump(exclude_unset=True)
         if email:
             user_data["email"] = email
@@ -120,10 +128,11 @@ class UserService:
     ) -> None:
         verified, _ = verify_password(current_password, current_user.hashed_password)
         if not verified:
-            raise InvalidRequestError("Incorrect password")
+            raise HTTPException(status_code=400, detail="Incorrect password")
         if current_password == new_password:
-            raise InvalidRequestError(
-                "New password cannot be the same as the current one"
+            raise HTTPException(
+                status_code=400,
+                detail="New password cannot be the same as the current one",
             )
         current_user.hashed_password = get_password_hash(new_password)
         await self.repo.update(current_user)
