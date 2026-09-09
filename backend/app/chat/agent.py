@@ -28,19 +28,16 @@ def system_message() -> SystemMessage:
 def get_chat_model() -> BaseChatModel:
     """Create the LangChain ChatModel used by Chapter 1.
 
-    `ChatOpenAI` is used as the provider adapter because the configured endpoint
-    may be any OpenAI-compatible API. LangChain remains the application-facing
-    model abstraction.
+    `ChatOpenAI` is the provider adapter because the configured endpoint may be
+    any OpenAI-compatible API. LangChain remains the application-facing model
+    abstraction.
     """
     if settings.LLM_API_KEY is None:
         raise RuntimeError("LLM_API_KEY is not configured")
 
-    kwargs: dict[str, object] = {
-        "model": settings.LLM_MODEL,
-        "api_key": settings.LLM_API_KEY.get_secret_value(),
-        "streaming": True,
-    }
-    if settings.LLM_BASE_URL:
-        kwargs["base_url"] = settings.LLM_BASE_URL
-
-    return ChatOpenAI(**kwargs)
+    return ChatOpenAI(
+        model=settings.LLM_MODEL,
+        api_key=settings.LLM_API_KEY.get_secret_value(),
+        base_url=settings.LLM_BASE_URL,
+        streaming=True,
+    )
