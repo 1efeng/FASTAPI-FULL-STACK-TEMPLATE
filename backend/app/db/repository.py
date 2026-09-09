@@ -6,7 +6,7 @@ from app.db.base import Base
 
 
 class BaseRepository[ModelType: Base]:
-    """通用仓储，只负责低层数据访问，不提交事务。"""
+    """SQLAlchemy 通用仓储，只负责低层数据访问，不提交事务。"""
 
     def __init__(self, model: type[ModelType], db: AsyncSession):
         self.model = model

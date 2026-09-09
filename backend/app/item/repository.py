@@ -2,7 +2,7 @@ import uuid
 
 from sqlalchemy import func, select
 
-from app.common.repository import BaseRepository
+from app.db.repository import BaseRepository
 from app.item.model import Item
 
 
