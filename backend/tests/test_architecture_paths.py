@@ -17,4 +17,4 @@ def test_legacy_import_paths_are_gone() -> None:
             if any(legacy_import in content for legacy_import in forbidden_imports):
                 offenders.append(str(path))
 
-    assert not offenders, f"Legacy import paths remain in: {offenders}"
+    assert not offenders, f"Legacy import paths remain in: {sorted(offenders)}"
