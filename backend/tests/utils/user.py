@@ -2,9 +2,9 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.modules.user.model import User
-from app.modules.user.schema import UserCreate, UserUpdate
-from app.modules.user.service import UserService
+from app.user.model import User
+from app.user.schema import UserCreate, UserUpdate
+from app.user.service import UserService
 from tests.utils.utils import random_email, random_lower_string
 
 
