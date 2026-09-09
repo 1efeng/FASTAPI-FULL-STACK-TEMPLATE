@@ -9,6 +9,7 @@ from pydantic import (
     EmailStr,
     HttpUrl,
     PostgresDsn,
+    SecretStr,
     computed_field,
     model_validator,
 )
@@ -52,6 +53,13 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str
     SENTRY_DSN: HttpUrl | None = None
+
+    # LangChain ChatModel. `LLM_BASE_URL` keeps the integration compatible with
+    # OpenAI-compatible providers while LangChain remains the model abstraction.
+    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_API_KEY: SecretStr | None = None
+    LLM_BASE_URL: str | None = None
+
     POSTGRES_SERVER: str
     POSTGRES_PORT: int = 5432
     POSTGRES_USER: str
@@ -113,7 +121,7 @@ class Settings(BaseSettings):
     def _check_default_secret(self, var_name: str, value: str | None) -> None:
         if value == "changethis":
             message = (
-                f'The value of {var_name} is "changethis", '
+                f'The value for {var_name} is "changethis", '
                 "for security, please change it, at least for deployments."
             )
             if self.ENVIRONMENT == "local":
