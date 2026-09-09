@@ -8,16 +8,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.infra.database import AsyncSessionLocal, engine
-from app.item.model import Item
-from app.main import app
-from app.user.model import User
-from app.user.schema import UserCreate
-from app.user.service import UserService
-from tests.utils.user import authentication_token_from_email
-from tests.utils.utils import get_superuser_token_headers
-
 
 def _install_legacy_test_imports() -> None:
     """Keep existing tests working while they migrate off the old app.modules paths."""
@@ -50,6 +40,16 @@ def _install_legacy_test_imports() -> None:
 
 
 _install_legacy_test_imports()
+
+from app.core.config import settings  # noqa: E402
+from app.infra.database import AsyncSessionLocal, engine  # noqa: E402
+from app.item.model import Item  # noqa: E402
+from app.main import app  # noqa: E402
+from app.user.model import User  # noqa: E402
+from app.user.schema import UserCreate  # noqa: E402
+from app.user.service import UserService  # noqa: E402
+from tests.utils.user import authentication_token_from_email  # noqa: E402
+from tests.utils.utils import get_superuser_token_headers  # noqa: E402
 
 
 @pytest.fixture(scope="function", autouse=True)
