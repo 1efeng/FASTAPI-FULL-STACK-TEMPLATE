@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
@@ -48,6 +50,18 @@ class AgentExecutionResult:
     reasoning_summary: str | None = None
     source_urls: tuple[str, ...] = ()
     usage: AgentUsage = field(default_factory=AgentUsage)
+    observation: AgentRunObservation | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunObservation:
+    """Bounded run-level observability summary persisted by Product Runtime."""
+
+    context_chars: int
+    output_chars: int
+    source_url_count: int
+    elapsed_ms: int
+    tool_names: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

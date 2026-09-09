@@ -122,6 +122,31 @@ class RequestRun(BaseModel):
         default=None,
         comment="请求是否开启模型 thinking",
     )
+    context_chars: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="本次 Agent 运行观测到的上下文字符数（不含原文）",
+    )
+    output_chars: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="最终模型输出字符数",
+    )
+    source_url_count: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="本次运行产生的来源 URL 数量",
+    )
+    elapsed_ms: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=None,
+        comment="Agent 运行耗时（毫秒）",
+    )
+    tool_names: Mapped[str | None] = mapped_column(
+        String(1024),
+        default=None,
+        comment="本次运行调用过的工具名，逗号分隔",
+    )
 
     __table_args__ = (
         CheckConstraint(

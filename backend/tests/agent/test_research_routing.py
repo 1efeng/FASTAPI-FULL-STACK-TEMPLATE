@@ -1,321 +1,48 @@
-"""User-level routing contracts for Candidate Plan First research behavior."""
+"""Routing contracts for native web-search capability ownership."""
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic_ai import Agent
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    TextPart,
-    ToolCallPart,
-    ToolReturnPart,
-)
+from pydantic_ai.capabilities import Capability
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from app.agent.capabilities.travel import build_travel_capabilities
 
 
-def _tool_calls(messages: list[ModelMessage], name: str) -> int:
-    return sum(
-        1
-        for message in messages
-        for part in message.parts
-        if isinstance(part, ToolCallPart) and part.tool_name == name
+def _available_tools() -> set[str]:
+    capabilities = build_travel_capabilities()
+    main = next(
+        capability
+        for capability in capabilities
+        if isinstance(capability, Capability) and capability.id == "travel-main-tools"
     )
+    return {tool.name for tool in main.tools}
 
 
-def _tool_returns(messages: list[ModelMessage], name: str) -> list[ToolReturnPart]:
-    return [
-        part
-        for message in messages
-        if isinstance(message, ModelRequest)
-        for part in message.parts
-        if isinstance(part, ToolReturnPart) and part.tool_name == name
-    ]
+def test_main_does_not_expose_custom_web_tools_or_legacy_agents() -> None:
+    tools = _available_tools()
+
+    assert "web_search" not in tools
+    assert "web_fetch" not in tools
+    assert "research_agent" not in tools
+    assert "search_web" not in tools
+    assert "tavily_search" not in tools
+    assert "tavily_extract" not in tools
+    assert "run_workflow" not in tools
 
 
-def _structured_output(info: AgentInfo, payload: dict[str, Any]) -> ModelResponse:
-    assert info.output_tools
-    return ModelResponse(
-        parts=[
-            ToolCallPart(
-                tool_name=info.output_tools[0].name,
-                args=payload,
-                tool_call_id="research-final",
-            )
-        ]
-    )
-
-
-def _research_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-    """Model the bounded child stages without executing external tools."""
-    del messages
-    return _structured_output(
-        info,
-        {
-            "topic": "JR Pass 方案比较",
-            "summary": "本 routing contract 只验证 Main→research_agent 编排。",
-            "sources": [],
-            "media": [],
-        },
-    )
-
-
-def _direct_agent(answer: str) -> tuple[Agent[object, str], list[ModelMessage]]:
-    seen: list[ModelMessage] = []
-
-    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        seen[:] = messages
-        return ModelResponse(parts=[TextPart(answer)])
-
-    return (
-        Agent(
-            FunctionModel(model),
-            capabilities=build_travel_capabilities(
-                research_model=FunctionModel(_research_model)
-            ),
-        ),
-        seen,
-    )
-
-
-async def test_casual_request_does_not_call_research_agent() -> None:
-    agent, seen = _direct_agent("你好！")
-    result = await agent.run("你好")
-    assert result.output == "你好！"
-    assert _tool_calls(seen, "research_agent") == 0
-
-
-async def test_rough_plan_does_not_call_research_agent() -> None:
-    agent, seen = _direct_agent("东京三日游框架")
-    result = await agent.run("先给我东京三日游框架，不用查最新")
-    assert "东京三日游" in result.output
-    assert _tool_calls(seen, "research_agent") == 0
-
-
-async def test_structured_current_fact_keeps_research_agent_unused() -> None:
-    available_tools: set[str] = set()
+async def test_casual_request_has_no_custom_web_tool_calls() -> None:
+    observed: set[str] = set()
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         del messages
-        available_tools.update(tool.name for tool in info.function_tools)
-        return ModelResponse(parts=[TextPart("天气等结构化事实由 Main 直接查询")])
+        observed.update(tool.name for tool in info.function_tools)
+        return ModelResponse(parts=[TextPart("你好！")])
 
-    agent = Agent(
-        FunctionModel(model),
-        capabilities=build_travel_capabilities(
-            research_model=FunctionModel(_research_model)
-        ),
-    )
-    result = await agent.run("核对某日天气与一条市内路线")
-    assert result.output
-    assert "search_poi" in available_tools
-    assert "get_poi_detail" in available_tools
-    assert "search_nearby" in available_tools
-    assert "search_maps" in available_tools
-    assert "get_weather" in available_tools
-    assert "research_agent" in available_tools
-    # Raw web content is exclusive to research_agent; Main never holds it.
-    assert "search_web" not in available_tools
-    assert "web_fetch" not in available_tools
-    assert "run_workflow" not in available_tools
+    agent = Agent(FunctionModel(model), capabilities=build_travel_capabilities())
+    result = await agent.run("你好")
 
-
-async def test_normal_full_plan_can_finish_without_research_agent() -> None:
-    agent, seen = _direct_agent("Candidate Plan → 少量事实搜索 → Final Plan")
-    result = await agent.run("东京三日游，按正常节奏规划")
-    assert "Final Plan" in result.output
-    assert _tool_calls(seen, "research_agent") == 0
-
-
-async def test_predetermined_parallel_structured_facts_do_not_require_research_agent() -> (
-    None
-):
-    """Multiple predetermined structured facts stay on Main Direct tools."""
-
-    seen: list[ModelMessage] = []
-
-    def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        seen[:] = messages
-        return ModelResponse(
-            parts=[TextPart("Main 用并行工具查询三个结构化事实并完成计划")]
-        )
-
-    agent = Agent(
-        FunctionModel(main_model),
-        capabilities=build_travel_capabilities(
-            research_model=FunctionModel(_research_model)
-        ),
-    )
-    result = await agent.run(
-        "查询故宫坐标、天坛到颐和园路线、8月27日北京天气三个独立事实后给我完整计划"
-    )
-
-    assert "并行工具查询三个结构化事实" in result.output
-    assert _tool_calls(seen, "research_agent") == 0
-
-
-async def test_bounded_context_heavy_pass_comparison_uses_research_agent() -> None:
-    """A bounded context-heavy Pass comparison delegates once to research_agent.
-
-    Main has already defined the Research boundary (one clear objective), so the
-    child is responsible for one bounded context batch plus compression.
-    """
-
-    seen: list[ModelMessage] = []
-
-    def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        seen[:] = messages
-        returns = _tool_returns(messages, "research_agent")
-        if returns:
-            return ModelResponse(parts=[TextPart("Main 最终选择区域 Pass + 单买组合")])
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name="research_agent",
-                    args={
-                        "title": "JR Pass 与区域 Pass 比较",
-                        "objective": (
-                            "结合东京、箱根、京都、大阪、广岛 10 日路线，"
-                            "比较全国 JR Pass、区域 Pass 与单买组合，判断哪种更适合。"
-                        ),
-                        "context": "10 日路线：东京→箱根→京都→大阪→广岛",
-                        "constraints": ["2 名成人"],
-                    },
-                    tool_call_id="research-pass",
-                )
-            ]
-        )
-
-    agent = Agent(
-        FunctionModel(main_model),
-        capabilities=build_travel_capabilities(
-            research_model=FunctionModel(_research_model)
-        ),
-    )
-    result = await agent.run("比较这条路线下全国 JR Pass 与区域 Pass 哪个更划算")
-    assert result.output == "Main 最终选择区域 Pass + 单买组合"
-    assert _tool_calls(seen, "research_agent") == 1
-    assert len(_tool_returns(seen, "research_agent")) == 1
-
-
-async def test_path_dependency_research_a_creates_research_b() -> None:
-    """Path dependence belongs to Main orchestration, not child Search-again.
-
-    Research A compares JR Pass coverage; Main reads the Findings, discovers a new
-    Reality Gap, and only then delegates Research B for the Kansai regional Pass.
-    """
-
-    seen: list[ModelMessage] = []
-
-    def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        seen[:] = messages
-        returns = _tool_returns(messages, "research_agent")
-        if not returns:
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="research_agent",
-                        args={
-                            "title": "全国 JR Pass 适用性",
-                            "objective": "比较全国 JR Pass 与当前已知 Pass 对完整路线的适用性",
-                            "context": "10 日路线：东京→箱根→京都→大阪→广岛",
-                            "constraints": [],
-                        },
-                        tool_call_id="research-a",
-                    )
-                ]
-            )
-        if len(returns) == 1:
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="research_agent",
-                        args={
-                            "title": "关西段区域 Pass",
-                            "objective": "研究关西段是否有更合适的区域 Pass",
-                            "context": "Research A Findings 显示关西段覆盖不理想",
-                            "constraints": [],
-                        },
-                        tool_call_id="research-b",
-                    )
-                ]
-            )
-        return ModelResponse(parts=[TextPart("Main 根据两阶段 Findings 完成方案")])
-
-    agent = Agent(
-        FunctionModel(main_model),
-        capabilities=build_travel_capabilities(
-            research_model=FunctionModel(_research_model)
-        ),
-    )
-    result = await agent.run("全国 JR Pass 覆盖不理想时，研究关西段替代 Pass")
-    assert "两阶段 Findings" in result.output
-    assert _tool_calls(seen, "research_agent") == 2
-    assert len(_tool_returns(seen, "research_agent")) == 2
-
-
-async def test_existing_plan_modification_does_not_auto_research() -> None:
-    agent, seen = _direct_agent("已把 Day 2 / Day 3 对调并保持其他安排")
-    result = await agent.run("把 Day 2 / Day 3 对调")
-    assert "对调" in result.output
-    assert _tool_calls(seen, "research_agent") == 0
-
-
-async def test_couples_beijing_plan_uses_candidate_plan_first_flow() -> None:
-    """User -> Candidate Plan -> Research Topic -> Search -> Final Plan.
-
-    The golden input (情侣第一次北京3日游，5000预算) must NOT route directly to
-    search: Main first states the Candidate Plan, then delegates a bounded
-    decision-oriented Research Topic, then revises the plan. The child search
-    happens only inside research_agent, whose trajectory stays out of Main context.
-    """
-
-    seen: list[ModelMessage] = []
-
-    def main_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        del info
-        seen[:] = messages
-        returns = _tool_returns(messages, "research_agent")
-        if returns:
-            return ModelResponse(
-                parts=[TextPart("Main 已根据搜索结果修正并输出最终 3 日情侣北京行程")]
-            )
-        return ModelResponse(
-            parts=[
-                TextPart(
-                    "Candidate Plan：D1 天安门/故宫/景山，D2 八达岭，D3 南锣鼓巷/后海，节奏轻松。"
-                ),
-                ToolCallPart(
-                    tool_name="research_agent",
-                    args={
-                        "title": "北京 3 日行程执行条件",
-                        "objective": "收集 D1 故宫与 D2 八达岭在指定日期的开放、预约与返程衔接背景",
-                        "context": "3 日情侣北京行程 Candidate Plan，预算 5000 元",
-                        "constraints": ["2 名成人", "轻松节奏"],
-                    },
-                    tool_call_id="research-beijing",
-                ),
-            ]
-        )
-
-    agent = Agent(
-        FunctionModel(main_model),
-        capabilities=build_travel_capabilities(
-            research_model=FunctionModel(_research_model)
-        ),
-    )
-    result = await agent.run("情侣第一次北京3日游，5000预算")
-    assert "最终 3 日情侣北京行程" in result.output
-    # Exactly one bounded Research Topic delegated; child search stays isolated.
-    assert _tool_calls(seen, "research_agent") == 1
-    assert len(_tool_returns(seen, "research_agent")) == 1
-    # Main never issues a raw web_search tool call directly (no search-first).
-    assert _tool_calls(seen, "search_web") == 0
+    assert result.output == "你好！"
+    assert "web_search" not in observed
+    assert "web_fetch" not in observed

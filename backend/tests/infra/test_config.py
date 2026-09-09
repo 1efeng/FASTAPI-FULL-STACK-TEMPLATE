@@ -15,6 +15,7 @@ def _settings(**overrides: object) -> Settings:
         "FIRST_SUPERUSER_PASSWORD": "safe-superuser-password",
         "SECRET_KEY": "safe-secret-key",
         "LITELLM_SERVICE_KEY": "sk-test",
+        "TAVILY_API_KEY": "tvly-test",
     }
     values.update(overrides)
     return Settings.model_validate(values)
@@ -46,19 +47,19 @@ def test_database_url_is_the_database_source_of_truth() -> None:
     )
 
 
-def test_runtime_budget_defaults_match_main_and_research_agent_contract() -> None:
+def test_runtime_budget_defaults_match_main_contract() -> None:
     configured = _settings()
 
     assert configured.REQUEST_DEADLINE_SECONDS == 900.0
     assert configured.LITELLM_CLIENT_TIMEOUT_SECONDS == 240.0
-    assert configured.MAIN_MODEL_REQUEST_LIMIT == 8
-    assert configured.MAIN_TOOL_CALL_LIMIT == 16
-    assert configured.RESEARCH_AGENT_MODEL_REQUEST_LIMIT == 8
-    assert configured.RESEARCH_AGENT_TOOL_CALL_LIMIT == 18
+    assert configured.MAIN_MODEL_REQUEST_LIMIT == 12
+    assert configured.MAIN_TOOL_CALL_LIMIT == 30
+    assert not hasattr(configured, "RESEARCH_AGENT_MODEL_REQUEST_LIMIT")
+    assert not hasattr(configured, "RESEARCH_AGENT_TOOL_CALL_LIMIT")
     assert not hasattr(configured, "TRAVEL_RESEARCHER_TIMEOUT_SECONDS")
     assert not hasattr(configured, "TRAVEL_RESEARCHER_MODEL_REQUEST_LIMIT")
     assert not hasattr(configured, "TRAVEL_RESEARCHER_TOOL_CALL_LIMIT")
-    assert not hasattr(configured, "TAVILY_API_KEY")
+    assert configured.TAVILY_API_KEY == "tvly-test"
 
 
 def test_runtime_budget_hierarchy_is_strict() -> None:
@@ -89,24 +90,32 @@ def test_runtime_budget_respects_env_override() -> None:
     configured = _settings(
         REQUEST_DEADLINE_SECONDS=500.0,
         LITELLM_CLIENT_TIMEOUT_SECONDS=300.0,
-        RESEARCH_AGENT_MODEL_REQUEST_LIMIT=7,
-        RESEARCH_AGENT_TOOL_CALL_LIMIT=15,
     )
 
     assert configured.REQUEST_DEADLINE_SECONDS == 500.0
     assert configured.LITELLM_CLIENT_TIMEOUT_SECONDS == 300.0
-    assert configured.RESEARCH_AGENT_MODEL_REQUEST_LIMIT == 7
-    assert configured.RESEARCH_AGENT_TOOL_CALL_LIMIT == 15
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
         ("LITELLM_CLIENT_TIMEOUT_SECONDS", 0.0),
-        ("RESEARCH_AGENT_MODEL_REQUEST_LIMIT", 0),
-        ("RESEARCH_AGENT_TOOL_CALL_LIMIT", 0),
     ],
 )
 def test_runtime_budget_rejects_non_positive(field: str, value: float | int) -> None:
     with pytest.raises(ValidationError, match=field):
         _settings(**{field: value})
+
+
+def test_poi_rate_limit_defaults_and_override() -> None:
+    configured = _settings()
+    # 默认值：同一进程内并发 POI 请求上限 2，命中限流时最多尝试 3 次（含首次）。
+    assert configured.POI_TOOL_CONCURRENCY_LIMIT == 2
+    assert configured.POI_TOOL_MAX_ATTEMPTS == 3
+
+    overridden = _settings(
+        POI_TOOL_CONCURRENCY_LIMIT=5,
+        POI_TOOL_MAX_ATTEMPTS=4,
+    )
+    assert overridden.POI_TOOL_CONCURRENCY_LIMIT == 5
+    assert overridden.POI_TOOL_MAX_ATTEMPTS == 4

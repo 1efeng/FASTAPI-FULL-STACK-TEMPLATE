@@ -1,5 +1,4 @@
 import logging
-import re
 import uuid
 from typing import Annotated, Any
 
@@ -21,11 +20,6 @@ from app.modules.request_run.repository import RequestRunRepository
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
-_SIMPLE_GREETING_RE = re.compile(
-    r"^(?:你好|您好|嗨|哈喽|早上好|下午好|晚上好|早安|晚安|hello|hi|hey)[!！,，。?？\s]*$",
-    re.IGNORECASE,
-)
-
 ChatRuntimeDep = Annotated[ChatRuntime, Depends(get_chat_runtime)]
 
 
@@ -161,11 +155,6 @@ def _parse_bool_field(
     return raw
 
 
-def _effective_web_search(message: str, requested: bool) -> bool:
-    """Avoid loading web-search capabilities for pure greetings."""
-    return requested and not _SIMPLE_GREETING_RE.fullmatch(message)
-
-
 @router.post("/chat/stream")
 async def chat_stream(
     request: Request,
@@ -188,10 +177,9 @@ async def chat_stream(
 
     message = _extract_user_text(body)
     conversation_id = _parse_conversation_id(body)
-    enable_web_search = _effective_web_search(
-        message,
-        _parse_bool_field(body, "enable_web_search"),
-    )
+    # The frontend switch is the complete authority for native web-search
+    # availability. The model decides whether to invoke it when enabled.
+    enable_web_search = _parse_bool_field(body, "enable_web_search")
     enable_thinking = _parse_bool_field(body, "enable_thinking")
 
     request_id = uuid.uuid4()

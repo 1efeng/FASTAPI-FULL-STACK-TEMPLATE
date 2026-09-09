@@ -98,7 +98,10 @@ export const Reasoning = memo(
     return (
       <ReasoningContext.Provider value={contextValue}>
         <Collapsible
-          className={cn("not-prose mb-4", className)}
+          className={cn(
+            "not-prose mb-4 min-w-0 max-w-full overflow-hidden",
+            className,
+          )}
           onOpenChange={handleOpenChange}
           open={isOpen}
           {...props}
@@ -162,7 +165,7 @@ export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => (
     <CollapsibleContent
       className={cn(
-        "mt-4 text-sm",
+        "mt-4 min-w-0 max-w-full overflow-hidden text-sm break-words",
         "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-muted-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
         className,
       )}

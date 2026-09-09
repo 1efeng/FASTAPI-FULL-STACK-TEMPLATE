@@ -184,6 +184,7 @@ function ChatPage() {
                     void navigator.clipboard.writeText(text)
                     setCopied(id)
                   }}
+                  showReasoning={thinkingEnabled}
                 />
               ))
             )}

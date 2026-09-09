@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
 import httpx
 
 from app.agent.tools._settings import require_tool_key
 from app.agent.tools._timeout import bound_tool_execution
+from app.core.config import settings
 
 AMAP_POI_TEXT_URL = "https://restapi.amap.com/v5/place/text"
 AMAP_POI_DETAIL_URL = "https://restapi.amap.com/v5/place/detail"
@@ -16,6 +18,54 @@ AMAP_POI_AROUND_URL = "https://restapi.amap.com/v5/place/around"
 _SEARCH_SHOW_FIELDS = "business"
 _DETAIL_SHOW_FIELDS = "business,navi,photos"
 _MAX_RESULTS = 10
+
+# Amap POI Web Service quota (keyword/nearby/polygon/ID query): 100 req/day for
+# individual developers, 1000 req/day for enterprise
+# (https://lbs.amap.com/api/webservice/guide/tools/flowlevel). The signal below
+# throttles parallel model tool-calls so a burst does not exhaust the daily quota
+# or trip per-Key QPS, which is not a published constant and must be read from
+# https://console.amap.com/dev/flow/manage. Defaults come from config and can be
+# overridden via POI_TOOL_CONCURRENCY_LIMIT / POI_TOOL_MAX_ATTEMPTS.
+_POI_CONCURRENCY_LIMIT: int = settings.POI_TOOL_CONCURRENCY_LIMIT
+_POI_SEMAPHORE = asyncio.Semaphore(_POI_CONCURRENCY_LIMIT)
+_POI_MAX_ATTEMPTS: int = settings.POI_TOOL_MAX_ATTEMPTS
+_POI_RETRY_BASE_SECONDS = 1.0
+_POI_RETRY_BACKOFF = 2.0
+
+
+def _tool_error(
+    *,
+    code: str,
+    message: str,
+    retryable: bool = False,
+) -> dict[str, Any]:
+    return {
+        "status": "error",
+        "error_code": code,
+        "message": message,
+        "retryable": retryable,
+    }
+
+
+def _exception_error(prefix: str, exc: BaseException) -> dict[str, Any]:
+    if isinstance(exc, ValueError):
+        return _tool_error(code="INVALID_INPUT", message=str(exc))
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+        return _tool_error(
+            code="PROVIDER_TIMEOUT",
+            message=f"{prefix}暂时超时：{type(exc).__name__}",
+            retryable=True,
+        )
+    if isinstance(exc, RuntimeError) and "缺少环境变量" in str(exc):
+        return _tool_error(
+            code="AUTHENTICATION_ERROR",
+            message=f"{prefix}配置不可用",
+        )
+    return _tool_error(
+        code="UPSTREAM_ERROR",
+        message=f"{prefix}暂时失败：{type(exc).__name__}",
+        retryable=True,
+    )
 
 
 def _clean_text(value: Any) -> str | None:
@@ -100,14 +150,52 @@ def _base_poi(item: dict[str, Any], *, include_distance: bool = False) -> dict[s
 def _provider_error(payload: dict[str, Any]) -> dict[str, Any] | None:
     if payload.get("status") == "1":
         return None
+    info = str(payload.get("info") or "UNKNOWN")
+    infocode = str(payload.get("infocode") or "")
+    normalized_info = info.upper()
+    if infocode == "10021" or "LIMIT" in normalized_info:
+        code, retryable = "RATE_LIMITED", True
+    elif "KEY" in normalized_info or "AUTH" in normalized_info:
+        code, retryable = "AUTHENTICATION_ERROR", False
+    else:
+        code, retryable = "UPSTREAM_ERROR", True
     return {
-        "error": "高德 POI 查询失败",
-        "provider_info": str(payload.get("info") or "UNKNOWN"),
-        "provider_code": str(payload.get("infocode") or ""),
+        "status": "error",
+        "error_code": code,
+        "message": "高德 POI 查询失败",
+        "provider_info": info,
+        "provider_code": infocode,
+        "retryable": retryable,
     }
 
 
 async def _get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
+    """GET 一个高德 JSON 接口，受并发信号量节流，并在命中限流时自动重试。
+
+    重试识别依据：请求已发到高德且返回 ``RATE_LIMITED`` 错误 payload
+    （``infocode=10021`` 或 info 含 LIMIT）。退避叠加在真实网络调用之间，
+    因此每次都完整经过信号量 acquire/release，保证并发上限始终生效。
+    """
+    for attempt in range(_POI_MAX_ATTEMPTS):
+        async with _POI_SEMAPHORE:
+            payload = await _fetch_once(url, params)
+        # 仅对已确认为限流的错误重试；成功或其他错误直接返回。
+        if not _is_rate_limited(payload):
+            return payload
+        if attempt + 1 < _POI_MAX_ATTEMPTS:
+            await asyncio.sleep(_POI_RETRY_BASE_SECONDS * (_POI_RETRY_BACKOFF**attempt))
+    return payload
+
+
+def _is_rate_limited(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    info = str(payload.get("info") or "").upper()
+    infocode = str(payload.get("infocode") or "")
+    return infocode == "10021" or "LIMIT" in info
+
+
+async def _fetch_once(url: str, params: dict[str, Any]) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(url, params=params)
         response.raise_for_status()
@@ -144,7 +232,24 @@ async def _search_poi(
         for item in payload.get("pois") or []
         if isinstance(item, dict)
     ]
-    return {"query": keywords.strip(), "region": region, "results": results}
+    if not results:
+        return {
+            "status": "not_found",
+            "error_code": "POI_NOT_FOUND",
+            "query": keywords.strip(),
+            "region": region,
+            "result_count": 0,
+            "selection_required": False,
+            "results": [],
+        }
+    return {
+        "status": "ok",
+        "query": keywords.strip(),
+        "region": region,
+        "result_count": len(results),
+        "selection_required": len(results) > 1,
+        "results": results,
+    }
 
 
 async def search_poi(
@@ -164,7 +269,7 @@ async def search_poi(
             )
         )
     except Exception as exc:
-        return {"error": f"POI 搜索暂时失败：{type(exc).__name__}"}
+        return _exception_error("POI 搜索", exc)
 
 
 async def _get_poi_detail(*, poi_id: str) -> dict[str, Any]:
@@ -183,7 +288,11 @@ async def _get_poi_detail(*, poi_id: str) -> dict[str, Any]:
         return error
     pois = [item for item in payload.get("pois") or [] if isinstance(item, dict)]
     if not pois:
-        return {"error": "未找到对应 POI"}
+        return {
+            "status": "not_found",
+            "error_code": "POI_NOT_FOUND",
+            "message": "未找到对应 POI",
+        }
 
     item = pois[0]
     poi = _base_poi(item)
@@ -212,7 +321,7 @@ async def _get_poi_detail(*, poi_id: str) -> dict[str, Any]:
             break
     if photos:
         poi["photos"] = photos
-    return {"poi": poi}
+    return {"status": "ok", "poi": poi}
 
 
 async def get_poi_detail(poi_id: str) -> dict[str, Any]:
@@ -220,7 +329,7 @@ async def get_poi_detail(poi_id: str) -> dict[str, Any]:
     try:
         return await bound_tool_execution(_get_poi_detail(poi_id=poi_id))
     except Exception as exc:
-        return {"error": f"POI 详情查询暂时失败：{type(exc).__name__}"}
+        return _exception_error("POI 详情查询", exc)
 
 
 async def _search_nearby(
@@ -261,11 +370,26 @@ async def _search_nearby(
         for item in payload.get("pois") or []
         if isinstance(item, dict)
     ]
+    if not results:
+        return {
+            "status": "not_found",
+            "error_code": "POI_NOT_FOUND",
+            "center": params["location"],
+            "radius_m": radius,
+            "query": normalized_keywords,
+            "types": normalized_types,
+            "result_count": 0,
+            "selection_required": False,
+            "results": [],
+        }
     return {
+        "status": "ok",
         "center": params["location"],
         "radius_m": radius,
         "query": normalized_keywords,
         "types": normalized_types,
+        "result_count": len(results),
+        "selection_required": len(results) > 1,
         "results": results,
     }
 
@@ -293,4 +417,4 @@ async def search_nearby(
             )
         )
     except Exception as exc:
-        return {"error": f"周边 POI 搜索暂时失败：{type(exc).__name__}"}
+        return _exception_error("周边 POI 搜索", exc)

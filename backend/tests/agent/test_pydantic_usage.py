@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -34,7 +35,11 @@ def _request(
     )
 
 
-async def test_executor_maps_one_model_response_to_framework_neutral_usage() -> None:
+async def test_executor_maps_one_model_response_to_framework_neutral_usage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.agent.pydantic_executor")
+
     def model_function(
         messages: list[ModelMessage],
         info: AgentInfo,
@@ -70,6 +75,10 @@ async def test_executor_maps_one_model_response_to_framework_neutral_usage() -> 
     assert call.token_usage.cache_read_tokens == 70
     assert call.token_usage.total_tokens == 150
     assert "private_provider_counter" not in repr(call)
+    assert "agent_run_metrics" in caplog.text
+    assert "model_requests=1" in caplog.text
+    assert "input_tokens=120" in caplog.text
+    assert "output_tokens=30" in caplog.text
 
 
 async def test_executor_preserves_per_call_usage_across_tool_loop() -> None:
@@ -157,18 +166,19 @@ def test_mapper_preserves_missing_usage_and_call_id_as_unknown() -> None:
     assert call.token_usage is None
 
 
-
 def test_main_usage_limits_are_role_specific() -> None:
     limits = _main_usage_limits()
 
-    assert limits.request_limit == settings.MAIN_MODEL_REQUEST_LIMIT == 8
-    assert limits.tool_calls_limit == settings.MAIN_TOOL_CALL_LIMIT == 16
+    assert limits.request_limit == settings.MAIN_MODEL_REQUEST_LIMIT == 12
+    assert limits.tool_calls_limit == settings.MAIN_TOOL_CALL_LIMIT == 30
     assert limits.total_tokens_limit is None
     assert limits.input_tokens_limit is None
     assert limits.output_tokens_limit is None
 
 
-async def test_main_request_limit_exhaustion_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_main_request_limit_exhaustion_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(settings, "MAIN_MODEL_REQUEST_LIMIT", 1)
     model_calls = 0
 
@@ -200,7 +210,9 @@ async def test_main_request_limit_exhaustion_is_bounded(monkeypatch: pytest.Monk
     assert model_calls == 1
 
 
-async def test_main_tool_limit_exhaustion_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_main_tool_limit_exhaustion_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(settings, "MAIN_TOOL_CALL_LIMIT", 0)
     tool_calls = 0
 

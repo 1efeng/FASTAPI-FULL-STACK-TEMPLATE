@@ -49,11 +49,8 @@ class Settings(BaseSettings):
     REQUEST_DEADLINE_SECONDS: PositiveFloat = 900.0
     # One model RPC remains independently bounded well below the Product safety cap.
     LITELLM_CLIENT_TIMEOUT_SECONDS: PositiveFloat = 240.0
-    MAIN_MODEL_REQUEST_LIMIT: PositiveInt = 8
-    MAIN_TOOL_CALL_LIMIT: PositiveInt = 16
-    RESEARCH_AGENT_MODEL_REQUEST_LIMIT: PositiveInt = 8
-    RESEARCH_AGENT_TOOL_CALL_LIMIT: PositiveInt = 18
-
+    MAIN_MODEL_REQUEST_LIMIT: PositiveInt = 12
+    MAIN_TOOL_CALL_LIMIT: PositiveInt = 30
     BACKEND_CORS_ORIGINS: Annotated[
         list[AnyUrl] | str, BeforeValidator(parse_cors)
     ] = []
@@ -77,12 +74,23 @@ class Settings(BaseSettings):
     OTEL_SERVICE_NAME: str = "travel-agent-api"
     OTLP_ENDPOINT: str | None = None
     AMAP_API_KEY: str | None = None
-    WEB_SEARCH_API_KEY: str | None = None
+    TAVILY_API_KEY: str | None = None
     WEATHER_API_KEY: str | None = None
     QWEATHER_API_KEY: str | None = None
     QWEATHER_API_HOST: str = "https://devapi.qweather.com"
     FX_BASE_URL: str = "https://api.frankfurter.dev/v2"
     TRAVEL_CORE_ENABLED: bool = True
+
+    # Amap POI rate limiting. Amap's Web Service API (keyword search, nearby,
+    # polygon, ID query) is quota-capped: 100 req/day for individual developers,
+    # 1000 req/day for enterprise. See https://lbs.amap.com/api/webservice/guide/tools/flowlevel
+    # QPS is not a published constant — it varies per Key and is shown in the
+    # console (https://console.amap.com/dev/flow/manage). These knobs default to
+    # conservative values; override via env when your Key's quota differs.
+    # POI_TOOL_CONCURRENCY_LIMIT: max simultaneous Amap POI requests in-process.
+    # POI_TOOL_MAX_ATTEMPTS: total attempts (incl. first) before surfacing RATE_LIMITED.
+    POI_TOOL_CONCURRENCY_LIMIT: PositiveInt = 2
+    POI_TOOL_MAX_ATTEMPTS: PositiveInt = 3
 
     # Shared runtime and AI infrastructure. These are configuration contracts;
     # feature modules connect to them when their roadmap milestone is enabled.

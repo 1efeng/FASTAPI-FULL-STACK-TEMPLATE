@@ -324,7 +324,17 @@ export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn(
-        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+        "size-full text-[15px] leading-7 tracking-[0.005em] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+        "[&_h1]:mb-5 [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:leading-tight [&_h1]:tracking-[-0.02em] [&_h1]:text-foreground sm:[&_h1]:text-[28px]",
+        "[&_h2]:mt-9 [&_h2]:mb-4 [&_h2]:border-l-[3px] [&_h2]:border-primary [&_h2]:pl-3 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:leading-tight [&_h2]:tracking-[-0.015em] [&_h2]:text-foreground",
+        "[&_h3]:mt-7 [&_h3]:mb-3 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:leading-6 [&_h3]:text-foreground",
+        "[&_p]:my-3 [&_p]:text-muted-foreground [&_strong]:font-semibold [&_strong]:text-foreground",
+        "[&_ul]:my-3 [&_ol]:my-3 [&_li]:my-1 [&_li]:pl-1 [&_li::marker]:text-primary",
+        "[&_blockquote]:my-5 [&_blockquote]:rounded-xl [&_blockquote]:border-l-4 [&_blockquote]:border-amber-400 [&_blockquote]:bg-amber-50/80 [&_blockquote]:px-4 [&_blockquote]:py-3 [&_blockquote]:text-[14px] [&_blockquote]:text-amber-950 dark:[&_blockquote]:bg-amber-950/20 dark:[&_blockquote]:text-amber-100",
+        "[&_hr]:my-8 [&_hr]:border-border/70",
+        "[&_a]:font-medium [&_a]:text-primary [&_a]:underline-offset-4 hover:[&_a]:underline",
+        "[&_code]:rounded-md [&_code]:bg-muted [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:text-[0.9em]",
+        "[&_table]:my-5 [&_table]:w-full [&_table]:min-w-[560px] [&_th]:bg-muted/70 [&_th]:font-semibold [&_th]:text-foreground [&_th]:whitespace-nowrap [&_td]:align-top [&_td]:text-muted-foreground [&_tr]:border-border/70",
         className,
       )}
       plugins={streamdownPlugins}

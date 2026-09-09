@@ -26,3 +26,8 @@ class RequestRunPublic(BaseModel):
     research_runs: int | None
     enable_web_search: bool | None
     enable_thinking: bool | None
+    context_chars: int | None
+    output_chars: int | None
+    source_url_count: int | None
+    elapsed_ms: int | None
+    tool_names: str | None

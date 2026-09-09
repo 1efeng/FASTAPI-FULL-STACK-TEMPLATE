@@ -306,8 +306,25 @@ async def test_adapter_terminal_chunks_are_held_for_product_gate(
     assert observed == [("error", None)]
 
 
-async def test_adapter_completion_projects_reasoning_into_product_result(
+@pytest.mark.parametrize(
+    ("enable_thinking", "reasoning_chunks", "reasoning_summary"),
+    [
+        (
+            True,
+            [
+                'data: {"type":"reasoning-start","id":"reasoning"}\n\n',
+                'data: {"type":"reasoning-end","id":"reasoning"}\n\n',
+            ],
+            "先比较路线",
+        ),
+        (False, [], None),
+    ],
+)
+async def test_adapter_completion_respects_thinking_visibility(
     monkeypatch: pytest.MonkeyPatch,
+    enable_thinking: bool,
+    reasoning_chunks: list[str],
+    reasoning_summary: str | None,
 ) -> None:
     request = AgentExecutionRequest(
         request_id=_REQUEST_ID,
@@ -315,6 +332,7 @@ async def test_adapter_completion_projects_reasoning_into_product_result(
         message="hello",
         history=(),
         deadline_at=datetime.now(UTC) + timedelta(seconds=30),
+        enable_thinking=enable_thinking,
     )
 
     class FakeResult:
@@ -384,7 +402,11 @@ async def test_adapter_completion_projects_reasoning_into_product_result(
         )
     ]
 
-    assert chunks[-1] == "data: [DONE]\n\n"
+    assert chunks == [
+        *reasoning_chunks,
+        'data: {"type":"finish"}\n\n',
+        "data: [DONE]\n\n",
+    ]
     assert len(completed) == 1
     assert completed[0].content == "final answer"
-    assert completed[0].reasoning_summary == "public reasoning"
+    assert completed[0].reasoning_summary == reasoning_summary

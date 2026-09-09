@@ -17,6 +17,7 @@ from app.agent.executor import (
     AgentExecutionResult,
     AgentExecutor,
     AgentMessage,
+    AgentRunObservation,
     AgentStreamTerminalKind,
     stream_vercel_events,
 )
@@ -144,15 +145,16 @@ def _derive_conversation_title(message: str) -> str | None:
 def _request_run_metrics(
     *,
     usage: AgentUsage | None,
+    observation: AgentRunObservation | None = None,
     enable_web_search: bool | None,
     enable_thinking: bool | None,
-) -> dict[str, int | bool]:
+) -> dict[str, int | bool | str]:
     """Map an Agent run's usage into durable RequestRun metric columns.
 
     Token counters stay ``None`` when the provider did not report usage; unknown
     must never be rewritten as zero (see ``AgentUsage`` contract).
     """
-    metrics: dict[str, int | bool] = {}
+    metrics: dict[str, int | bool | str] = {}
     if usage is not None:
         metrics["model_requests"] = usage.model_requests
         metrics["tool_calls"] = usage.tool_calls
@@ -171,6 +173,16 @@ def _request_run_metrics(
         metrics["enable_web_search"] = enable_web_search
     if enable_thinking is not None:
         metrics["enable_thinking"] = enable_thinking
+    if observation is not None:
+        metrics.update(
+            {
+                "context_chars": observation.context_chars,
+                "output_chars": observation.output_chars,
+                "source_url_count": observation.source_url_count,
+                "elapsed_ms": observation.elapsed_ms,
+                "tool_names": ",".join(observation.tool_names)[:1024],
+            }
+        )
     return metrics
 
 
@@ -507,6 +519,7 @@ class ChatService:
         reasoning_summary: str | None = None,
         source_urls: tuple[str, ...] = (),
         usage: AgentUsage | None = None,
+        observation: AgentRunObservation | None = None,
         enable_web_search: bool | None = None,
         enable_thinking: bool | None = None,
     ) -> None:
@@ -528,6 +541,7 @@ class ChatService:
                 error_code=None,
                 metrics=_request_run_metrics(
                     usage=usage,
+                    observation=observation,
                     enable_web_search=enable_web_search,
                     enable_thinking=enable_thinking,
                 ),
@@ -740,6 +754,7 @@ class ChatService:
                     reasoning_summary=result.reasoning_summary,
                     source_urls=result.source_urls,
                     usage=result.usage,
+                    observation=result.observation,
                     enable_web_search=turn.enable_web_search,
                     enable_thinking=turn.enable_thinking,
                 )
@@ -837,6 +852,7 @@ class ChatService:
                     reasoning_summary=result.reasoning_summary,
                     source_urls=result.source_urls,
                     usage=result.usage,
+                    observation=result.observation,
                     enable_web_search=turn.enable_web_search,
                     enable_thinking=turn.enable_thinking,
                 )

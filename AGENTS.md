@@ -108,6 +108,11 @@ Never run destructive operations without explicit approval, including:
 
 Never expose secrets, API keys, tokens, private keys, real `.env` values, or production credentials.
 
+测试与数据库保护：
+- 测试脚本不得执行 `docker compose down -v`、`docker volume rm`、DROP、TRUNCATE 或其他会删除开发数据库卷/数据的操作。
+- 测试必须与开发数据隔离；需要临时数据库时使用明确命名的临时卷或独立测试数据库，并在操作前确认目标范围。
+- 不得把清理测试环境的破坏性命令放入默认测试入口。
+
 ## 7. Architecture Guardrail
 
 The 2026-08-19 reset intentionally removed legacy architecture ownership from this long-lived execution file.
@@ -124,7 +129,25 @@ After the new Architecture Baseline is accepted:
 
 Never use archived architecture documents to reconstruct old guardrails.
 
-## 8. Reporting
+## 8. Skill Runtime Loading
+
+The runtime uses three-level progressive loading:
+
+1. selected Skill `name` and `description` are disclosed in the catalog;
+2. the selected `SKILL.md` body is loaded through `load_capability`;
+3. files under that Skill's `references/`, `assets/`, or `scripts/` directory are
+   loaded individually through the read-only Skill resource tools only after the
+   Skill has been activated.
+
+Do not assume a bundled file is visible before it is explicitly read. Safety rules
+needed before the first resource call must remain in `SKILL.md`; detailed contracts,
+examples, and low-frequency reference material may live in L3 resources. Scripts are
+resources, not automatically authorized executable code.
+
+When a Skill or resource is simplified or removed, remove stale links from
+`SKILL.md` and preserve every still-required runtime rule at the appropriate level.
+
+## 9. Reporting
 
 After an approved implementation stage, report:
 

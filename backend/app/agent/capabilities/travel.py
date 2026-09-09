@@ -5,49 +5,32 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from pathlib import Path
 
-from pydantic_ai import Tool
 from pydantic_ai.capabilities import AgentCapability, Capability
-from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai_harness.skills import Skills
 
-from app.agent.capabilities.research_agent import (
-    RESEARCH_AGENT_CAPABILITY_ID,
-    RESEARCH_AGENT_TOOL_NAME,
-    build_research_agent_capability,
-)
-from app.agent.tools.budget import calculate_budget
-from app.agent.tools.currency import convert_currency
-from app.agent.tools.research_tools import build_research_tools
+from app.agent.capabilities.skill_resources import build_skill_resource_tools
+from app.agent.tools.travel_facts import build_travel_fact_tools
 
 SKILL_LIBRARY = Path(__file__).resolve().parents[1] / "skills"
 
-# Skills contain instructions only. Every executable dependency stays explicit and
-# is validated before the capability bundle can reach a model.
+# Skill packages contain declarative instructions and read-only resources. Every
+# executable dependency stays explicit and is validated before reaching a model.
 SKILL_TOOL_DEPENDENCIES: Mapping[str, frozenset[str]] = {
-    "travel-budget": frozenset({"calculate_budget"}),
-    "travel-planning": frozenset(
+    "travel-plan-skill": frozenset(
         {
             "search_poi",
             "get_poi_detail",
             "search_nearby",
             "search_maps",
+            "query_train_tickets",
             "get_weather",
-            "calculate_budget",
-            "convert_currency",
-            RESEARCH_AGENT_TOOL_NAME,
+            "list_skill_resources",
+            "read_skill_resource",
         }
     ),
 }
 
-_BUDGET_TOOL = Tool[object](calculate_budget, takes_ctx=False)
-_CURRENCY_TOOL = Tool[object](convert_currency, takes_ctx=False)
-# Main never holds raw web tools (search_web / web_fetch): web content belongs
-# exclusively to research_agent so it reaches Main only as compressed findings.
-_MAIN_TOOLS: tuple[Tool[object], ...] = (
-    *build_research_tools(include_web_search=False, include_web_fetch=False),
-    _BUDGET_TOOL,
-    _CURRENCY_TOOL,
-)
+_MAIN_TOOLS = build_travel_fact_tools()
 
 
 def validate_skill_tool_dependencies(
@@ -69,23 +52,25 @@ def validate_skill_tool_dependencies(
 
 def build_travel_capabilities(
     *,
-    research_model: Model | KnownModelName | str | None = None,
     enable_planning_core: bool = True,
-    enable_web_search: bool = True,
 ) -> tuple[AgentCapability[object], ...]:
-    """Build Main tools, Skills, and optional research delegation."""
+    """Build Main tools and Skills.
+
+    Domain-neutral Web Search is registered separately at the Main Agent
+    composition root, so it is intentionally not a travel Skill dependency here.
+    """
 
     selected_skills = (
-        frozenset(SKILL_TOOL_DEPENDENCIES)
-        if enable_planning_core and enable_web_search
-        else frozenset({"travel-budget"})
+        frozenset(SKILL_TOOL_DEPENDENCIES) if enable_planning_core else frozenset()
+    )
+    resource_tools = build_skill_resource_tools(
+        SKILL_LIBRARY,
+        selected_skills=selected_skills,
     )
     active_tools = (
-        _MAIN_TOOLS if enable_planning_core and enable_web_search else (_BUDGET_TOOL,)
+        (*_MAIN_TOOLS, *resource_tools) if enable_planning_core else resource_tools
     )
     available_tools = {tool.name for tool in active_tools}
-    if enable_planning_core and enable_web_search:
-        available_tools.add(RESEARCH_AGENT_TOOL_NAME)
     validate_skill_tool_dependencies(
         selected_skills=selected_skills,
         available_tools=available_tools,
@@ -93,14 +78,4 @@ def build_travel_capabilities(
 
     skill_catalog = Skills[object](SKILL_LIBRARY, include=selected_skills)
     main_tools = Capability[object](id="travel-main-tools", tools=active_tools)
-    if not (enable_planning_core and enable_web_search):
-        return (skill_catalog, main_tools)
-
-    research_capability = build_research_agent_capability(model=research_model)
-    if research_capability.id != RESEARCH_AGENT_CAPABILITY_ID:
-        raise RuntimeError("unexpected research capability id")
-    return (
-        skill_catalog,
-        main_tools,
-        research_capability,
-    )
+    return (skill_catalog, main_tools)

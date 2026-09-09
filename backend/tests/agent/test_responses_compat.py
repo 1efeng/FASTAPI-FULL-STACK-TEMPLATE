@@ -8,7 +8,9 @@ import pytest
 from openai import AsyncStream
 from openai.types import responses
 
-from app.agent.responses_compat import _EmptyReasoningMarkerFilter
+from app.agent.responses_compat import (
+    _EmptyReasoningMarkerFilter,
+)
 
 
 class _FakeStream:
