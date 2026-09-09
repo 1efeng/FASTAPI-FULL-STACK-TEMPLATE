@@ -57,7 +57,7 @@ private_router = APIRouter(tags=["private"], prefix="/private")
 
 
 @private_router.post("/users/", response_model=UserPublic)
-async def private_create_user(user_in: PrivateUserCreate, db: SessionDep) -> Any:
+async def create_user(user_in: PrivateUserCreate, db: SessionDep) -> Any:
     """Create a new user (local development only)."""
     user = User(
         email=user_in.email,
