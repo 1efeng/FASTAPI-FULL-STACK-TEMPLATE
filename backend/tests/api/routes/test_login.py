@@ -6,10 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import get_password_hash, verify_password
-from app.modules.user.model import User
-from app.modules.user.schema import UserCreate
-from app.modules.user.service import UserService
-from app.utils.email import generate_password_reset_token
+from app.infra.email import generate_password_reset_token
+from app.user.model import User
+from app.user.schema import UserCreate
+from app.user.service import UserService
 from tests.utils.user import user_authentication_headers
 from tests.utils.utils import random_email, random_lower_string
 
@@ -51,7 +51,7 @@ async def test_recovery_password(
     client: AsyncClient, normal_user_token_headers: dict[str, str]
 ) -> None:
     with (
-        patch("app.modules.auth.api.send_password_recovery_email", return_value=None),
+        patch("app.auth.api.send_password_recovery_email", return_value=None),
         patch("app.core.config.settings.SMTP_HOST", "smtp.example.com"),
         patch("app.core.config.settings.SMTP_USER", "admin@example.com"),
     ):
