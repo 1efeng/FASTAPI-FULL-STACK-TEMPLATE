@@ -6,10 +6,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import BaseModel
 
 
-class Item(BaseModel):
-    """数据库型业务模块的最小示例模型。"""
+class Demo(BaseModel):
+    """数据库型业务接口的可复制 CRUD 示例。"""
 
-    __tablename__ = "item"
+    __tablename__ = "demo"
 
     title: Mapped[str] = mapped_column(String(255), comment="标题")
     description: Mapped[str | None] = mapped_column(

@@ -1,4 +1,4 @@
-"""add item copy sample
+"""add demo copy sample
 
 Revision ID: e7a1c9d4b205
 Revises: c2f4d8e7a123
@@ -16,7 +16,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.create_table(
-        "item",
+        "demo",
         sa.Column("title", sa.String(length=255), nullable=False, comment="标题"),
         sa.Column(
             "description",
@@ -43,9 +43,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["owner_id"], ["user.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_item_owner_id", "item", ["owner_id"], unique=False)
+    op.create_index("ix_demo_owner_id", "demo", ["owner_id"], unique=False)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_item_owner_id", table_name="item")
-    op.drop_table("item")
+    op.drop_index("ix_demo_owner_id", table_name="demo")
+    op.drop_table("demo")

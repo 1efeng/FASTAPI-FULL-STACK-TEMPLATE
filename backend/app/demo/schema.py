@@ -4,17 +4,17 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ItemCreate(BaseModel):
+class DemoCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=255)
 
 
-class ItemUpdate(BaseModel):
+class DemoUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=255)
 
 
-class ItemPublic(BaseModel):
+class DemoPublic(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -24,6 +24,6 @@ class ItemPublic(BaseModel):
     created_at: datetime
 
 
-class ItemsPublic(BaseModel):
-    data: list[ItemPublic]
+class DemosPublic(BaseModel):
+    data: list[DemoPublic]
     count: int

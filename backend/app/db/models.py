@@ -4,5 +4,5 @@
 新增业务模型时只需在这里注册一次。
 """
 
-from app.item.model import Item  # noqa: F401
+from app.demo.model import Demo  # noqa: F401
 from app.user.model import User  # noqa: F401
