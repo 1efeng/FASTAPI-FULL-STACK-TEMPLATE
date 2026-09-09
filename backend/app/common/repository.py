@@ -2,14 +2,11 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.base_model import Base
+from app.db.base import Base
 
 
 class BaseRepository[ModelType: Base]:
-    """通用仓储:封装常见增删改查,各域 Repository 继承此类。
-
-    仓储只负责低层数据访问(不提交事务),由 Service 层编排并负责 commit。
-    """
+    """通用仓储，只负责低层数据访问，不提交事务。"""
 
     def __init__(self, model: type[ModelType], db: AsyncSession):
         self.model = model

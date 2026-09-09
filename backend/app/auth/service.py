@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import create_access_token, get_password_hash, verify_password
-from app.infra.email import (
+from app.integrations.email import (
     EmailData,
     generate_password_reset_token,
     generate_reset_password_email,
@@ -15,8 +15,6 @@ from app.infra.email import (
 from app.user.model import User
 from app.user.repository import UserRepository
 
-# Dummy hash to use for timing attack prevention when user is not found
-# This is an Argon2 hash of a random password, used to ensure constant-time comparison
 DUMMY_HASH = "$argon2id$v=19$m=65536,t=3,p=4$MjQyZWE1MzBjYjJlZTI0Yw$YTU4NGM5ZTZmYjE2NzZlZjY0ZWY3ZGRkY2U2OWFjNjk"
 
 
@@ -28,7 +26,6 @@ class AuthService:
     async def authenticate(self, email: str, password: str) -> User | None:
         db_user = await self.user_repo.get_by_email(email)
         if not db_user:
-            # Prevent timing attacks by running password verification even when user doesn't exist
             verify_password(password, DUMMY_HASH)
             return None
         verified, updated_password_hash = verify_password(
@@ -48,7 +45,6 @@ class AuthService:
         return create_access_token(user_id, expires_delta=expires_delta)
 
     async def recover_password(self, email: str) -> str | None:
-        """返回注册邮箱；接口层以统一响应异步安排邮件，避免阻塞请求。"""
         user = await self.user_repo.get_by_email(email)
         if not user:
             return None
@@ -60,7 +56,6 @@ class AuthService:
             raise HTTPException(status_code=400, detail="Invalid token")
         user = await self.user_repo.get_by_email(email)
         if not user:
-            # Don't reveal that the user doesn't exist - use same error as invalid token
             raise HTTPException(status_code=400, detail="Invalid token")
         elif not user.is_active:
             raise HTTPException(status_code=400, detail="Inactive user")

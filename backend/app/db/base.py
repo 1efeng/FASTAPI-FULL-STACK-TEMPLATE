@@ -6,11 +6,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
-    """所有 SQLAlchemy 表模型继承此类"""
+    """所有 SQLAlchemy 表模型继承此类。"""
 
 
 class TimestampMixin:
-    """创建时间由数据库设置,更新时间由 SQLAlchemy ORM 更新。"""
+    """创建时间由数据库设置，更新时间由 SQLAlchemy ORM 更新。"""
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -26,7 +26,7 @@ class TimestampMixin:
 
 
 class BaseModel(Base, TimestampMixin):
-    """所有业务表模型继承此类,自动带 id + created_at + updated_at"""
+    """所有业务表模型继承此类，自动带 id + created_at + updated_at。"""
 
     __abstract__ = True
 

@@ -5,12 +5,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from tenacity import after_log, before_log, retry, stop_after_attempt, wait_fixed
 
-from app.infra.database import engine
+from app.db.session import engine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-max_tries = 60 * 5  # 5 minutes
+max_tries = 60 * 5
 wait_seconds = 1
 
 
@@ -23,11 +23,10 @@ wait_seconds = 1
 async def init(db_engine: AsyncEngine) -> None:
     try:
         async with db_engine.connect() as conn:
-            # Try to execute a query to check if DB is awake
             await conn.execute(text("SELECT 1"))
-    except Exception as e:
-        logger.error(e)
-        raise e
+    except Exception as exc:
+        logger.error(exc)
+        raise
 
 
 async def main_async() -> None:

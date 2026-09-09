@@ -6,9 +6,9 @@ from fastapi.security import OAuth2PasswordRequestForm
 
 from app.auth.schema import NewPassword, Token
 from app.auth.service import AuthService
-from app.core.base_schema import Message
 from app.core.deps import CurrentUser, SessionDep, get_current_active_superuser
-from app.infra.email import send_password_recovery_email
+from app.core.response import Message
+from app.integrations.email import send_password_recovery_email
 from app.user.schema import UserPublic
 
 router = APIRouter(tags=["login"])
@@ -23,9 +23,6 @@ async def login_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     svc: AuthService = Depends(get_auth_service),
 ) -> Token:
-    """
-    OAuth2 compatible token login, get an access token for future requests
-    """
     user = await svc.authenticate(email=form_data.username, password=form_data.password)
     if not user:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
@@ -36,9 +33,6 @@ async def login_access_token(
 
 @router.post("/login/test-token", response_model=UserPublic)
 async def test_token(current_user: CurrentUser) -> Any:
-    """
-    Test access token
-    """
     return current_user
 
 
@@ -48,15 +42,11 @@ async def recover_password(
     background_tasks: BackgroundTasks,
     svc: AuthService = Depends(get_auth_service),
 ) -> Message:
-    """
-    Password Recovery
-    """
     email_to = await svc.recover_password(email)
     if email_to:
         background_tasks.add_task(
             send_password_recovery_email, email_to=email_to, email=email
         )
-    # Always return the same response to prevent email enumeration attacks
     return Message(
         message="If that email is registered, we sent a password recovery link"
     )
@@ -66,9 +56,6 @@ async def recover_password(
 async def reset_password(
     body: NewPassword, svc: AuthService = Depends(get_auth_service)
 ) -> Message:
-    """
-    Reset password
-    """
     await svc.reset_password(token=body.token, new_password=body.new_password)
     return Message(message="Password updated successfully")
 
@@ -81,9 +68,6 @@ async def reset_password(
 async def recover_password_html_content(
     email: str, svc: AuthService = Depends(get_auth_service)
 ) -> Any:
-    """
-    HTML Content for Password Recovery
-    """
     email_data = await svc.password_recovery_html(email)
     if not email_data:
         raise HTTPException(

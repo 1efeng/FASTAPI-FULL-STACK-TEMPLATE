@@ -6,7 +6,7 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.infra.database import AsyncSessionLocal, engine
+from app.db.session import AsyncSessionLocal, engine
 from app.item.model import Item
 from app.main import app
 from app.user.model import User
@@ -19,7 +19,6 @@ from tests.utils.utils import get_superuser_token_headers
 @pytest.fixture(scope="function", autouse=True)
 async def db() -> AsyncGenerator[AsyncSession]:
     async with AsyncSessionLocal() as session:
-        # 确保首个超级用户存在
         svc = UserService(session)
         existing = await svc.get_by_email(settings.FIRST_SUPERUSER)
         if not existing:
@@ -59,6 +58,5 @@ async def normal_user_token_headers(
 
 @pytest.fixture(autouse=True)
 async def _dispose_engine() -> AsyncGenerator[None]:
-    """每个测试结束后释放连接池,避免 asyncpg 连接跨事件循环复用"""
     yield
     await engine.dispose()

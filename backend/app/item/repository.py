@@ -1,4 +1,4 @@
-from app.core.base_repository import BaseRepository
+from app.common.repository import BaseRepository
 from app.item.model import Item
 
 

@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 
-# Generic message
 class Message(BaseModel):
+    """Generic API message response."""
+
     message: str

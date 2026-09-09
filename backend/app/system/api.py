@@ -5,14 +5,14 @@ from pydantic import BaseModel
 from pydantic.networks import EmailStr
 from sqlalchemy import text
 
-from app.core.base_schema import Message
 from app.core.deps import SessionDep, get_current_active_superuser
+from app.core.response import Message
 from app.core.security import get_password_hash
-from app.infra.email import generate_test_email, send_email
+from app.integrations.email import generate_test_email, send_email
 from app.user.model import User
 from app.user.schema import UserPublic
 
-router = APIRouter(tags=["utils"])
+router = APIRouter(tags=["system"])
 
 
 @router.post(

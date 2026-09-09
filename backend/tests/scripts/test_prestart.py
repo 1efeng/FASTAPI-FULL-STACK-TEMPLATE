@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import text
 
-from app.tests_pre_start import init, logger
+from scripts.prestart import init, logger
 
 
 def test_init_successful_connection() -> None:
@@ -16,7 +16,7 @@ def test_init_successful_connection() -> None:
     select1 = text("SELECT 1")
 
     with (
-        patch("app.tests_pre_start.text", return_value=select1),
+        patch("scripts.prestart.text", return_value=select1),
         patch.object(logger, "info"),
         patch.object(logger, "error"),
         patch.object(logger, "warn"),
@@ -27,8 +27,5 @@ def test_init_successful_connection() -> None:
         except Exception:
             connection_successful = False
 
-        assert connection_successful, (
-            "The database connection should be successful and not raise an exception."
-        )
-
+        assert connection_successful
         conn_mock.execute.assert_awaited_once_with(select1)

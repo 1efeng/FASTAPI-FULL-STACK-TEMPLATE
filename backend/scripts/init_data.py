@@ -3,7 +3,7 @@ import logging
 
 from app.core.config import settings
 from app.db import models as _models  # noqa: F401
-from app.infra.database import AsyncSessionLocal
+from app.db.session import AsyncSessionLocal
 from app.user.schema import UserCreate
 from app.user.service import UserService
 

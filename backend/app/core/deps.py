@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.schema import TokenPayload
 from app.core import security
 from app.core.config import settings
-from app.infra.database import get_db
+from app.db.session import get_db
 from app.user.model import User
 
 reusable_oauth2 = OAuth2PasswordBearer(
@@ -36,8 +36,6 @@ async def get_current_user(session: SessionDep, token: TokenDep) -> User:
         )
     user = await session.get(User, user_id)
     if not user:
-        # token 指向的用户不存在(如已被删除)= 凭据无效,应返回 401 而非 404,
-        # 否则前端无法识别为登录失效,会卡在 404 页
         raise HTTPException(status_code=401, detail="Could not validate credentials")
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")

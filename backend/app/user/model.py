@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.base_model import BaseModel
+from app.db.base import BaseModel
 
 if TYPE_CHECKING:
     from app.item.model import Item
