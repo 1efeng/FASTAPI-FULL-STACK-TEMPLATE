@@ -18,10 +18,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Clean up orphaned empty dirs and __pycache__ left by git mv / branch switches
-find "$ROOT_DIR/backend/app" -type d -empty -not -path "*__pycache__*" -delete 2>/dev/null || true
-find "$ROOT_DIR/backend/app" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-
 # Read POSTGRES_HOST_PORT from .env (default 5433)
 PG_HOST_PORT=$(grep -E '^POSTGRES_HOST_PORT=' "$ROOT_DIR/.env" 2>/dev/null | cut -d= -f2 || true)
 PG_HOST_PORT="${PG_HOST_PORT:-5433}"
