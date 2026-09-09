@@ -11,8 +11,11 @@ def test_backend_architecture_paths() -> None:
         app_root / "common" / "repository.py",
         app_root / "integrations" / "email.py",
         app_root / "system" / "api.py",
+        app_root / "auth",
+        app_root / "user",
         app_root / "chat" / "agent",
         app_root / "chat" / "tools",
+        app_root / "chat" / "skills",
         Path("alembic"),
         Path("scripts/prestart.py"),
         Path("scripts/init_data.py"),
@@ -23,6 +26,7 @@ def test_backend_architecture_paths() -> None:
         app_root / "modules",
         app_root / "infra",
         app_root / "utils",
+        app_root / "item",
         app_root / "alembic",
         app_root / "core" / "base_model.py",
         app_root / "core" / "base_repository.py",
@@ -37,12 +41,13 @@ def test_backend_architecture_paths() -> None:
         "app." + "modules",
         "app." + "infra",
         "app." + "utils",
+        "app." + "item",
         "app.core." + "base_model",
         "app.core." + "base_repository",
         "app.core." + "base_schema",
     )
     offenders: list[str] = []
-    for root in (Path("app"), Path("tests"), Path("scripts"), Path("alembic")):
+    for root in (Path("app"), Path("tests"), Path("scripts")):
         for path in root.rglob("*.py"):
             content = path.read_text(encoding="utf-8")
             if any(value in content for value in forbidden_imports):

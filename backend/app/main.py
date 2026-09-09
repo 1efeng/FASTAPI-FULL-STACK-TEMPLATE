@@ -9,7 +9,6 @@ from app.auth.api import router as auth_router
 from app.chat.api import router as chat_router
 from app.core.config import settings
 from app.db import models as _models  # noqa: F401
-from app.item.api import router as item_router
 from app.system.api import private_router
 from app.system.api import router as system_router
 from app.user.api import router as user_router
@@ -41,7 +40,6 @@ if settings.all_cors_origins:
 
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(user_router, prefix=settings.API_V1_STR)
-app.include_router(item_router, prefix=settings.API_V1_STR)
 app.include_router(chat_router, prefix=settings.API_V1_STR)
 app.include_router(system_router, prefix=settings.API_V1_STR)
 

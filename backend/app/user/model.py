@@ -1,14 +1,7 @@
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
 from sqlalchemy import Index, String, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import BaseModel
-
-if TYPE_CHECKING:
-    from app.item.model import Item
 
 
 class User(BaseModel):
@@ -21,10 +14,3 @@ class User(BaseModel):
     hashed_password: Mapped[str] = mapped_column(String(128))
 
     __table_args__ = (Index("ix_user_email", func.lower(email), unique=True),)
-
-    items: Mapped[list[Item]] = relationship(
-        back_populates="owner",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        lazy="raise",
-    )

@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal, engine
-from app.item.model import Item
 from app.main import app
 from app.user.model import User
 from app.user.schema import UserCreate
@@ -30,7 +29,6 @@ async def db() -> AsyncGenerator[AsyncSession]:
                 )
             )
         yield session
-        await session.execute(delete(Item))
         await session.execute(delete(User))
         await session.commit()
 

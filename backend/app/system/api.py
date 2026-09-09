@@ -12,7 +12,7 @@ from app.integrations.email import generate_test_email, send_email
 from app.user.model import User
 from app.user.schema import UserPublic
 
-router = APIRouter(tags=["system"])
+router = APIRouter(tags=["utils"])
 
 
 @router.post(
