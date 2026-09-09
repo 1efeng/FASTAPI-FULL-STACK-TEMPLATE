@@ -4,10 +4,10 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.item.model import Item
-from app.modules.item.repository import ItemRepository
-from app.modules.item.schema import ItemCreate, ItemUpdate
-from app.modules.user.model import User
+from app.item.model import Item
+from app.item.repository import ItemRepository
+from app.item.schema import ItemCreate, ItemUpdate
+from app.user.model import User
 
 
 class ItemService:

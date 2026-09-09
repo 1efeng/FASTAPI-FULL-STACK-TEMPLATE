@@ -4,8 +4,8 @@ import logging
 from app.core.config import settings
 from app.db import models as _models  # noqa: F401
 from app.infra.database import AsyncSessionLocal
-from app.modules.user.schema import UserCreate
-from app.modules.user.service import UserService
+from app.user.schema import UserCreate
+from app.user.service import UserService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

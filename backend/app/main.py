@@ -5,16 +5,16 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from starlette.middleware.cors import CORSMiddleware
 
+from app.auth.api import router as auth_router
+from app.chat.api import router as chat_router
 from app.core.config import settings
 from app.db import (
     models as _models,  # noqa: F401   # 显式注册所有模型,不依赖 router 链路传递加载
 )
-from app.modules.auth.api import router as auth_router
-from app.modules.chat.api import router as chat_router
-from app.modules.item.api import router as item_router
-from app.modules.user.api import router as user_router
-from app.modules.utils.api import private_router
-from app.modules.utils.api import router as utils_router
+from app.item.api import router as item_router
+from app.user.api import router as user_router
+from app.utils.api import private_router
+from app.utils.api import router as utils_router
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 

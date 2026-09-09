@@ -4,12 +4,12 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
+from app.auth.schema import NewPassword, Token
+from app.auth.service import AuthService
 from app.core.base_schema import Message
 from app.core.deps import CurrentUser, SessionDep, get_current_active_superuser
-from app.modules.auth.schema import NewPassword, Token
-from app.modules.auth.service import AuthService
-from app.modules.user.schema import UserPublic
-from app.utils.email import send_password_recovery_email
+from app.infra.email import send_password_recovery_email
+from app.user.schema import UserPublic
 
 router = APIRouter(tags=["login"])
 

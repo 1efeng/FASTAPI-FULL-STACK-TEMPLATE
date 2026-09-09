@@ -6,7 +6,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from app.core.base_schema import Message
 from app.core.config import settings
 from app.core.deps import CurrentUser, SessionDep, get_current_active_superuser
-from app.modules.user.schema import (
+from app.infra.email import send_new_account_email
+from app.user.schema import (
     UpdatePassword,
     UserCreate,
     UserPublic,
@@ -15,8 +16,7 @@ from app.modules.user.schema import (
     UserUpdate,
     UserUpdateMe,
 )
-from app.modules.user.service import UserService
-from app.utils.email import send_new_account_email
+from app.user.service import UserService
 
 router = APIRouter(prefix="/users", tags=["users"])
 SkipParam = Annotated[int, Query(ge=0)]

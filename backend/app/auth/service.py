@@ -6,14 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import create_access_token, get_password_hash, verify_password
-from app.modules.user.model import User
-from app.modules.user.repository import UserRepository
-from app.utils.email import (
+from app.infra.email import (
     EmailData,
     generate_password_reset_token,
     generate_reset_password_email,
     verify_password_reset_token,
 )
+from app.user.model import User
+from app.user.repository import UserRepository
 
 # Dummy hash to use for timing attack prevention when user is not found
 # This is an Argon2 hash of a random password, used to ensure constant-time comparison

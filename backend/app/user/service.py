@@ -8,9 +8,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_password_hash, verify_password
-from app.modules.user.model import User
-from app.modules.user.repository import UserRepository
-from app.modules.user.schema import UserCreate, UserUpdate, UserUpdateMe
+from app.user.model import User
+from app.user.repository import UserRepository
+from app.user.schema import UserCreate, UserUpdate, UserUpdateMe
 
 T = TypeVar("T")
 

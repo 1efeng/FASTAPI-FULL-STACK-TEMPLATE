@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.base_model import BaseModel
 
 if TYPE_CHECKING:
-    from app.modules.user.model import User
+    from app.user.model import User
 
 
 class Item(BaseModel):

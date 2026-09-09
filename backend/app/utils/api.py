@@ -8,9 +8,9 @@ from sqlalchemy import text
 from app.core.base_schema import Message
 from app.core.deps import SessionDep, get_current_active_superuser
 from app.core.security import get_password_hash
-from app.modules.user.model import User
-from app.modules.user.schema import UserPublic
-from app.utils.email import generate_test_email, send_email
+from app.infra.email import generate_test_email, send_email
+from app.user.model import User
+from app.user.schema import UserPublic
 
 router = APIRouter(tags=["utils"])
 

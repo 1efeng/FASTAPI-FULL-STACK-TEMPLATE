@@ -1,4 +1,7 @@
 from collections.abc import AsyncGenerator
+import importlib
+import sys
+import types
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -7,13 +10,46 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.infra.database import AsyncSessionLocal, engine
+from app.item.model import Item
 from app.main import app
-from app.modules.item.model import Item
-from app.modules.user.model import User
-from app.modules.user.schema import UserCreate
-from app.modules.user.service import UserService
+from app.user.model import User
+from app.user.schema import UserCreate
+from app.user.service import UserService
 from tests.utils.user import authentication_token_from_email
 from tests.utils.utils import get_superuser_token_headers
+
+
+def _install_legacy_test_imports() -> None:
+    """Keep existing tests working while they migrate off the old app.modules paths."""
+    app_package = importlib.import_module("app")
+    legacy_modules = types.ModuleType("app.modules")
+    legacy_modules.__path__ = []  # type: ignore[attr-defined]
+    setattr(app_package, "modules", legacy_modules)
+    sys.modules["app.modules"] = legacy_modules
+
+    feature_submodules = {
+        "auth": ("api", "schema", "service"),
+        "chat": ("agent", "api", "schema"),
+        "item": ("api", "model", "repository", "schema", "service"),
+        "user": ("api", "model", "repository", "schema", "service"),
+        "utils": ("api",),
+    }
+    for feature, submodules in feature_submodules.items():
+        package = importlib.import_module(f"app.{feature}")
+        setattr(legacy_modules, feature, package)
+        sys.modules[f"app.modules.{feature}"] = package
+        for submodule in submodules:
+            module = importlib.import_module(f"app.{feature}.{submodule}")
+            setattr(package, submodule, module)
+            sys.modules[f"app.modules.{feature}.{submodule}"] = module
+
+    email_module = importlib.import_module("app.infra.email")
+    utils_package = importlib.import_module("app.utils")
+    setattr(utils_package, "email", email_module)
+    sys.modules["app.utils.email"] = email_module
+
+
+_install_legacy_test_imports()
 
 
 @pytest.fixture(scope="function", autouse=True)

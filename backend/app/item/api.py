@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, Query
 
 from app.core.base_schema import Message
 from app.core.deps import CurrentUser, SessionDep
-from app.modules.item.schema import ItemCreate, ItemPublic, ItemsPublic, ItemUpdate
-from app.modules.item.service import ItemService
+from app.item.schema import ItemCreate, ItemPublic, ItemsPublic, ItemUpdate
+from app.item.service import ItemService
 
 router = APIRouter(prefix="/items", tags=["items"])
 SkipParam = Annotated[int, Query(ge=0)]
