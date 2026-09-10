@@ -1,7 +1,7 @@
-"""Transport helpers for LangGraph native agent streaming protocol.
+"""Transport helpers for LangGraph state and message serialization.
 
 LangGraph owns runtime events (messages, updates, values, interrupts,
-checkpoints). This module only handles input/state serialization.
+checkpoints). The transport layer only handles input/state serialization.
 """
 
 from __future__ import annotations
@@ -11,17 +11,6 @@ from typing import Any
 from fastapi.encoders import jsonable_encoder
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.messages.utils import convert_to_messages
-
-
-def protocol_message(data: Any) -> dict[str, Any]:
-    """Return a native LangGraph v3 protocol event unchanged.
-
-    v3 already emits the transport protocol envelope. Re-wrapping it would
-    destroy method, namespace and content-block semantics.
-    """
-    if not isinstance(data, dict):
-        raise TypeError("LangGraph protocol event must be a dict")
-    return data
 
 
 def input_messages(payload: Any) -> list[BaseMessage]:
