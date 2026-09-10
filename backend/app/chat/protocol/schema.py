@@ -20,3 +20,4 @@ class StreamRequest(BaseModel):
     namespaces: list[list[str]] | None = None
     depth: int | None = None
     since: int | None = None
+    last_event_id: int | None = None
