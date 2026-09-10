@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from httpx import AsyncClient
+from langgraph.types import Command
 
 import app.chat.api as chat_api
 from app.chat.protocol.session import AgentStreamSession
@@ -14,19 +15,26 @@ class FakeAgent:
         self.started = asyncio.Event()
         self.stream_configs: list[dict[str, Any]] = []
         self.state_configs: list[dict[str, Any]] = []
+        self.inputs: list[Any] = []
 
     async def astream_events(
         self,
-        _input: dict[str, Any],
+        _input: Any,
         *,
         config: dict[str, Any],
         version: str,
-    ) -> AsyncIterator[dict[str, Any]]:
-        assert version == "v2"
+        **_kwargs: Any,
+    ) -> Any:
+        assert version == "v3"
         self.stream_configs.append(config)
+        self.inputs.append(_input)
         self.started.set()
-        if False:
-            yield {}
+
+        async def gen() -> AsyncIterator[dict[str, Any]]:
+            if False:
+                yield {}
+
+        return gen()
 
     async def aget_state(self, config: dict[str, Any]) -> Any:
         self.state_configs.append(config)
@@ -49,18 +57,25 @@ class SlowAgent:
 
     async def astream_events(
         self,
-        _input: dict[str, Any],
+        _input: Any,
         **_: Any,
-    ) -> AsyncIterator[dict[str, Any]]:
-        self.started.set()
-        try:
-            await self.release.wait()
-            self.completed.set()
-        except asyncio.CancelledError:
-            self.cancelled = True
-            raise
-        if False:
-            yield {}
+    ) -> Any:
+        async def gen() -> AsyncIterator[dict[str, Any]]:
+            self.started.set()
+            yield {
+                "type": "event",
+                "seq": 1,
+                "method": "lifecycle",
+                "params": {"namespace": [], "timestamp": 1, "data": {}},
+            }
+            try:
+                await self.release.wait()
+                self.completed.set()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+        return gen()
 
 
 class FakeStreamSession:
@@ -72,9 +87,8 @@ class FakeStreamSession:
         yield (
             "id: 3\n"
             "event: message\n"
-            'data: {"type":"event","event_id":"3","seq":3,'
-            '"method":"messages","params":{"namespace":[],"timestamp":1,'
-            '"data":{"event":"message-finish"}}}\n\n'
+            'data: {"type":"event","seq":3,"method":"messages",'
+            '"params":{"namespace":[],"timestamp":1,"data":{"event":"message-finish"}}}\n\n'
         )
 
 
@@ -83,9 +97,10 @@ class FakeRunRegistry:
         self.task = task
         self.lookup: tuple[str, str] | None = None
 
-    def get(self, user_id: str, run_id: str) -> asyncio.Task[Any] | None:
+    def cancel_transport(self, user_id: str, run_id: str) -> bool:
         self.lookup = (user_id, run_id)
-        return self.task
+        self.task.cancel()
+        return True
 
 
 async def test_agent_protocol_command_starts_langgraph_run(
@@ -183,7 +198,7 @@ async def test_agent_protocol_stream_replays_from_last_event_id(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert session.replay_cursor == 2
-    assert '"seq":3' in response.text
+    assert "id: 3" in response.text
 
 
 async def test_agent_protocol_stream_accepts_stock_sdk_since_cursor(
@@ -247,7 +262,7 @@ async def test_cancel_endpoint_is_transport_level_task_cancel(
     monkeypatch.setattr(chat_api, "run_registry", registry)
 
     response = await client.post(
-        "/api/v1/threads/thread-1/runs/run-1/cancel?action=interrupt",
+        "/api/v1/threads/thread-1/runs/run-1/cancel?action=cancel",
         headers=superuser_token_headers,
     )
 
@@ -256,6 +271,67 @@ async def test_cancel_endpoint_is_transport_level_task_cancel(
     assert registry.lookup[1] == "run-1"
     await asyncio.sleep(0)
     assert task.cancelled()
+
+
+async def test_agent_protocol_resume_command_starts_langgraph_run(
+    client: AsyncClient,
+    superuser_token_headers: dict[str, str],
+    monkeypatch,
+) -> None:
+    agent = FakeAgent()
+    monkeypatch.setattr(chat_api, "get_agent", lambda: agent)
+
+    response = await client.post(
+        "/api/v1/threads/thread-1/commands",
+        headers=superuser_token_headers,
+        json={
+            "id": 2,
+            "method": "run.resume",
+            "params": {"value": {"answer": "yes"}},
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["type"] == "success"
+    assert result["id"] == 2
+    assert result["result"]["run_id"]
+
+    await asyncio.wait_for(agent.started.wait(), 1)
+    assert isinstance(agent.inputs[0], Command)
+    assert agent.inputs[0].resume == {"answer": "yes"}
+
+
+async def test_duplicate_run_start_is_idempotent(
+    client: AsyncClient,
+    superuser_token_headers: dict[str, str],
+    monkeypatch,
+) -> None:
+    agent = SlowAgent()
+    monkeypatch.setattr(chat_api, "get_agent", lambda: agent)
+
+    payload = {
+        "id": 7,
+        "method": "run.start",
+        "params": {"input": {"messages": [{"type": "human", "content": "hi"}]}},
+    }
+    first = await client.post(
+        "/api/v1/threads/thread-1/commands",
+        headers=superuser_token_headers,
+        json=payload,
+    )
+    second = await client.post(
+        "/api/v1/threads/thread-1/commands",
+        headers=superuser_token_headers,
+        json=payload,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["result"]["run_id"] == second.json()["result"]["run_id"]
+
+    agent.release.set()
+    await asyncio.wait_for(agent.completed.wait(), 1)
 
 
 async def test_agent_protocol_routes_require_authentication(

@@ -11,7 +11,12 @@ from langgraph.types import Command
 from app.agent.agent import get_agent
 from app.chat.protocol.adapter import input_messages, serialize_state
 from app.chat.protocol.run_registry import run_registry
-from app.chat.protocol.schema import CommandRequest, ResumeParams, RunStartParams, StreamRequest
+from app.chat.protocol.schema import (
+    CommandRequest,
+    ResumeParams,
+    RunStartParams,
+    StreamRequest,
+)
 from app.chat.protocol.session import AgentStreamSession, get_stream_session
 from app.core.deps import CurrentUser
 
@@ -48,7 +53,9 @@ async def _publish_stream(stream: Any, owner_id: str, thread_id: str) -> None:
 
 async def _run_agent(owner_id: str, thread_id: str, params: RunStartParams) -> None:
     stream_options = params.stream.model_dump(exclude_none=True) if params.stream else {}
-    stream = get_agent().astream_events(
+    # version="v3" returns an awaitable AsyncGraphRunStream of protocol events
+    # ({type, seq, method, params}); await it before iterating.
+    stream = await get_agent().astream_events(
         {"messages": input_messages(params.input)},
         config=_config(owner_id, thread_id),
         version="v3",
@@ -58,7 +65,7 @@ async def _run_agent(owner_id: str, thread_id: str, params: RunStartParams) -> N
 
 
 async def _resume_agent(owner_id: str, thread_id: str, value: Any) -> None:
-    stream = get_agent().astream_events(
+    stream = await get_agent().astream_events(
         Command(resume=value),
         config=_config(owner_id, thread_id),
         version="v3",
@@ -76,9 +83,9 @@ async def command(thread_id: str, command: CommandRequest, current_user: Current
         return {"type": "success", "id": command.id, "result": {"run_id": existing_run_id}}
 
     if data.get("method") == "run.resume":
-        params = ResumeParams.model_validate(data.get("params", {}))
+        resume_params = ResumeParams.model_validate(data.get("params", {}))
         run_id = str(uuid4())
-        task = asyncio.create_task(_resume_agent(owner_id, thread_id, params.value))
+        task = asyncio.create_task(_resume_agent(owner_id, thread_id, resume_params.value))
         run_registry.register(owner_id, thread_id, run_id, command.id, task)
         task.add_done_callback(lambda _: run_registry.remove(owner_id, run_id))
         return {"type": "success", "id": command.id, "result": {"run_id": run_id}}
@@ -87,8 +94,8 @@ async def command(thread_id: str, command: CommandRequest, current_user: Current
         return {"type": "error", "id": command.id, "error": "unknown_command"}
 
     run_id = str(uuid4())
-    params = RunStartParams.model_validate(data.get("params", {}))
-    task = asyncio.create_task(_run_agent(owner_id, thread_id, params))
+    start_params = RunStartParams.model_validate(data.get("params", {}))
+    task = asyncio.create_task(_run_agent(owner_id, thread_id, start_params))
     run_registry.register(owner_id, thread_id, run_id, command.id, task)
     task.add_done_callback(lambda _: run_registry.remove(owner_id, run_id))
 

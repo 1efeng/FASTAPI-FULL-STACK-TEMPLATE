@@ -10,6 +10,11 @@ def parse_event(frame: str) -> dict:
     return json.loads(line.removeprefix("data: "))
 
 
+def parse_event_id(frame: str) -> int:
+    line = next(line for line in frame.splitlines() if line.startswith("id:"))
+    return int(line.removeprefix("id: ").strip())
+
+
 def protocol_event(marker: str) -> dict:
     return {
         "method": "lifecycle",
@@ -31,10 +36,9 @@ async def test_replay_from_last_event_id() -> None:
 
     stream = session.subscribe(2)
     try:
-        event = parse_event(await anext(stream))
-        assert event["type"] == "event"
-        assert event["event_id"] == "3"
-        assert event["seq"] == 3
+        frame = await anext(stream)
+        event = parse_event(frame)
+        assert parse_event_id(frame) == 3
         assert event["method"] == "lifecycle"
         assert event["params"]["data"]["marker"] == "three"
     finally:
@@ -69,7 +73,9 @@ async def test_event_buffer_is_bounded() -> None:
 
     stream = session.subscribe()
     try:
-        first = parse_event(await anext(stream))
-        assert first["seq"] == 101
+        frame = await anext(stream)
+        first = parse_event(frame)
+        assert parse_event_id(frame) == 101
+        assert first["params"]["data"]["marker"] == "100"
     finally:
         await stream.aclose()

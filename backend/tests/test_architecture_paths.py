@@ -19,7 +19,7 @@ def test_backend_architecture_paths() -> None:
         app_root / "agent" / "middleware.py",
         app_root / "agent" / "skills",
         app_root / "chat" / "protocol" / "schema.py",
-        app_root / "chat" / "protocol" / "events.py",
+        app_root / "chat" / "protocol" / "run_registry.py",
         app_root / "chat" / "protocol" / "session.py",
         app_root / "chat" / "protocol" / "adapter.py",
         Path("alembic"),
