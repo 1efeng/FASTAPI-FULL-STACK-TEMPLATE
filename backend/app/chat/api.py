@@ -58,9 +58,13 @@ async def command(thread_id: str, command: CommandRequest, current_user: Current
         return {"type": "error", "id": command.id, "error": "unknown_command"}
 
     owner_id = str(current_user.id)
+    existing_run_id = run_registry.find_command(owner_id, thread_id, command.id)
+    if existing_run_id:
+        return {"type": "success", "id": command.id, "result": {"run_id": existing_run_id}}
+
     run_id = str(uuid4())
     task = asyncio.create_task(_run_agent(owner_id, thread_id, data.get("params", {})))
-    run_registry.register(owner_id, thread_id, run_id, task)
+    run_registry.register(owner_id, thread_id, run_id, command.id, task)
     task.add_done_callback(lambda _: run_registry.remove(owner_id, run_id))
 
     return {"type": "success", "id": command.id, "result": {"run_id": run_id}}
