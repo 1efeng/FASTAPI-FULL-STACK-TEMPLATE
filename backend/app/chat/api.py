@@ -41,16 +41,12 @@ def _replay_cursor(request: StreamRequest) -> int | None:
 
 async def _run_agent(owner_id: str, thread_id: str, payload: dict[str, Any]) -> None:
     session = get_stream_session(owner_id, thread_id)
-
-    try:
-        async for event in get_agent().astream(
-            {"messages": input_messages(payload.get("input"))},
-            config=_config(owner_id, thread_id),
-            stream_mode=["messages", "updates", "values", "custom"],
-        ):
-            await session.publish(protocol_message(event))
-    except asyncio.CancelledError:
-        raise
+    async for event in get_agent().astream(
+        {"messages": input_messages(payload.get("input"))},
+        config=_config(owner_id, thread_id),
+        stream_mode=["messages", "updates", "values", "custom"],
+    ):
+        await session.publish(protocol_message(event))
 
 
 @router.post("/{thread_id}/commands")
@@ -60,10 +56,12 @@ async def command(thread_id: str, command: CommandRequest, current_user: Current
         return {"type": "error", "id": command.id, "error": "unknown_command"}
 
     owner_id = str(current_user.id)
+    run_id = str(uuid4())
     task = asyncio.create_task(_run_agent(owner_id, thread_id, data.get("params", {})))
-    run_registry.register(owner_id, str(uuid4()), task)
+    run_registry.register(owner_id, thread_id, run_id, task)
+    task.add_done_callback(lambda _: run_registry.remove(owner_id, run_id))
 
-    return {"type": "success", "id": command.id, "result": {"started": True}}
+    return {"type": "success", "id": command.id, "result": {"run_id": run_id}}
 
 
 @router.post("/{thread_id}/stream")
@@ -86,8 +84,8 @@ async def cancel_run(thread_id: str, run_id: str, current_user: CurrentUser, act
     _ = thread_id
     if action != "interrupt":
         raise HTTPException(status_code=400, detail="unsupported action")
-    task = run_registry.get(str(current_user.id), run_id)
-    if not task:
+    handle = run_registry.get(str(current_user.id), run_id)
+    if not handle:
         raise HTTPException(status_code=404, detail="run not found")
-    task.cancel()
+    handle.task.cancel()
     return Response(status_code=204)
