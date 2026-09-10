@@ -65,15 +65,16 @@ class SlowAgent:
 
 class FakeStreamSession:
     def __init__(self) -> None:
-        self.last_event_id: int | None = None
+        self.replay_cursor: int | None = None
 
     async def subscribe(self, last_event_id: int | None = None) -> AsyncIterator[str]:
-        self.last_event_id = last_event_id
+        self.replay_cursor = last_event_id
         yield (
             "id: 3\n"
             "event: message\n"
             'data: {"type":"event","event_id":"3","seq":3,'
-            '"timestamp":1,"data":{"type":"message"}}\n\n'
+            '"method":"messages","params":{"namespace":[],"timestamp":1,'
+            '"data":{"event":"message-finish"}}}\n\n'
         )
 
 
@@ -111,6 +112,7 @@ async def test_agent_protocol_command_starts_langgraph_run(
     assert response.status_code == 200
     result = response.json()
     assert result["type"] == "success"
+    assert result["id"] == 1
     assert result["result"]["run_id"]
 
     await asyncio.wait_for(agent.started.wait(), 1)
@@ -180,8 +182,30 @@ async def test_agent_protocol_stream_replays_from_last_event_id(
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert session.last_event_id == 2
+    assert session.replay_cursor == 2
     assert '"seq":3' in response.text
+
+
+async def test_agent_protocol_stream_accepts_stock_sdk_since_cursor(
+    client: AsyncClient,
+    superuser_token_headers: dict[str, str],
+    monkeypatch,
+) -> None:
+    session = FakeStreamSession()
+    monkeypatch.setattr(
+        chat_api,
+        "get_stream_session",
+        lambda _owner_id, _thread_id: session,
+    )
+
+    response = await client.post(
+        "/api/v1/threads/thread-1/stream",
+        headers=superuser_token_headers,
+        json={"channels": ["messages"], "since": 2},
+    )
+
+    assert response.status_code == 200
+    assert session.replay_cursor == 2
 
 
 async def test_agent_protocol_state_reads_langgraph_checkpoint(
