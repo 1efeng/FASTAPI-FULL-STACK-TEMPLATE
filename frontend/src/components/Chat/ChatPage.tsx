@@ -1,13 +1,11 @@
-import { useChat } from "@ai-sdk/react"
+import { HumanMessage, type BaseMessage } from "@langchain/core/messages"
 import {
-  type ChatStatus,
-  DefaultChatTransport,
-  getToolName,
-  isToolUIPart,
-  type UIMessage,
-} from "ai"
+  HttpAgentServerAdapter,
+  StreamProvider,
+  useStreamContext,
+} from "@langchain/react"
 import { MessageSquarePlus } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { ChatActivity } from "@/components/Chat/ChatActivity"
 import { ChatComposer } from "@/components/Chat/ChatComposer"
@@ -15,85 +13,103 @@ import { ChatMessages } from "@/components/Chat/ChatMessages"
 import { ChatThreadSidebar } from "@/components/Chat/ChatThreadSidebar"
 import { Button } from "@/components/ui/button"
 
+interface ChatState {
+  messages: BaseMessage[]
+}
+
+const THREAD_STORAGE_KEY = "agent101.chat.threadId"
+
 function newThreadId() {
   return crypto.randomUUID()
 }
 
-function apiUrl(path: string) {
-  const base = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "")
-  return `${base}${path}`
+function initialThreadId() {
+  const stored = sessionStorage.getItem(THREAD_STORAGE_KEY)
+  if (stored) return stored
+  const threadId = newThreadId()
+  sessionStorage.setItem(THREAD_STORAGE_KEY, threadId)
+  return threadId
 }
 
-const chatTransport = new DefaultChatTransport({
-  api: apiUrl("/api/v1/chat/stream"),
-  headers: () => {
-    const token = localStorage.getItem("access_token")
-    const headers: Record<string, string> = {}
-    if (token) headers.Authorization = `Bearer ${token}`
-    return headers
-  },
-})
-
-function getActivityLabel(messages: UIMessage[], status: ChatStatus) {
-  if (status === "submitted") return "正在思考…"
-  if (status !== "streaming") return null
-
-  const assistant = [...messages]
-    .reverse()
-    .find((message) => message.role === "assistant")
-
-  if (!assistant) return "正在思考…"
-
-  const latestTool = [...assistant.parts]
-    .reverse()
-    .find((part) => isToolUIPart(part))
-
-  if (latestTool && isToolUIPart(latestTool)) {
-    if (
-      latestTool.state === "input-streaming" ||
-      latestTool.state === "input-available"
-    ) {
-      return `正在使用 ${getToolName(latestTool)}…`
-    }
-    if (latestTool.state === "output-available") {
-      return "正在整理结果…"
-    }
-  }
-
-  const hasText = assistant.parts.some(
-    (part) => part.type === "text" && part.text.length > 0,
-  )
-  return hasText ? null : "正在思考…"
+function apiBaseUrl() {
+  const configured = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "")
+  const origin = configured || window.location.origin
+  return `${origin}/api/v1`
 }
 
-interface ChatSessionProps {
+const authenticatedFetch: typeof fetch = async (input, init) => {
+  const headers = new Headers(init?.headers)
+  const token = localStorage.getItem("access_token")
+  if (token) headers.set("Authorization", `Bearer ${token}`)
+  return window.fetch(input, { ...init, headers })
+}
+
+function activeRunStorageKey(threadId: string) {
+  return `agent101.chat.activeRun.${threadId}`
+}
+
+interface ChatRuntimeProps {
   threadId: string
   sidebarCollapsed: boolean
   onNewChat: () => void
   onToggleSidebar: () => void
 }
 
-function ChatSession({
+function ChatRuntime({
   threadId,
   sidebarCollapsed,
   onNewChat,
   onToggleSidebar,
-}: ChatSessionProps) {
+}: ChatRuntimeProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
-  const { error, messages, sendMessage, status, stop } = useChat({
-    id: threadId,
-    transport: chatTransport,
-  })
-  const activityLabel = getActivityLabel(messages, status)
+  const [controlError, setControlError] = useState<string | null>(null)
+  const stream = useStreamContext<ChatState>()
+
+  const latestTool = stream.toolCalls.at(-1)
+  const activityLabel = (() => {
+    if (latestTool?.status === "running") return `正在使用 ${latestTool.name}…`
+    if (stream.isLoading && latestTool?.status === "finished") {
+      return "正在整理结果…"
+    }
+    if (stream.isLoading) return "正在思考…"
+    return null
+  })()
 
   useEffect(() => {
     const viewport = scrollRef.current
     if (!viewport) return
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" })
-  }, [])
+  }, [stream.messages.length, stream.toolCalls.length, stream.isLoading])
 
-  const handleNewChat = () => {
-    void stop()
+  const stopRun = async () => {
+    setControlError(null)
+    const runId = sessionStorage.getItem(activeRunStorageKey(threadId))
+    try {
+      // HttpAgentServerAdapter can attach auth to protocol requests, but the
+      // SDK's separate runs.cancel client does not inherit those headers for a
+      // custom adapter. Cancel the same standard REST route with auth first,
+      // then only disconnect the protocol stream locally.
+      if (runId) {
+        const response = await authenticatedFetch(
+          `${apiBaseUrl()}/threads/${threadId}/runs/${runId}/cancel?wait=0&action=interrupt`,
+          { method: "POST" },
+        )
+        if (!response.ok && response.status !== 404) {
+          throw new Error(`Cancel failed with ${response.status}`)
+        }
+      }
+      await stream.stop({ cancel: false })
+      sessionStorage.removeItem(activeRunStorageKey(threadId))
+    } catch (error) {
+      setControlError(error instanceof Error ? error.message : "停止运行失败")
+    }
+  }
+
+  const handleNewChat = async () => {
+    if (stream.isLoading) {
+      await stopRun()
+      if (stream.isLoading) return
+    }
     onNewChat()
   }
 
@@ -101,7 +117,7 @@ function ChatSession({
     <div className="flex h-svh min-h-0 min-w-0 overflow-hidden bg-background">
       <ChatThreadSidebar
         collapsed={sidebarCollapsed}
-        onNewChat={handleNewChat}
+        onNewChat={() => void handleNewChat()}
         onToggle={onToggleSidebar}
       />
 
@@ -113,7 +129,7 @@ function ChatSession({
           <Button
             aria-label="新建对话"
             className="size-8"
-            onClick={handleNewChat}
+            onClick={() => void handleNewChat()}
             size="icon"
             type="button"
             variant="ghost"
@@ -123,38 +139,81 @@ function ChatSession({
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto" ref={scrollRef}>
-          <ChatMessages messages={messages} />
+          <ChatMessages messages={stream.messages} />
           <ChatActivity label={activityLabel} />
-          {error && (
+          {(stream.error || controlError) && (
             <div
               className="mx-auto w-full max-w-3xl px-4 pb-4 md:px-6"
               role="alert"
             >
               <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-                对话请求失败，请稍后重试。
+                {controlError ?? "对话请求失败，请稍后重试。"}
               </div>
             </div>
           )}
         </div>
 
         <ChatComposer
-          onStop={() => void stop()}
-          onSubmit={(text) => void sendMessage({ text })}
-          status={status}
+          isGenerating={stream.isLoading}
+          onStop={() => void stopRun()}
+          onSubmit={(text) =>
+            void stream.submit({ messages: [new HumanMessage(text)] })
+          }
         />
       </main>
     </div>
   )
 }
 
+interface ChatSessionProps extends Omit<ChatRuntimeProps, "threadId"> {
+  threadId: string
+}
+
+function ChatSession({ threadId, ...props }: ChatSessionProps) {
+  const transport = useMemo(
+    () =>
+      new HttpAgentServerAdapter({
+        apiUrl: apiBaseUrl(),
+        threadId,
+        fetch: authenticatedFetch,
+        paths: {
+          commands: `/threads/${threadId}/commands`,
+          stream: `/threads/${threadId}/stream`,
+          state: `/threads/${threadId}/state`,
+        },
+      }),
+    [threadId],
+  )
+
+  return (
+    <StreamProvider<ChatState>
+      onCompleted={() => {
+        sessionStorage.removeItem(activeRunStorageKey(threadId))
+      }}
+      onCreated={({ runId }) => {
+        sessionStorage.setItem(activeRunStorageKey(threadId), runId)
+      }}
+      transport={transport}
+    >
+      <ChatRuntime threadId={threadId} {...props} />
+    </StreamProvider>
+  )
+}
+
 export function ChatPage() {
-  const [threadId, setThreadId] = useState(newThreadId)
+  const [threadId, setThreadId] = useState(initialThreadId)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  const startNewThread = () => {
+    const nextThreadId = newThreadId()
+    sessionStorage.setItem(THREAD_STORAGE_KEY, nextThreadId)
+    setThreadId(nextThreadId)
+  }
 
   return (
     <ChatSession
       key={threadId}
-      onNewChat={() => setThreadId(newThreadId())}
+      onNewChat={startNewThread}
       onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
       sidebarCollapsed={sidebarCollapsed}
       threadId={threadId}
