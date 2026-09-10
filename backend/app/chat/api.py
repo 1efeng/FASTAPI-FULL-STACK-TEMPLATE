@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.agent.agent import get_agent
 from app.chat.protocol.adapter import AgentEventAdapter, input_messages, serialize_state
+from app.chat.protocol.run_registry import run_registry
 from app.chat.protocol.schema import CommandRequest, StreamRequest
 from app.chat.protocol.session import get_stream_session
 from app.core.deps import CurrentUser
@@ -21,8 +22,6 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
-_runs: dict[tuple[str, str], asyncio.Task[Any]] = {}
-
 
 def _session(current_user: CurrentUser, thread_id: str):
     return get_stream_session(str(current_user.id), thread_id)
@@ -33,7 +32,7 @@ def _config(thread_id: str):
 
 
 async def _run_agent(owner_id: str, thread_id: str, run_id: str, payload: dict[str, Any]):
-    session = _session(type("User", (), {"id": owner_id})(), thread_id)
+    session = get_stream_session(owner_id, thread_id)
     adapter = AgentEventAdapter()
 
     await session.publish({"type": "run.started", "run_id": run_id})
@@ -50,11 +49,7 @@ async def _run_agent(owner_id: str, thread_id: str, run_id: str, payload: dict[s
 
 
 @router.post("/{thread_id}/commands")
-async def command(
-    thread_id: str,
-    command: CommandRequest,
-    current_user: CurrentUser,
-) -> dict[str, Any]:
+async def command(thread_id: str, command: CommandRequest, current_user: CurrentUser) -> dict[str, Any]:
     data = command.model_dump(exclude_none=True)
 
     if data.get("method") != "run.start":
@@ -64,19 +59,15 @@ async def command(
     task = asyncio.create_task(
         _run_agent(str(current_user.id), thread_id, run_id, data.get("params", {}))
     )
-    _runs[(str(current_user.id), run_id)] = task
+    run_registry.register(str(current_user.id), run_id, task)
 
     return {"type": "success", "result": {"run_id": run_id}}
 
 
 @router.post("/{thread_id}/stream")
-async def stream_events(
-    thread_id: str,
-    request: StreamRequest,
-    current_user: CurrentUser,
-) -> StreamingResponse:
+async def stream_events(thread_id: str, request: StreamRequest, current_user: CurrentUser) -> StreamingResponse:
     return StreamingResponse(
-        _session(current_user, thread_id).subscribe(),
+        _session(current_user, thread_id).subscribe(request.last_event_id),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -89,18 +80,16 @@ async def thread_state(thread_id: str, current_user: CurrentUser):
 
 
 @router.post("/{thread_id}/runs/{run_id}/cancel", status_code=204)
-async def cancel_run(
-    thread_id: str,
-    run_id: str,
-    current_user: CurrentUser,
-    action: str = "interrupt",
-):
+async def cancel_run(thread_id: str, run_id: str, current_user: CurrentUser, action: str = "interrupt"):
     if action != "interrupt":
         raise HTTPException(status_code=400, detail="unsupported action")
 
-    task = _runs.get((str(current_user.id), run_id))
+    task = run_registry.get(str(current_user.id), run_id)
     if not task:
         raise HTTPException(status_code=404, detail="run not found")
 
+    # Transport-level cancellation only. This cancels the HTTP task lifecycle.
+    # It is not LangGraph durable interrupt/resume.
     task.cancel()
+    run_registry.remove(str(current_user.id), run_id)
     return Response(status_code=204)
