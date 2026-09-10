@@ -1,4 +1,6 @@
+import asyncio
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
 from httpx import AsyncClient
@@ -6,49 +8,68 @@ from httpx import AsyncClient
 import app.chat.api as chat_api
 
 
-class FakeSession:
+class FakeAgent:
     def __init__(self) -> None:
-        self.cancelled: tuple[str, bool] | None = None
+        self.started = asyncio.Event()
+        self.stream_configs: list[dict[str, Any]] = []
+        self.state_configs: list[dict[str, Any]] = []
 
-    async def handle_command(self, command: dict[str, Any]) -> dict[str, Any]:
-        assert command["method"] == "run.start"
-        return {"type": "success", "id": command["id"], "result": {"run_id": "run-1"}}
+    async def astream_events(
+        self,
+        _input: dict[str, Any],
+        *,
+        config: dict[str, Any],
+        version: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        assert version == "v2"
+        self.stream_configs.append(config)
+        self.started.set()
+        if False:
+            yield {}
 
-    async def event_stream(self, request: dict[str, Any]) -> AsyncIterator[str]:
-        assert "messages" in request["channels"]
-        yield (
-            'id: 1\nevent: message\ndata: '
-            '{"type":"event","event_id":"1","seq":1,"method":"lifecycle",'
-            '"params":{"namespace":[],"timestamp":1,"data":{"event":"started"}}}\n\n'
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        self.state_configs.append(config)
+        return SimpleNamespace(
+            values={"messages": []},
+            next=(),
+            tasks=(),
+            metadata={},
+            config=config,
+            parent_config=None,
         )
 
-    def state(self) -> dict[str, Any]:
-        return {
-            "values": {"messages": []},
-            "next": [],
-            "tasks": [],
-            "metadata": {"active_run_id": None},
-            "checkpoint": None,
-            "parent_checkpoint": None,
-        }
 
-    async def cancel_run(self, run_id: str, *, wait: bool = False) -> bool:
-        self.cancelled = (run_id, wait)
-        return True
+class FakeStreamSession:
+    def __init__(self) -> None:
+        self.last_event_id: int | None = None
 
-
-def _install_fake_session(monkeypatch) -> FakeSession:
-    session = FakeSession()
-    monkeypatch.setattr(chat_api, "get_thread_session", lambda _owner, _thread: session)
-    return session
+    async def subscribe(self, last_event_id: int | None = None) -> AsyncIterator[str]:
+        self.last_event_id = last_event_id
+        yield (
+            "id: 3\n"
+            "event: message\n"
+            'data: {"type":"event","event_id":"3","seq":3,'
+            '"timestamp":1,"data":{"type":"message"}}\n\n'
+        )
 
 
-async def test_agent_protocol_command_starts_run(
+class FakeRunRegistry:
+    def __init__(self, task: asyncio.Task[Any]) -> None:
+        self.task = task
+        self.lookup: tuple[str, str] | None = None
+
+    def get(self, user_id: str, run_id: str) -> asyncio.Task[Any] | None:
+        self.lookup = (user_id, run_id)
+        return self.task
+
+
+async def test_agent_protocol_command_starts_langgraph_run(
     client: AsyncClient,
     superuser_token_headers: dict[str, str],
     monkeypatch,
 ) -> None:
-    _install_fake_session(monkeypatch)
+    agent = FakeAgent()
+    monkeypatch.setattr(chat_api, "get_agent", lambda: agent)
 
     response = await client.post(
         "/api/v1/threads/thread-1/commands",
@@ -64,38 +85,50 @@ async def test_agent_protocol_command_starts_run(
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "type": "success",
-        "id": 1,
-        "result": {"run_id": "run-1"},
-    }
+    result = response.json()
+    assert result["type"] == "success"
+    assert result["result"]["run_id"]
+
+    await asyncio.wait_for(agent.started.wait(), 1)
+    internal_thread_id = agent.stream_configs[0]["configurable"]["thread_id"]
+    assert internal_thread_id.endswith(":thread-1")
+    assert internal_thread_id != "thread-1"
 
 
-async def test_agent_protocol_stream_is_plain_sse(
+async def test_agent_protocol_stream_replays_from_last_event_id(
     client: AsyncClient,
     superuser_token_headers: dict[str, str],
     monkeypatch,
 ) -> None:
-    _install_fake_session(monkeypatch)
+    session = FakeStreamSession()
+    monkeypatch.setattr(
+        chat_api,
+        "get_stream_session",
+        lambda _owner_id, _thread_id: session,
+    )
 
     response = await client.post(
         "/api/v1/threads/thread-1/stream",
         headers=superuser_token_headers,
-        json={"channels": ["messages", "lifecycle"], "since": 0},
+        json={
+            "channels": ["messages", "lifecycle"],
+            "last_event_id": 2,
+        },
     )
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert "x-vercel-ai-ui-message-stream" not in response.headers
-    assert '"method":"lifecycle"' in response.text
+    assert session.last_event_id == 2
+    assert '"seq":3' in response.text
 
 
-async def test_agent_protocol_state_supports_hydration(
+async def test_agent_protocol_state_reads_langgraph_checkpoint(
     client: AsyncClient,
     superuser_token_headers: dict[str, str],
     monkeypatch,
 ) -> None:
-    _install_fake_session(monkeypatch)
+    agent = FakeAgent()
+    monkeypatch.setattr(chat_api, "get_agent", lambda: agent)
 
     response = await client.get(
         "/api/v1/threads/thread-1/state",
@@ -104,22 +137,39 @@ async def test_agent_protocol_state_supports_hydration(
 
     assert response.status_code == 200
     assert response.json()["values"] == {"messages": []}
+    assert len(agent.state_configs) == 1
+    internal_thread_id = agent.state_configs[0]["configurable"]["thread_id"]
+    assert internal_thread_id.endswith(":thread-1")
 
 
-async def test_cancel_endpoint_cancels_server_run(
+def test_checkpoint_thread_id_is_isolated_by_user() -> None:
+    first = chat_api._config("user-a", "shared-thread")
+    second = chat_api._config("user-b", "shared-thread")
+
+    assert first["configurable"]["thread_id"] == "user-a:shared-thread"
+    assert second["configurable"]["thread_id"] == "user-b:shared-thread"
+    assert first != second
+
+
+async def test_cancel_endpoint_is_transport_level_task_cancel(
     client: AsyncClient,
     superuser_token_headers: dict[str, str],
     monkeypatch,
 ) -> None:
-    session = _install_fake_session(monkeypatch)
+    task = asyncio.create_task(asyncio.Event().wait())
+    registry = FakeRunRegistry(task)
+    monkeypatch.setattr(chat_api, "run_registry", registry)
 
     response = await client.post(
-        "/api/v1/threads/thread-1/runs/run-1/cancel?wait=1&action=interrupt",
+        "/api/v1/threads/thread-1/runs/run-1/cancel?action=interrupt",
         headers=superuser_token_headers,
     )
 
     assert response.status_code == 204
-    assert session.cancelled == ("run-1", True)
+    assert registry.lookup is not None
+    assert registry.lookup[1] == "run-1"
+    await asyncio.sleep(0)
+    assert task.cancelled()
 
 
 async def test_agent_protocol_routes_require_authentication(client: AsyncClient) -> None:
