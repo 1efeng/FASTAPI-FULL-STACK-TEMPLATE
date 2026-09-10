@@ -82,12 +82,14 @@ async def thread_state(thread_id: str, current_user: CurrentUser) -> dict[str, A
 
 
 @router.post("/{thread_id}/runs/{run_id}/cancel", status_code=204)
-async def cancel_run(thread_id: str, run_id: str, current_user: CurrentUser, action: str = "interrupt") -> Response:
+async def cancel_run(thread_id: str, run_id: str, current_user: CurrentUser, action: str = "cancel") -> Response:
     _ = thread_id
-    if action != "interrupt":
+    if action != "cancel":
         raise HTTPException(status_code=400, detail="unsupported action")
+
     handle = run_registry.get(str(current_user.id), run_id)
     if not handle:
         raise HTTPException(status_code=404, detail="run not found")
+
     handle.task.cancel()
     return Response(status_code=204)
