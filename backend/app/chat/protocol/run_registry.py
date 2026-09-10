@@ -49,6 +49,18 @@ class RunRegistry:
     def get(self, user_id: str, run_id: str) -> RunHandle | None:
         return self._runs.get((user_id, run_id))
 
+    def cancel_transport(self, user_id: str, run_id: str) -> bool:
+        """Cancel only the local transport task.
+
+        This intentionally does not represent a LangGraph interrupt. Durable
+        interruption/resume must go through LangGraph checkpoint APIs.
+        """
+        handle = self.get(user_id, run_id)
+        if not handle:
+            return False
+        handle.task.cancel()
+        return True
+
     def remove(self, user_id: str, run_id: str) -> None:
         handle = self._runs.pop((user_id, run_id), None)
         if handle:
