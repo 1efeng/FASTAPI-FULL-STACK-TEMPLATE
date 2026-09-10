@@ -9,11 +9,10 @@ MAX_EVENTS = 1000
 
 
 class AgentStreamSession:
-    """Process-local transport session.
+    """Process-local SSE transport.
 
-    This object is not an Agent runtime. LangGraph owns checkpoints, state,
-    messages, interrupts and recovery. The session only broadcasts protocol
-    events to connected SSE clients and keeps a short replay window.
+    LangGraph owns agent runtime state, checkpoints, interrupts and recovery.
+    This class only manages connected clients and a short-lived replay buffer.
     """
 
     def __init__(self, thread_id: str):
@@ -25,16 +24,16 @@ class AgentStreamSession:
         self._lock = asyncio.Lock()
 
     async def publish(self, event: dict[str, Any]) -> None:
-        """Broadcast one native LangGraph protocol event."""
+        """Store and broadcast a native LangGraph protocol event."""
         async with self._lock:
             self._seq += 1
             payload = {
-                "type": "event",
                 "event_id": str(self._seq),
                 "seq": self._seq,
-                "data": event,
+                "event": event,
             }
             self._events.append(payload)
+
             if len(self._events) > MAX_EVENTS:
                 self._events = self._events[-MAX_EVENTS:]
 
@@ -48,6 +47,7 @@ class AgentStreamSession:
             self._subscriber_id += 1
             subscriber_id = self._subscriber_id
             self._subscribers[subscriber_id] = queue
+
             replay = [
                 item
                 for item in self._events
@@ -65,11 +65,11 @@ class AgentStreamSession:
                 self._subscribers.pop(subscriber_id, None)
 
     @staticmethod
-    def _sse(event: dict[str, Any]) -> str:
+    def _sse(payload: dict[str, Any]) -> str:
         return (
-            f"id: {event['event_id']}\n"
+            f"id: {payload['event_id']}\n"
             "event: message\n"
-            f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            f"data: {json.dumps(payload['event'], ensure_ascii=False)}\n\n"
         )
 
 
