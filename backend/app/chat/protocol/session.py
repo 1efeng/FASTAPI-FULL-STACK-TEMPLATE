@@ -24,13 +24,13 @@ class AgentStreamSession:
         self._lock = asyncio.Lock()
 
     async def publish(self, event: dict[str, Any]) -> None:
-        """Store and broadcast a native LangGraph protocol event."""
+        """Store and broadcast native LangGraph protocol events unchanged."""
         async with self._lock:
             self._seq += 1
             payload = {
                 "event_id": str(self._seq),
                 "seq": self._seq,
-                "event": event,
+                "data": event,
             }
             self._events.append(payload)
 
@@ -69,7 +69,7 @@ class AgentStreamSession:
         return (
             f"id: {payload['event_id']}\n"
             "event: message\n"
-            f"data: {json.dumps(payload['event'], ensure_ascii=False)}\n\n"
+            f"data: {json.dumps(payload['data'], ensure_ascii=False)}\n\n"
         )
 
 
