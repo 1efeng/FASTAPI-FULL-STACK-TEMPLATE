@@ -1,12 +1,11 @@
 """Transport helpers for LangGraph native agent streaming protocol.
 
 LangGraph owns runtime events (messages, updates, values, interrupts,
-checkpoints). This module only handles the HTTP transport envelope.
+checkpoints). This module only handles input/state serialization.
 """
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
@@ -14,18 +13,15 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.messages.utils import convert_to_messages
 
 
-
 def protocol_message(data: Any) -> dict[str, Any]:
-    """Wrap a LangGraph streaming payload for Agent Protocol transport."""
-    return {
-        "method": "stream.event",
-        "params": {
-            "namespace": [],
-            "timestamp": int(time.time() * 1000),
-            "data": jsonable(data),
-        },
-    }
+    """Return a native LangGraph v3 protocol event unchanged.
 
+    v3 already emits the transport protocol envelope. Re-wrapping it would
+    destroy method, namespace and content-block semantics.
+    """
+    if not isinstance(data, dict):
+        raise TypeError("LangGraph protocol event must be a dict")
+    return data
 
 
 def input_messages(payload: Any) -> list[BaseMessage]:
@@ -37,7 +33,6 @@ def input_messages(payload: Any) -> list[BaseMessage]:
     if not isinstance(raw_messages, list):
         raise ValueError("run.start input.messages must be an array")
     return list(convert_to_messages(raw_messages))
-
 
 
 def serialize_message(message: BaseMessage) -> dict[str, Any]:
@@ -56,13 +51,14 @@ def serialize_message(message: BaseMessage) -> dict[str, Any]:
     return result
 
 
-
 def serialize_state(snapshot: Any, *, thread_id: str) -> dict[str, Any]:
     values = dict(snapshot.values) if isinstance(snapshot.values, dict) else {}
     messages = values.get("messages")
     if isinstance(messages, list):
         values["messages"] = [
-            serialize_message(message) if isinstance(message, BaseMessage) else jsonable(message)
+            serialize_message(message)
+            if isinstance(message, BaseMessage)
+            else jsonable(message)
             for message in messages
         ]
     return {
@@ -72,7 +68,6 @@ def serialize_state(snapshot: Any, *, thread_id: str) -> dict[str, Any]:
         "metadata": jsonable(snapshot.metadata),
         "checkpoint": {"thread_id": thread_id},
     }
-
 
 
 def jsonable(value: Any) -> Any:
