@@ -32,7 +32,9 @@ class AgentEventAdapter:
             if not text:
                 return []
 
-            stream_key = event_run_id or str(getattr(chunk, "id", None) or node or "model")
+            stream_key = event_run_id or str(
+                getattr(chunk, "id", None) or node or "model"
+            )
             stream_state = self._model_streams.get(stream_key)
             events: list[ProtocolEvent] = []
             if stream_state is None:
@@ -250,7 +252,9 @@ def serialize_state(snapshot: Any, *, thread_id: str) -> dict[str, Any]:
     raw_messages = values.get("messages")
     if isinstance(raw_messages, list):
         values["messages"] = [
-            serialize_message(message) if isinstance(message, BaseMessage) else jsonable(message)
+            serialize_message(message)
+            if isinstance(message, BaseMessage)
+            else jsonable(message)
             for message in raw_messages
         ]
 
@@ -272,7 +276,7 @@ def jsonable(value: Any) -> Any:
         return serialize_message(value)
     try:
         return jsonable_encoder(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return str(value)
 
 
