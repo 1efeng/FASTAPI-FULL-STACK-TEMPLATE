@@ -26,6 +26,15 @@ class RunStartParams(BaseModel):
     stream: StreamOptions | None = None
 
 
+class ResumeParams(BaseModel):
+    """Payload for resuming a LangGraph interrupted execution."""
+
+    model_config = ConfigDict(extra="allow")
+
+    interrupt_id: str | None = None
+    value: Any | None = None
+
+
 class CommandRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
