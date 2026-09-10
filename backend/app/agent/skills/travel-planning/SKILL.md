@@ -1,3 +1,8 @@
+---
+name: travel-planning
+description: 仅用于制定、优化和修改旅行计划，包括目的地选择、路线设计、景点安排、交通住宿规划、预算控制以及旅行风险管理；普通旅游事实问答不要加载此技能。
+---
+
 # Travel Planning Skill
 
 ## 目标

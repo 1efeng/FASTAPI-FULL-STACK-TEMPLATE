@@ -4,11 +4,14 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
+    AliasChoices,
     AnyUrl,
     BeforeValidator,
     EmailStr,
+    Field,
     HttpUrl,
     PostgresDsn,
+    SecretStr,
     computed_field,
     model_validator,
 )
@@ -52,6 +55,22 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str
     SENTRY_DSN: HttpUrl | None = None
+
+    # LangChain ChatModel. `LLM_BASE_URL` keeps the integration compatible with
+    # OpenAI-compatible providers while LangChain remains the model abstraction.
+    LLM_MODEL: str = Field(
+        default="deepseek-v4-flash",
+        validation_alias=AliasChoices("LLM_MODEL", "CHAT_MODEL"),
+    )
+    LLM_API_KEY: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_API_KEY", "DOUBAO_PLAN_API_KEY"),
+    )
+    LLM_BASE_URL: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_BASE_URL", "DOUBAO_PLAN_BASE_URL"),
+    )
+
     POSTGRES_SERVER: str
     POSTGRES_PORT: int = 5432
     POSTGRES_USER: str
@@ -77,6 +96,19 @@ class Settings(BaseSettings):
         """同步驱动 URL,供 Alembic 迁移使用"""
         return PostgresDsn.build(
             scheme="postgresql+psycopg",
+            username=self.POSTGRES_USER,
+            password=self.POSTGRES_PASSWORD,
+            host=self.POSTGRES_SERVER,
+            port=self.POSTGRES_PORT,
+            path=self.POSTGRES_DB,
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def LANGGRAPH_CHECKPOINT_DATABASE_URI(self) -> PostgresDsn:
+        """Psycopg URI used by LangGraph's official Postgres checkpointer."""
+        return PostgresDsn.build(
+            scheme="postgresql",
             username=self.POSTGRES_USER,
             password=self.POSTGRES_PASSWORD,
             host=self.POSTGRES_SERVER,

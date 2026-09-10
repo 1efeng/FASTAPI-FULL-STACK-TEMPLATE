@@ -12,11 +12,11 @@ from app.integrations.email import generate_test_email, send_email
 from app.user.model import User
 from app.user.schema import UserPublic
 
-router = APIRouter(tags=["utils"])
+router = APIRouter(prefix="/system", tags=["system"])
 
 
 @router.post(
-    "/utils/test-email/",
+    "/test-email/",
     dependencies=[Depends(get_current_active_superuser)],
     status_code=201,
 )
@@ -30,18 +30,18 @@ def test_email(email_to: EmailStr) -> Message:
     return Message(message="Test email sent")
 
 
-@router.get("/utils/health/live")
+@router.get("/health/live")
 async def health_live() -> bool:
     return True
 
 
-@router.get("/utils/health/ready")
+@router.get("/health/ready")
 async def health_ready(db: SessionDep) -> bool:
     await db.execute(text("SELECT 1"))
     return True
 
 
-@router.get("/utils/health-check/", include_in_schema=False)
+@router.get("/health-check/", include_in_schema=False)
 async def health_check(db: SessionDep) -> bool:
     return await health_ready(db)
 

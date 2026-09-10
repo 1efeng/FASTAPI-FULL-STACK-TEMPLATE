@@ -1,4 +1,9 @@
-import { createFileRoute, Outlet, redirect } from "@tanstack/react-router"
+import {
+  createFileRoute,
+  Outlet,
+  redirect,
+  useRouterState,
+} from "@tanstack/react-router"
 
 import { Footer } from "@/components/Common/Footer"
 import AppSidebar from "@/components/Sidebar/AppSidebar"
@@ -21,6 +26,18 @@ export const Route = createFileRoute("/_layout")({
 })
 
 function Layout() {
+  const isChat = useRouterState({
+    select: (state) => state.location.pathname === "/",
+  })
+
+  if (isChat) {
+    return (
+      <div className="h-svh min-h-0 overflow-hidden bg-background">
+        <Outlet />
+      </div>
+    )
+  }
+
   return (
     <SidebarProvider>
       <AppSidebar />

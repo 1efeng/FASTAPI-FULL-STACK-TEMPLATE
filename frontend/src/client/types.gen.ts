@@ -9,10 +9,45 @@ export type Body_login_login_access_token = {
     client_secret?: (string | null);
 };
 
+export type CommandRequest = {
+    id: number;
+    method: string;
+    params: {
+        [key: string]: unknown;
+    };
+    [key: string]: unknown | number | string;
+};
+
+export type DemoCreate = {
+    title: string;
+    description?: (string | null);
+};
+
+export type DemoPublic = {
+    id: string;
+    title: string;
+    description?: (string | null);
+    owner_id: string;
+    created_at: string;
+};
+
+export type DemosPublic = {
+    data: Array<DemoPublic>;
+    count: number;
+};
+
+export type DemoUpdate = {
+    title?: (string | null);
+    description?: (string | null);
+};
+
 export type HTTPValidationError = {
     detail?: Array<ValidationError>;
 };
 
+/**
+ * Generic API message response.
+ */
 export type Message = {
     message: string;
 };
@@ -29,6 +64,14 @@ export type PrivateUserCreate = {
     is_verified?: boolean;
 };
 
+export type StreamRequest = {
+    channels: Array<(string)>;
+    namespaces?: (Array<Array<(string)>> | null);
+    depth?: (number | null);
+    since?: (number | null);
+    [key: string]: unknown | string;
+};
+
 export type Token = {
     access_token: string;
     token_type?: string;
@@ -41,19 +84,19 @@ export type UpdatePassword = {
 
 export type UserCreate = {
     email: string;
+    password: string;
     is_active?: boolean;
     is_superuser?: boolean;
     full_name?: (string | null);
-    password: string;
 };
 
 export type UserPublic = {
-    email: string;
-    is_active?: boolean;
-    is_superuser?: boolean;
-    full_name?: (string | null);
     id: string;
-    created_at?: (string | null);
+    email: string;
+    is_active: boolean;
+    is_superuser: boolean;
+    full_name?: (string | null);
+    created_at: string;
 };
 
 export type UserRegister = {
@@ -90,6 +133,71 @@ export type ValidationError = {
     };
 };
 
+export type ChatCommandData = {
+    requestBody: CommandRequest;
+    threadId: string;
+};
+
+export type ChatCommandResponse = ({
+    [key: string]: unknown;
+});
+
+export type ChatStreamEventsData = {
+    requestBody: StreamRequest;
+    threadId: string;
+};
+
+export type ChatStreamEventsResponse = (unknown);
+
+export type ChatThreadStateData = {
+    threadId: string;
+};
+
+export type ChatThreadStateResponse = ({
+    [key: string]: unknown;
+});
+
+export type ChatCancelRunData = {
+    action?: string;
+    runId: string;
+    threadId: string;
+    wait?: number;
+};
+
+export type ChatCancelRunResponse = (void);
+
+export type DemosReadDemosData = {
+    limit?: number;
+    skip?: number;
+};
+
+export type DemosReadDemosResponse = (DemosPublic);
+
+export type DemosCreateDemoData = {
+    requestBody: DemoCreate;
+};
+
+export type DemosCreateDemoResponse = (DemoPublic);
+
+export type DemosReadDemoData = {
+    demoId: string;
+};
+
+export type DemosReadDemoResponse = (DemoPublic);
+
+export type DemosUpdateDemoData = {
+    demoId: string;
+    requestBody: DemoUpdate;
+};
+
+export type DemosUpdateDemoResponse = (DemoPublic);
+
+export type DemosDeleteDemoData = {
+    demoId: string;
+};
+
+export type DemosDeleteDemoResponse = (Message);
+
 export type LoginLoginAccessTokenData = {
     formData: Body_login_login_access_token;
 };
@@ -121,6 +229,16 @@ export type PrivateCreateUserData = {
 };
 
 export type PrivateCreateUserResponse = (UserPublic);
+
+export type SystemTestEmailData = {
+    emailTo: string;
+};
+
+export type SystemTestEmailResponse = (Message);
+
+export type SystemHealthLiveResponse = (boolean);
+
+export type SystemHealthReadyResponse = (boolean);
 
 export type UsersReadUsersData = {
     limit?: number;
@@ -175,11 +293,3 @@ export type UsersDeleteUserData = {
 };
 
 export type UsersDeleteUserResponse = (Message);
-
-export type UtilsTestEmailData = {
-    emailTo: string;
-};
-
-export type UtilsTestEmailResponse = (Message);
-
-export type UtilsHealthCheckResponse = (boolean);
