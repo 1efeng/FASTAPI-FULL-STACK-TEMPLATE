@@ -99,9 +99,8 @@ async def cancel_run(thread_id: str, run_id: str, current_user: CurrentUser, act
     if action != "cancel":
         raise HTTPException(status_code=400, detail="unsupported action")
 
-    handle = run_registry.get(str(current_user.id), run_id)
-    if not handle:
+    cancelled = run_registry.cancel_transport(str(current_user.id), run_id)
+    if not cancelled:
         raise HTTPException(status_code=404, detail="run not found")
 
-    handle.task.cancel()
     return Response(status_code=204)
