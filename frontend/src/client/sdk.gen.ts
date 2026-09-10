@@ -3,26 +3,101 @@
 import type { CancelablePromise } from './core/CancelablePromise';
 import { OpenAPI } from './core/OpenAPI';
 import { request as __request } from './core/request';
-import type { ChatStreamChatData, ChatStreamChatResponse, DemosReadDemosData, DemosReadDemosResponse, DemosCreateDemoData, DemosCreateDemoResponse, DemosReadDemoData, DemosReadDemoResponse, DemosUpdateDemoData, DemosUpdateDemoResponse, DemosDeleteDemoData, DemosDeleteDemoResponse, LoginLoginAccessTokenData, LoginLoginAccessTokenResponse, LoginTestTokenResponse, LoginRecoverPasswordData, LoginRecoverPasswordResponse, LoginResetPasswordData, LoginResetPasswordResponse, LoginRecoverPasswordHtmlContentData, LoginRecoverPasswordHtmlContentResponse, PrivateCreateUserData, PrivateCreateUserResponse, SystemTestEmailData, SystemTestEmailResponse, SystemHealthLiveResponse, SystemHealthReadyResponse, UsersReadUsersData, UsersReadUsersResponse, UsersCreateUserData, UsersCreateUserResponse, UsersReadUserMeResponse, UsersDeleteUserMeResponse, UsersUpdateUserMeData, UsersUpdateUserMeResponse, UsersUpdatePasswordMeData, UsersUpdatePasswordMeResponse, UsersRegisterUserData, UsersRegisterUserResponse, UsersReadUserByIdData, UsersReadUserByIdResponse, UsersUpdateUserData, UsersUpdateUserResponse, UsersDeleteUserData, UsersDeleteUserResponse } from './types.gen';
+import type { ChatCommandData, ChatCommandResponse, ChatStreamEventsData, ChatStreamEventsResponse, ChatThreadStateData, ChatThreadStateResponse, ChatCancelRunData, ChatCancelRunResponse, DemosReadDemosData, DemosReadDemosResponse, DemosCreateDemoData, DemosCreateDemoResponse, DemosReadDemoData, DemosReadDemoResponse, DemosUpdateDemoData, DemosUpdateDemoResponse, DemosDeleteDemoData, DemosDeleteDemoResponse, LoginLoginAccessTokenData, LoginLoginAccessTokenResponse, LoginTestTokenResponse, LoginRecoverPasswordData, LoginRecoverPasswordResponse, LoginResetPasswordData, LoginResetPasswordResponse, LoginRecoverPasswordHtmlContentData, LoginRecoverPasswordHtmlContentResponse, PrivateCreateUserData, PrivateCreateUserResponse, SystemTestEmailData, SystemTestEmailResponse, SystemHealthLiveResponse, SystemHealthReadyResponse, UsersReadUsersData, UsersReadUsersResponse, UsersCreateUserData, UsersCreateUserResponse, UsersReadUserMeResponse, UsersDeleteUserMeResponse, UsersUpdateUserMeData, UsersUpdateUserMeResponse, UsersUpdatePasswordMeData, UsersUpdatePasswordMeResponse, UsersRegisterUserData, UsersRegisterUserResponse, UsersReadUserByIdData, UsersReadUserByIdResponse, UsersUpdateUserData, UsersUpdateUserResponse, UsersDeleteUserData, UsersDeleteUserResponse } from './types.gen';
 
 export class ChatService {
     /**
-     * Stream Chat
-     * Stream one AI SDK chat turn through LangChain.
-     *
-     * Authentication stays in FastAPI. The frontend sends AI SDK `UIMessage[]`;
-     * the protocol package translates that request and the LangChain output.
+     * Command
+     * Handle Agent Streaming Protocol commands for one thread.
      * @param data The data for the request.
+     * @param data.threadId
      * @param data.requestBody
      * @returns unknown Successful Response
      * @throws ApiError
      */
-    public static streamChat(data: ChatStreamChatData): CancelablePromise<ChatStreamChatResponse> {
+    public static command(data: ChatCommandData): CancelablePromise<ChatCommandResponse> {
         return __request(OpenAPI, {
             method: 'POST',
-            url: '/api/v1/chat/stream',
+            url: '/api/v1/threads/{thread_id}/commands',
+            path: {
+                thread_id: data.threadId
+            },
             body: data.requestBody,
             mediaType: 'application/json',
+            errors: {
+                422: 'Validation Error'
+            }
+        });
+    }
+
+    /**
+     * Stream Events
+     * Subscribe to buffered + live protocol events without owning the Run.
+     * @param data The data for the request.
+     * @param data.threadId
+     * @param data.requestBody
+     * @returns unknown Successful Response
+     * @throws ApiError
+     */
+    public static streamEvents(data: ChatStreamEventsData): CancelablePromise<ChatStreamEventsResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/threads/{thread_id}/stream',
+            path: {
+                thread_id: data.threadId
+            },
+            body: data.requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: 'Validation Error'
+            }
+        });
+    }
+
+    /**
+     * Thread State
+     * Return process-local state used by HttpAgentServerAdapter hydration.
+     * @param data The data for the request.
+     * @param data.threadId
+     * @returns unknown Successful Response
+     * @throws ApiError
+     */
+    public static threadState(data: ChatThreadStateData): CancelablePromise<ChatThreadStateResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/threads/{thread_id}/state',
+            path: {
+                thread_id: data.threadId
+            },
+            errors: {
+                422: 'Validation Error'
+            }
+        });
+    }
+
+    /**
+     * Cancel Run
+     * Cancel the actual server-side Run; disconnecting SSE never calls this.
+     * @param data The data for the request.
+     * @param data.threadId
+     * @param data.runId
+     * @param data.wait
+     * @param data.action
+     * @returns void Successful Response
+     * @throws ApiError
+     */
+    public static cancelRun(data: ChatCancelRunData): CancelablePromise<ChatCancelRunResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/threads/{thread_id}/runs/{run_id}/cancel',
+            path: {
+                thread_id: data.threadId,
+                run_id: data.runId
+            },
+            query: {
+                wait: data.wait,
+                action: data.action
+            },
             errors: {
                 422: 'Validation Error'
             }

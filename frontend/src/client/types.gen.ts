@@ -9,17 +9,13 @@ export type Body_login_login_access_token = {
     client_secret?: (string | null);
 };
 
-/**
- * Request shape emitted by AI SDK `DefaultChatTransport`.
- *
- * AI SDK may include additional top-level fields such as `id` or `trigger`;
- * Pydantic ignores them. The backend keeps the native `messages` array so the
- * protocol adapter, not the React client, owns the LangChain conversion.
- */
-export type ChatRequest = {
-    messages: Array<{
+export type CommandRequest = {
+    id: number;
+    method: string;
+    params: {
         [key: string]: unknown;
-    }>;
+    };
+    [key: string]: unknown | number | string;
 };
 
 export type DemoCreate = {
@@ -66,6 +62,14 @@ export type PrivateUserCreate = {
     password: string;
     full_name: string;
     is_verified?: boolean;
+};
+
+export type StreamRequest = {
+    channels: Array<(string)>;
+    namespaces?: (Array<Array<(string)>> | null);
+    depth?: (number | null);
+    since?: (number | null);
+    [key: string]: unknown | string;
 };
 
 export type Token = {
@@ -129,11 +133,38 @@ export type ValidationError = {
     };
 };
 
-export type ChatStreamChatData = {
-    requestBody: ChatRequest;
+export type ChatCommandData = {
+    requestBody: CommandRequest;
+    threadId: string;
 };
 
-export type ChatStreamChatResponse = (unknown);
+export type ChatCommandResponse = ({
+    [key: string]: unknown;
+});
+
+export type ChatStreamEventsData = {
+    requestBody: StreamRequest;
+    threadId: string;
+};
+
+export type ChatStreamEventsResponse = (unknown);
+
+export type ChatThreadStateData = {
+    threadId: string;
+};
+
+export type ChatThreadStateResponse = ({
+    [key: string]: unknown;
+});
+
+export type ChatCancelRunData = {
+    action?: string;
+    runId: string;
+    threadId: string;
+    wait?: number;
+};
+
+export type ChatCancelRunResponse = (void);
 
 export type DemosReadDemosData = {
     limit?: number;

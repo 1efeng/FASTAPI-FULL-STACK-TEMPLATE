@@ -12,13 +12,13 @@ class FakeSession:
 
     async def handle_command(self, command: dict[str, Any]) -> dict[str, Any]:
         assert command["method"] == "run.start"
-        return {"type": "success", "id": command["id"], "result": {"runId": "run-1"}}
+        return {"type": "success", "id": command["id"], "result": {"run_id": "run-1"}}
 
     async def event_stream(self, request: dict[str, Any]) -> AsyncIterator[str]:
         assert "messages" in request["channels"]
         yield (
             'id: 1\nevent: message\ndata: '
-            '{"type":"event","eventId":"1","seq":1,"method":"lifecycle",'
+            '{"type":"event","event_id":"1","seq":1,"method":"lifecycle",'
             '"params":{"namespace":[],"timestamp":1,"data":{"event":"started"}}}\n\n'
         )
 
@@ -27,7 +27,7 @@ class FakeSession:
             "values": {"messages": []},
             "next": [],
             "tasks": [],
-            "metadata": {"activeRunId": None},
+            "metadata": {"active_run_id": None},
             "checkpoint": None,
             "parent_checkpoint": None,
         }
@@ -57,7 +57,7 @@ async def test_agent_protocol_command_starts_run(
             "id": 1,
             "method": "run.start",
             "params": {
-                "assistantId": "agent",
+                "assistant_id": "agent",
                 "input": {"messages": [{"type": "human", "content": "你好"}]},
             },
         },
@@ -67,7 +67,7 @@ async def test_agent_protocol_command_starts_run(
     assert response.json() == {
         "type": "success",
         "id": 1,
-        "result": {"runId": "run-1"},
+        "result": {"run_id": "run-1"},
     }
 
 

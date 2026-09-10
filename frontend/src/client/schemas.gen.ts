@@ -57,26 +57,26 @@ export const Body_login_login_access_tokenSchema = {
     title: 'Body_login-login_access_token'
 } as const;
 
-export const ChatRequestSchema = {
+export const CommandRequestSchema = {
     properties: {
-        messages: {
-            items: {
-                additionalProperties: true,
-                type: 'object'
-            },
-            type: 'array',
-            minItems: 1,
-            title: 'Messages'
+        id: {
+            type: 'integer',
+            title: 'Id'
+        },
+        method: {
+            type: 'string',
+            title: 'Method'
+        },
+        params: {
+            additionalProperties: true,
+            type: 'object',
+            title: 'Params'
         }
     },
+    additionalProperties: true,
     type: 'object',
-    required: ['messages'],
-    title: 'ChatRequest',
-    description: `Request shape emitted by AI SDK \`DefaultChatTransport\`.
-
-AI SDK may include additional top-level fields such as \`id\` or \`trigger\`;
-Pydantic ignores them. The backend keeps the native \`messages\` array so the
-protocol adapter, not the React client, owns the LangChain conversion.`
+    required: ['id', 'method', 'params'],
+    title: 'CommandRequest'
 } as const;
 
 export const DemoCreateSchema = {
@@ -262,6 +262,61 @@ export const PrivateUserCreateSchema = {
     type: 'object',
     required: ['email', 'password', 'full_name'],
     title: 'PrivateUserCreate'
+} as const;
+
+export const StreamRequestSchema = {
+    properties: {
+        channels: {
+            items: {
+                type: 'string'
+            },
+            type: 'array',
+            title: 'Channels'
+        },
+        namespaces: {
+            anyOf: [
+                {
+                    items: {
+                        items: {
+                            type: 'string'
+                        },
+                        type: 'array'
+                    },
+                    type: 'array'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Namespaces'
+        },
+        depth: {
+            anyOf: [
+                {
+                    type: 'integer'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Depth'
+        },
+        since: {
+            anyOf: [
+                {
+                    type: 'integer'
+                },
+                {
+                    type: 'null'
+                }
+            ],
+            title: 'Since'
+        }
+    },
+    additionalProperties: true,
+    type: 'object',
+    required: ['channels'],
+    title: 'StreamRequest'
 } as const;
 
 export const TokenSchema = {

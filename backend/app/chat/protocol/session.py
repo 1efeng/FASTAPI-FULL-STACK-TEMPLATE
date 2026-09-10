@@ -9,11 +9,18 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from fastapi.encoders import jsonable_encoder
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-from langchain_core.messages.utils import convert_to_messages
-
 from app.agent.agent import get_agent
+from app.chat.protocol.adapter import (
+    AgentEventAdapter,
+    input_messages,
+    jsonable,
+    run_completed,
+    run_failed,
+    run_interrupted,
+    run_started,
+    serialize_state,
+)
+from app.chat.protocol.events import ProtocolEvent
 
 
 @dataclass(slots=True)
@@ -32,20 +39,22 @@ class _Subscriber:
 
 
 class ThreadSession:
-    """Process-local bridge between Agent Protocol and one LangGraph thread.
+    """Process-local streaming bridge for one checkpointed LangGraph thread.
 
-    This deliberately solves only browser disconnect/reconnect while this Python
-    process stays alive. It is not durable execution and is not safe for
-    multi-worker replay without a shared session/event store.
+    LangGraph messages/state live in Postgres checkpoints. Active tasks,
+    subscribers, and the SSE replay buffer remain process-local and are not
+    safe for multi-worker replay without a shared event transport.
     """
 
     def __init__(
         self,
         thread_id: str,
         *,
+        checkpoint_thread_id: str | None = None,
         agent_factory: Callable[[], Any] = get_agent,
     ) -> None:
         self.thread_id = thread_id
+        self.checkpoint_thread_id = checkpoint_thread_id or thread_id
         self._agent_factory = agent_factory
         self._events: list[dict[str, Any]] = []
         self._subscribers: set[int] = set()
@@ -53,7 +62,6 @@ class ThreadSession:
         self._next_subscriber_id = 0
         self._seq = 0
         self._lock = asyncio.Lock()
-        self._messages: list[BaseMessage] = []
         self.active_run: ActiveRun | None = None
 
     async def handle_command(self, command: dict[str, Any]) -> dict[str, Any]:
@@ -72,6 +80,13 @@ class ThreadSession:
                 "This thread already has an active run",
             )
 
+        if await self._checkpoint_has_pending_work():
+            return self._error(
+                command_id,
+                "invalid_argument",
+                "This thread has unfinished checkpointed work",
+            )
+
         run_id = str(uuid4())
         task = asyncio.create_task(
             self._execute_run(run_id, params),
@@ -81,7 +96,7 @@ class ThreadSession:
         return {
             "type": "success",
             "id": command_id,
-            "result": {"runId": run_id},
+            "result": {"run_id": run_id},
         }
 
     async def cancel_run(self, run_id: str, *, wait: bool = False) -> bool:
@@ -95,20 +110,20 @@ class ThreadSession:
                 await active.task
         return True
 
-    def state(self) -> dict[str, Any]:
+    async def state(self) -> dict[str, Any]:
+        snapshot = await self._agent_factory().aget_state(self._config())
+        state = serialize_state(snapshot, thread_id=self.thread_id)
         active = self.active_run
-        return {
-            "values": {"messages": [_serialize_message(message) for message in self._messages]},
-            "next": [],
-            "tasks": [],
-            "metadata": {
-                "activeRunId": (
-                    active.run_id if active is not None and not active.task.done() else None
-                )
-            },
-            "checkpoint": None,
-            "parent_checkpoint": None,
-        }
+        active_run_id = (
+            active.run_id if active is not None and not active.task.done() else None
+        )
+        if active_run_id is not None and not state["next"]:
+            # The local task can start before LangGraph writes its first
+            # checkpoint. Keep the reconnect signal accurate in that window.
+            state["next"] = ["agent"]
+        metadata = state["metadata"] if isinstance(state["metadata"], dict) else {}
+        state["metadata"] = {**metadata, "active_run_id": active_run_id}
+        return state
 
     async def event_stream(self, request: dict[str, Any]) -> AsyncIterator[str]:
         channels_raw = request.get("channels")
@@ -161,180 +176,52 @@ class ThreadSession:
             active.status = "running"
 
         input_payload = params.get("input")
-        new_messages = _input_messages(input_payload)
-        run_messages = [*self._messages, *new_messages]
-        # Persist the submitted user input immediately so a refresh during an
-        # active run can hydrate the same thread without starting another run.
-        self._messages = run_messages
+        new_messages = input_messages(input_payload)
+        for event in run_started(run_id):
+            await self._publish_event(event)
 
-        await self._publish_values()
-        await self._publish(
-            "lifecycle",
-            {"event": "started", "graphName": "agent", "runId": run_id},
-        )
-        await self._publish(
-            "lifecycle",
-            {"event": "running", "graphName": "agent", "runId": run_id},
-        )
+        adapter = AgentEventAdapter()
 
-        model_streams: dict[str, dict[str, Any]] = {}
-        tool_call_ids: dict[str, str] = {}
-        final_messages: list[BaseMessage] | None = None
-
-        config = dict(params.get("config") or {})
-        configurable = dict(config.get("configurable") or {})
-        configurable["thread_id"] = self.thread_id
-        config["configurable"] = configurable
+        config = self._config(params.get("config"))
 
         try:
             agent = self._agent_factory()
             async for event in agent.astream_events(
-                {"messages": run_messages},
+                {"messages": new_messages},
                 config=config,
                 version="v2",
             ):
-                event_name = event.get("event")
-                event_run_id = str(event.get("run_id") or uuid4())
-                data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                for protocol_event in adapter.adapt(event):
+                    await self._publish_event(protocol_event)
 
-                if event_name == "on_chat_model_stream":
-                    chunk = data.get("chunk")
-                    text = _message_text(chunk)
-                    if not text:
-                        continue
-                    stream_state = model_streams.get(event_run_id)
-                    if stream_state is None:
-                        message_id = str(getattr(chunk, "id", None) or f"ai-{event_run_id}")
-                        stream_state = {"id": message_id, "text": ""}
-                        model_streams[event_run_id] = stream_state
-                        await self._publish(
-                            "messages",
-                            {"event": "message-start", "role": "ai", "id": message_id},
-                            node=_event_node(event),
-                        )
-                        await self._publish(
-                            "messages",
-                            {
-                                "event": "content-block-start",
-                                "index": 0,
-                                "content": {"type": "text", "text": ""},
-                            },
-                            node=_event_node(event),
-                        )
-                    stream_state["text"] += text
-                    await self._publish(
-                        "messages",
-                        {
-                            "event": "content-block-delta",
-                            "index": 0,
-                            "delta": {"type": "text-delta", "text": text},
-                        },
-                        node=_event_node(event),
-                    )
-                    continue
-
-                if event_name == "on_chat_model_end":
-                    stream_state = model_streams.pop(event_run_id, None)
-                    if stream_state is not None:
-                        await self._publish(
-                            "messages",
-                            {
-                                "event": "content-block-finish",
-                                "index": 0,
-                                "content": {"type": "text", "text": stream_state["text"]},
-                            },
-                            node=_event_node(event),
-                        )
-                        await self._publish(
-                            "messages",
-                            {"event": "message-finish"},
-                            node=_event_node(event),
-                        )
-                    continue
-
-                if event_name == "on_tool_start":
-                    metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
-                    tool_call_id = str(metadata.get("tool_call_id") or event_run_id)
-                    tool_call_ids[event_run_id] = tool_call_id
-                    await self._publish(
-                        "tools",
-                        {
-                            "event": "tool-started",
-                            "toolCallId": tool_call_id,
-                            "toolName": str(event.get("name") or "tool"),
-                            "input": _jsonable(data.get("input")),
-                        },
-                        node=_event_node(event),
-                    )
-                    continue
-
-                if event_name == "on_tool_end":
-                    tool_call_id = tool_call_ids.pop(event_run_id, event_run_id)
-                    await self._publish(
-                        "tools",
-                        {
-                            "event": "tool-finished",
-                            "toolCallId": tool_call_id,
-                            "output": _jsonable(data.get("output")),
-                        },
-                        node=_event_node(event),
-                    )
-                    continue
-
-                if event_name == "on_tool_error":
-                    tool_call_id = tool_call_ids.pop(event_run_id, event_run_id)
-                    await self._publish(
-                        "tools",
-                        {
-                            "event": "tool-error",
-                            "toolCallId": tool_call_id,
-                            "message": str(data.get("error") or "Tool execution failed"),
-                        },
-                        node=_event_node(event),
-                    )
-                    continue
-
-                if event_name == "on_chain_end" and not event.get("parent_ids"):
-                    output = data.get("output")
-                    if isinstance(output, dict) and isinstance(output.get("messages"), list):
-                        final_messages = list(convert_to_messages(output["messages"]))
-
-            if final_messages is not None:
-                self._messages = final_messages
-            await self._publish_values()
             if self.active_run is not None and self.active_run.run_id == run_id:
                 self.active_run.status = "completed"
-            await self._publish(
-                "lifecycle",
-                {"event": "completed", "graphName": "agent", "runId": run_id},
-            )
+            await self._publish_event(run_completed(run_id))
         except asyncio.CancelledError:
             if self.active_run is not None and self.active_run.run_id == run_id:
                 self.active_run.status = "interrupted"
-            await self._publish(
-                "lifecycle",
-                {"event": "interrupted", "graphName": "agent", "runId": run_id},
-            )
+            await self._publish_event(run_interrupted(run_id))
             raise
         except Exception as exc:
             if self.active_run is not None and self.active_run.run_id == run_id:
                 self.active_run.status = "failed"
-            await self._publish(
-                "lifecycle",
-                {
-                    "event": "failed",
-                    "graphName": "agent",
-                    "runId": run_id,
-                    "error": str(exc),
-                },
-            )
+            await self._publish_event(run_failed(run_id, exc))
 
-    async def _publish_values(self) -> None:
-        await self._publish(
-            "values",
-            {"messages": [_serialize_message(message) for message in self._messages]},
-            data_is_values=True,
-        )
+    def _config(self, raw_config: Any = None) -> dict[str, Any]:
+        config = dict(raw_config) if isinstance(raw_config, dict) else {}
+        configurable = dict(config.get("configurable") or {})
+        configurable["thread_id"] = self.checkpoint_thread_id
+        config["configurable"] = configurable
+        return config
+
+    async def _checkpoint_has_pending_work(self) -> bool:
+        snapshot = await self._agent_factory().aget_state(self._config())
+        if snapshot.next:
+            return True
+        return any(getattr(task, "interrupts", ()) for task in snapshot.tasks)
+
+    async def _publish_event(self, event: ProtocolEvent) -> None:
+        await self._publish(event.method, event.data, node=event.node)
 
     async def _publish(
         self,
@@ -342,20 +229,19 @@ class ThreadSession:
         data: Any,
         *,
         node: str | None = None,
-        data_is_values: bool = False,
     ) -> None:
         async with self._lock:
             self._seq += 1
             params: dict[str, Any] = {
                 "namespace": [],
                 "timestamp": int(time.time() * 1000),
-                "data": _jsonable(data),
+                "data": jsonable(data),
             }
             if node:
                 params["node"] = node
             event = {
                 "type": "event",
-                "eventId": str(self._seq),
+                "event_id": str(self._seq),
                 "seq": self._seq,
                 "method": method,
                 "params": params,
@@ -381,72 +267,6 @@ class ThreadSession:
             "error": code,
             "message": message,
         }
-
-
-def _input_messages(payload: Any) -> list[BaseMessage]:
-    if not isinstance(payload, dict):
-        raise ValueError("run.start input must be an object")
-    raw_messages = payload.get("messages")
-    if raw_messages is None:
-        return []
-    if not isinstance(raw_messages, list):
-        raise ValueError("run.start input.messages must be an array")
-    return list(convert_to_messages(raw_messages))
-
-
-def _event_node(event: dict[str, Any]) -> str | None:
-    metadata = event.get("metadata")
-    if isinstance(metadata, dict):
-        node = metadata.get("langgraph_node")
-        if isinstance(node, str):
-            return node
-    name = event.get("name")
-    return str(name) if isinstance(name, str) else None
-
-
-def _message_text(message: Any) -> str:
-    content = getattr(message, "content", None)
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                chunks.append(block)
-            elif isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text")
-                if isinstance(text, str):
-                    chunks.append(text)
-        return "".join(chunks)
-    return ""
-
-
-def _serialize_message(message: BaseMessage) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "type": message.type,
-        "content": _jsonable(message.content),
-    }
-    if message.id:
-        result["id"] = message.id
-    if message.name:
-        result["name"] = message.name
-    if isinstance(message, AIMessage) and message.tool_calls:
-        result["tool_calls"] = _jsonable(message.tool_calls)
-    if isinstance(message, ToolMessage):
-        result["tool_call_id"] = message.tool_call_id
-        if message.status:
-            result["status"] = message.status
-    return result
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, BaseMessage):
-        return _serialize_message(value)
-    try:
-        return jsonable_encoder(value)
-    except (TypeError, ValueError):
-        return str(value)
-
 
 def _matches(
     event: dict[str, Any],
@@ -475,7 +295,7 @@ def _matches(
 
 def _to_sse(event: dict[str, Any]) -> str:
     payload = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-    return f"id: {event['eventId']}\nevent: message\ndata: {payload}\n\n"
+    return f"id: {event['event_id']}\nevent: message\ndata: {payload}\n\n"
 
 
 _sessions: dict[tuple[str, str], ThreadSession] = {}
@@ -485,7 +305,10 @@ def get_thread_session(owner_id: str, thread_id: str) -> ThreadSession:
     key = (owner_id, thread_id)
     session = _sessions.get(key)
     if session is None:
-        session = ThreadSession(thread_id)
+        session = ThreadSession(
+            thread_id,
+            checkpoint_thread_id=f"{owner_id}:{thread_id}",
+        )
         _sessions[key] = session
     return session
 

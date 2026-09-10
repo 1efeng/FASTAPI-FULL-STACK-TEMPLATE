@@ -21,6 +21,15 @@ LangGraph
 - Browser disconnect only removes the current subscription.
 - A reconnect with the same threadId subscribes again and can replay buffered events.
 - `stop` is different from disconnect: it requests cancellation of the active run.
+- The frontend sends the authenticated cancel request explicitly, then calls
+  `stream.stop({ cancel: false })`. The custom transport's authenticated fetch
+  is not used by the SDK's separate runs client.
+
+## Run policy
+
+- One thread can have only one active run.
+- A second submit while that run is active is rejected with
+  `invalid_argument`; it is not queued or used to interrupt the first run.
 
 ## Current guarantees
 
@@ -36,4 +45,4 @@ The current implementation does not provide:
 - distributed durable execution
 - multi worker coordination
 
-These require a separate durable execution layer.
+Adding those guarantees is outside this process-local implementation.

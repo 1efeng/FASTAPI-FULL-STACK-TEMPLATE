@@ -1,10 +1,12 @@
 import asyncio
 import logging
 
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from tenacity import after_log, before_log, retry, stop_after_attempt, wait_fixed
 
+from app.core.config import settings
 from app.db.session import engine
 
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +34,10 @@ async def init(db_engine: AsyncEngine) -> None:
 async def main_async() -> None:
     logger.info("Initializing service")
     await init(engine)
+    async with AsyncPostgresSaver.from_conn_string(
+        str(settings.LANGGRAPH_CHECKPOINT_DATABASE_URI)
+    ) as checkpointer:
+        await checkpointer.setup()
     logger.info("Service finished initializing")
 
 

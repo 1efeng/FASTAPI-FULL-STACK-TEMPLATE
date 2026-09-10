@@ -4,7 +4,7 @@ from contextlib import suppress
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 from app.chat.protocol.session import ThreadSession
 
@@ -14,7 +14,7 @@ def _command(text: str = "你好") -> dict[str, Any]:
         "id": 1,
         "method": "run.start",
         "params": {
-            "assistantId": "agent",
+            "assistant_id": "agent",
             "input": {
                 "messages": [
                     {"type": "human", "content": text, "id": "human-1"}
@@ -130,9 +130,12 @@ async def test_run_streams_messages_and_hydrates_state() -> None:
 
     response = await session.handle_command(_command())
     assert response["type"] == "success"
-    assert response["result"]["runId"]
+    assert response["result"]["run_id"]
 
     assert session.active_run is not None
+    active_state = session.state()
+    assert active_state["next"] == ["agent"]
+    assert active_state["metadata"]["active_run_id"] == response["result"]["run_id"]
     await session.active_run.task
 
     state = session.state()
@@ -141,13 +144,19 @@ async def test_run_streams_messages_and_hydrates_state() -> None:
         "ai",
     ]
     assert state["values"]["messages"][-1]["content"] == "你好"
+    assert state["next"] == []
+    assert state["metadata"]["active_run_id"] is None
 
     stream = session.event_stream(
         {"channels": ["messages", "lifecycle"], "since": 0}
     )
     events = []
     try:
-        for _ in range(8):
+        while not any(
+            event["method"] == "lifecycle"
+            and event["params"]["data"]["event"] == "completed"
+            for event in events
+        ):
             events.append(_event_from_sse(await asyncio.wait_for(anext(stream), 1)))
     finally:
         await stream.aclose()
@@ -165,6 +174,7 @@ async def test_run_streams_messages_and_hydrates_state() -> None:
         and event["params"]["data"]["event"] == "completed"
         for event in events
     )
+    assert all("event_id" in event and "eventId" not in event for event in events)
 
 
 @pytest.mark.asyncio
@@ -183,12 +193,12 @@ async def test_tool_lifecycle_is_exposed_on_tools_channel() -> None:
 
     assert started["params"]["data"] == {
         "event": "tool-started",
-        "toolCallId": "call-1",
-        "toolName": "search_docs",
+        "tool_call_id": "call-1",
+        "tool_name": "search_docs",
         "input": {"q": "LangGraph"},
     }
     assert finished["params"]["data"]["event"] == "tool-finished"
-    assert finished["params"]["data"]["toolCallId"] == "call-1"
+    assert finished["params"]["data"]["tool_call_id"] == "call-1"
 
 
 @pytest.mark.asyncio
@@ -215,7 +225,7 @@ async def test_cancel_stops_the_server_side_run() -> None:
     agent = SlowAgent()
     session = ThreadSession("thread-stop", agent_factory=lambda: agent)
     response = await session.handle_command(_command("不要结束"))
-    run_id = response["result"]["runId"]
+    run_id = response["result"]["run_id"]
     await asyncio.wait_for(agent.started.wait(), 1)
 
     assert await session.cancel_run(run_id)

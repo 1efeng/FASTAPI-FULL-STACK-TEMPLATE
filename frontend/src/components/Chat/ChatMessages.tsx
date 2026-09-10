@@ -34,7 +34,9 @@ export function ChatMessages({ messages }: ChatMessagesProps) {
             }
             key={message.id ?? `${message.type}-${index}`}
           >
-            <div className="whitespace-pre-wrap break-words">{message.text}</div>
+            <div className="whitespace-pre-wrap break-words">
+              {message.text}
+            </div>
           </article>
         )
       })}

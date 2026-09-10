@@ -3,7 +3,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import StreamingResponse
 
-from app.chat.protocol.session import get_thread_session
+from app.chat.protocol.schema import CommandRequest, StreamRequest
+from app.chat.protocol.session import ThreadSession, get_thread_session
 from app.core.deps import CurrentUser
 
 router = APIRouter(prefix="/threads", tags=["chat"])
@@ -15,30 +16,32 @@ SSE_HEADERS = {
 }
 
 
-def _session(current_user: CurrentUser, thread_id: str):
+def _session(current_user: CurrentUser, thread_id: str) -> ThreadSession:
     return get_thread_session(str(current_user.id), thread_id)
 
 
 @router.post("/{thread_id}/commands")
 async def command(
     thread_id: str,
-    command: dict[str, Any],
+    command: CommandRequest,
     current_user: CurrentUser,
 ) -> dict[str, Any]:
     """Handle Agent Streaming Protocol commands for one thread."""
-    return await _session(current_user, thread_id).handle_command(command)
+    return await _session(current_user, thread_id).handle_command(
+        command.model_dump(exclude_none=True)
+    )
 
 
 @router.post("/{thread_id}/stream")
 async def stream_events(
     thread_id: str,
-    request: dict[str, Any],
+    request: StreamRequest,
     current_user: CurrentUser,
 ) -> StreamingResponse:
     """Subscribe to buffered + live protocol events without owning the Run."""
     session = _session(current_user, thread_id)
     return StreamingResponse(
-        session.event_stream(request),
+        session.event_stream(request.model_dump(exclude_none=True)),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -49,8 +52,8 @@ async def thread_state(
     thread_id: str,
     current_user: CurrentUser,
 ) -> dict[str, Any]:
-    """Return process-local state used by HttpAgentServerAdapter hydration."""
-    return _session(current_user, thread_id).state()
+    """Return checkpointed LangGraph state for frontend hydration."""
+    return await _session(current_user, thread_id).state()
 
 
 @router.post("/{thread_id}/runs/{run_id}/cancel", status_code=204)

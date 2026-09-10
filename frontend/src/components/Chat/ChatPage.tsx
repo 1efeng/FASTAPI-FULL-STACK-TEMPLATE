@@ -1,4 +1,4 @@
-import { HumanMessage, type BaseMessage } from "@langchain/core/messages"
+import { type BaseMessage, HumanMessage } from "@langchain/core/messages"
 import {
   HttpAgentServerAdapter,
   StreamProvider,
@@ -65,7 +65,7 @@ function ChatRuntime({
   const [controlError, setControlError] = useState<string | null>(null)
   const stream = useStreamContext<ChatState>()
 
-  const latestTool = stream.toolCalls.at(-1)
+  const latestTool = stream.toolCalls[stream.toolCalls.length - 1]
   const activityLabel = (() => {
     if (latestTool?.status === "running") return `正在使用 ${latestTool.name}…`
     if (stream.isLoading && latestTool?.status === "finished") {
@@ -79,7 +79,7 @@ function ChatRuntime({
     const viewport = scrollRef.current
     if (!viewport) return
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" })
-  }, [stream.messages.length, stream.toolCalls.length, stream.isLoading])
+  })
 
   const stopRun = async () => {
     setControlError(null)
@@ -193,6 +193,7 @@ function ChatSession({ threadId, ...props }: ChatSessionProps) {
       onCreated={({ runId }) => {
         sessionStorage.setItem(activeRunStorageKey(threadId), runId)
       }}
+      threadId={threadId}
       transport={transport}
     >
       <ChatRuntime threadId={threadId} {...props} />
