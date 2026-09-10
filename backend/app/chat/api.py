@@ -146,6 +146,10 @@ async def cancel_run(
     current_user: CurrentUser,
     action: str = "interrupt",
 ):
+    # The public thread id scopes this HTTP route. Runtime lookup remains the
+    # minimal authenticated-user + run-id transport registry requested here.
+    _ = thread_id
+
     if action != "interrupt":
         raise HTTPException(status_code=400, detail="unsupported action")
 
