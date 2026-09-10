@@ -6,6 +6,7 @@ from typing import Any
 from httpx import AsyncClient
 
 import app.chat.api as chat_api
+from app.chat.protocol.session import AgentStreamSession
 
 
 class FakeAgent:
@@ -37,6 +38,29 @@ class FakeAgent:
             config=config,
             parent_config=None,
         )
+
+
+class SlowAgent:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.completed = asyncio.Event()
+        self.cancelled = False
+
+    async def astream_events(
+        self,
+        _input: dict[str, Any],
+        **_: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        self.started.set()
+        try:
+            await self.release.wait()
+            self.completed.set()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        if False:
+            yield {}
 
 
 class FakeStreamSession:
@@ -93,6 +117,44 @@ async def test_agent_protocol_command_starts_langgraph_run(
     internal_thread_id = agent.stream_configs[0]["configurable"]["thread_id"]
     assert internal_thread_id.endswith(":thread-1")
     assert internal_thread_id != "thread-1"
+
+
+async def test_sse_disconnect_does_not_cancel_agent_run(
+    client: AsyncClient,
+    superuser_token_headers: dict[str, str],
+    monkeypatch,
+) -> None:
+    agent = SlowAgent()
+    session = AgentStreamSession("thread-disconnect")
+    monkeypatch.setattr(chat_api, "get_agent", lambda: agent)
+    monkeypatch.setattr(
+        chat_api,
+        "get_stream_session",
+        lambda _owner_id, _thread_id: session,
+    )
+
+    response = await client.post(
+        "/api/v1/threads/thread-disconnect/commands",
+        headers=superuser_token_headers,
+        json={
+            "id": 1,
+            "method": "run.start",
+            "params": {"input": {"messages": [{"type": "human", "content": "wait"}]}},
+        },
+    )
+    assert response.status_code == 200
+    await asyncio.wait_for(agent.started.wait(), 1)
+
+    subscriber = session.subscribe()
+    await asyncio.wait_for(anext(subscriber), 1)
+    await subscriber.aclose()
+
+    assert not agent.cancelled
+    assert not agent.completed.is_set()
+
+    agent.release.set()
+    await asyncio.wait_for(agent.completed.wait(), 1)
+    assert not agent.cancelled
 
 
 async def test_agent_protocol_stream_replays_from_last_event_id(
