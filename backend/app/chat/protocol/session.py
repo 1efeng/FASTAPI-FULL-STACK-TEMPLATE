@@ -11,8 +11,9 @@ MAX_EVENTS = 1000
 class AgentStreamSession:
     """Process-local transport session.
 
-    This layer only manages SSE subscribers and replay ordering. LangGraph owns
-    runtime state, checkpoints, messages and recovery semantics.
+    This object is not an Agent runtime. LangGraph owns checkpoints, state,
+    messages, interrupts and recovery. The session only broadcasts protocol
+    events to connected SSE clients and keeps a short replay window.
     """
 
     def __init__(self, thread_id: str):
@@ -24,18 +25,19 @@ class AgentStreamSession:
         self._lock = asyncio.Lock()
 
     async def publish(self, event: dict[str, Any]) -> None:
-        """Buffer and fan out one LangGraph protocol event."""
+        """Broadcast one native LangGraph protocol event."""
         async with self._lock:
             self._seq += 1
             payload = {
                 "type": "event",
                 "event_id": str(self._seq),
                 "seq": self._seq,
-                **event,
+                "data": event,
             }
             self._events.append(payload)
             if len(self._events) > MAX_EVENTS:
                 self._events = self._events[-MAX_EVENTS:]
+
             for queue in self._subscribers.values():
                 queue.put_nowait(payload)
 
