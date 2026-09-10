@@ -258,7 +258,9 @@ async def test_cancel_endpoint_is_transport_level_task_cancel(
     assert task.cancelled()
 
 
-async def test_agent_protocol_routes_require_authentication(client: AsyncClient) -> None:
+async def test_agent_protocol_routes_require_authentication(
+    client: AsyncClient,
+) -> None:
     command = await client.post(
         "/api/v1/threads/thread-1/commands",
         json={"id": 1, "method": "run.start", "params": {"input": {"messages": []}}},
