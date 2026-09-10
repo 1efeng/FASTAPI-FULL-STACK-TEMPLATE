@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from app.agent.agent import get_agent
 from app.chat.protocol.adapter import input_messages, serialize_state
 from app.chat.protocol.run_registry import run_registry
-from app.chat.protocol.schema import CommandRequest, StreamRequest
+from app.chat.protocol.schema import CommandRequest, RunStartParams, StreamRequest
 from app.chat.protocol.session import AgentStreamSession, get_stream_session
 from app.core.deps import CurrentUser
 
@@ -39,12 +39,19 @@ def _replay_cursor(request: StreamRequest) -> int | None:
     return request.last_event_id if request.last_event_id is not None else request.since
 
 
-async def _run_agent(owner_id: str, thread_id: str, payload: dict[str, Any]) -> None:
+async def _run_agent(
+    owner_id: str,
+    thread_id: str,
+    params: RunStartParams,
+) -> None:
     session = get_stream_session(owner_id, thread_id)
+    stream_options = params.stream.model_dump(exclude_none=True) if params.stream else {}
+
     stream = get_agent().astream_events(
-        {"messages": input_messages(payload.get("input"))},
+        {"messages": input_messages(params.input)},
         config=_config(owner_id, thread_id),
         version="v3",
+        **stream_options,
     )
 
     async for event in stream:
@@ -63,7 +70,8 @@ async def command(thread_id: str, command: CommandRequest, current_user: Current
         return {"type": "success", "id": command.id, "result": {"run_id": existing_run_id}}
 
     run_id = str(uuid4())
-    task = asyncio.create_task(_run_agent(owner_id, thread_id, data.get("params", {})))
+    params = RunStartParams.model_validate(data.get("params", {}))
+    task = asyncio.create_task(_run_agent(owner_id, thread_id, params))
     run_registry.register(owner_id, thread_id, run_id, command.id, task)
     task.add_done_callback(lambda _: run_registry.remove(owner_id, run_id))
 
