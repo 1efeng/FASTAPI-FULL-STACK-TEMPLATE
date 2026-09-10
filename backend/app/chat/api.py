@@ -20,7 +20,7 @@ from app.chat.protocol.adapter import (
 )
 from app.chat.protocol.run_registry import run_registry
 from app.chat.protocol.schema import CommandRequest, StreamRequest
-from app.chat.protocol.session import get_stream_session
+from app.chat.protocol.session import AgentStreamSession, get_stream_session
 from app.core.deps import CurrentUser
 
 router = APIRouter(prefix="/threads", tags=["chat"])
@@ -32,7 +32,7 @@ SSE_HEADERS = {
 }
 
 
-def _session(current_user: CurrentUser, thread_id: str):
+def _session(current_user: CurrentUser, thread_id: str) -> AgentStreamSession:
     return get_stream_session(str(current_user.id), thread_id)
 
 
@@ -41,7 +41,7 @@ def _checkpoint_thread_id(owner_id: str, thread_id: str) -> str:
     return f"{owner_id}:{thread_id}"
 
 
-def _config(owner_id: str, thread_id: str):
+def _config(owner_id: str, thread_id: str) -> dict[str, dict[str, str]]:
     return {
         "configurable": {
             "thread_id": _checkpoint_thread_id(owner_id, thread_id),
@@ -61,7 +61,7 @@ async def _run_agent(
     thread_id: str,
     run_id: str,
     payload: dict[str, Any],
-):
+) -> None:
     session = get_stream_session(owner_id, thread_id)
     adapter = AgentEventAdapter()
 
@@ -133,7 +133,7 @@ async def stream_events(
 
 
 @router.get("/{thread_id}/state")
-async def thread_state(thread_id: str, current_user: CurrentUser):
+async def thread_state(thread_id: str, current_user: CurrentUser) -> dict[str, Any]:
     owner_id = str(current_user.id)
     snapshot = await get_agent().aget_state(_config(owner_id, thread_id))
     return serialize_state(snapshot, thread_id=thread_id)
@@ -145,7 +145,7 @@ async def cancel_run(
     run_id: str,
     current_user: CurrentUser,
     action: str = "interrupt",
-):
+) -> Response:
     # The public thread id scopes this HTTP route. Runtime lookup remains the
     # minimal authenticated-user + run-id transport registry requested here.
     _ = thread_id

@@ -5,7 +5,6 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-
 MAX_EVENTS = 1000
 
 
