@@ -41,11 +41,13 @@ def _replay_cursor(request: StreamRequest) -> int | None:
 
 async def _run_agent(owner_id: str, thread_id: str, payload: dict[str, Any]) -> None:
     session = get_stream_session(owner_id, thread_id)
-    async for event in get_agent().astream(
+    stream = await get_agent().astream_events(
         {"messages": input_messages(payload.get("input"))},
         config=_config(owner_id, thread_id),
-        stream_mode=["messages", "updates", "values", "custom"],
-    ):
+        version="v3",
+    )
+
+    async for event in stream:
         await session.publish(protocol_message(event))
 
 
