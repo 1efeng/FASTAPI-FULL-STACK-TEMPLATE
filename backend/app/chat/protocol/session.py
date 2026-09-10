@@ -9,11 +9,10 @@ MAX_EVENTS = 1000
 
 
 class AgentStreamSession:
-    """Transport session only.
+    """Process-local transport session.
 
-    Owns SSE subscribers, replay buffer and event sequencing.
-    LangGraph state, messages and checkpoints are owned by LangGraph.
-    Protocol conversion is completed before an event is published here.
+    This layer only manages SSE subscribers and replay ordering. LangGraph owns
+    runtime state, checkpoints, messages and recovery semantics.
     """
 
     def __init__(self, thread_id: str):
@@ -25,7 +24,7 @@ class AgentStreamSession:
         self._lock = asyncio.Lock()
 
     async def publish(self, event: dict[str, Any]) -> None:
-        """Sequence, buffer and fan out one already-converted protocol event."""
+        """Buffer and fan out one LangGraph protocol event."""
         async with self._lock:
             self._seq += 1
             payload = {
