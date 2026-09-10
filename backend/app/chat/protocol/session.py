@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -15,6 +14,7 @@ class AgentStreamSession:
 
     Owns SSE subscribers, replay buffer and event sequencing.
     LangGraph state, messages and checkpoints are owned by LangGraph.
+    Protocol conversion is completed before an event is published here.
     """
 
     def __init__(self, thread_id: str):
@@ -26,14 +26,14 @@ class AgentStreamSession:
         self._lock = asyncio.Lock()
 
     async def publish(self, event: dict[str, Any]) -> None:
+        """Sequence, buffer and fan out one already-converted protocol event."""
         async with self._lock:
             self._seq += 1
             payload = {
                 "type": "event",
                 "event_id": str(self._seq),
                 "seq": self._seq,
-                "timestamp": int(time.time() * 1000),
-                "data": event,
+                **event,
             }
             self._events.append(payload)
             if len(self._events) > MAX_EVENTS:
