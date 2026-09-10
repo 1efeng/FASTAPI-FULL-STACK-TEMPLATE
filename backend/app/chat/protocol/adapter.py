@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
@@ -149,6 +150,23 @@ class AgentEventAdapter:
             ]
 
         return []
+
+
+def protocol_message(event: ProtocolEvent) -> dict[str, Any]:
+    """Convert one normalized event into the Agent Streaming Protocol envelope.
+
+    Sequence numbers and event ids are intentionally added by AgentStreamSession;
+    this function only owns protocol conversion. The current graph is root-only,
+    so its protocol namespace is the root namespace (`[]`).
+    """
+    return {
+        "method": event.method,
+        "params": {
+            "namespace": [],
+            "timestamp": int(time.time() * 1000),
+            "data": jsonable(event.data),
+        },
+    }
 
 
 def run_started(run_id: str) -> tuple[ProtocolEvent, ProtocolEvent]:
