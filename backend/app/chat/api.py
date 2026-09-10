@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import StreamingResponse
 
 from app.agent.agent import get_agent
-from app.chat.protocol.adapter import input_messages, protocol_message, serialize_state
+from app.chat.protocol.adapter import input_messages, serialize_state
 from app.chat.protocol.run_registry import run_registry
 from app.chat.protocol.schema import CommandRequest, StreamRequest
 from app.chat.protocol.session import AgentStreamSession, get_stream_session
@@ -48,7 +48,7 @@ async def _run_agent(owner_id: str, thread_id: str, payload: dict[str, Any]) -> 
     )
 
     async for event in stream:
-        await session.publish(protocol_message(event))
+        await session.publish(event)
 
 
 @router.post("/{thread_id}/commands")
