@@ -7,12 +7,14 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 
+MAX_EVENTS = 1000
+
+
 class AgentStreamSession:
     """Transport session only.
 
-    This class owns SSE subscribers, replay buffer and event sequencing.
-    LangGraph state, messages and checkpoints are owned by the LangGraph
-    checkpointer and must never live here.
+    Owns SSE subscribers, replay buffer and event sequencing.
+    LangGraph state, messages and checkpoints are owned by LangGraph.
     """
 
     def __init__(self, thread_id: str):
@@ -34,6 +36,8 @@ class AgentStreamSession:
                 "data": event,
             }
             self._events.append(payload)
+            if len(self._events) > MAX_EVENTS:
+                self._events = self._events[-MAX_EVENTS:]
             for queue in self._subscribers.values():
                 queue.put_nowait(payload)
 
