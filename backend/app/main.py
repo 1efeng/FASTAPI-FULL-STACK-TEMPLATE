@@ -27,6 +27,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     async with AsyncPostgresSaver.from_conn_string(
         str(settings.LANGGRAPH_CHECKPOINT_DATABASE_URI)
     ) as checkpointer:
+        # AsyncPostgresSaver requires setup() to create/migrate checkpoint tables.
+        # The agent is compiled only after the persistent saver is ready.
+        await checkpointer.setup()
         configure_agent(checkpointer=checkpointer)
         try:
             yield
