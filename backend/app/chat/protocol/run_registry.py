@@ -1,23 +1,46 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 
-class RunRegistry:
-    """Transport run task registry.
+@dataclass(frozen=True, slots=True)
+class RunHandle:
+    """Process-local transport handle.
 
-    This registry only tracks asyncio tasks created by the HTTP transport.
-    It does not own LangGraph state, checkpoints, messages, or runtime state.
+    This is intentionally not a runtime state store. LangGraph owns checkpoints,
+    messages and execution state.
+    """
+
+    thread_id: str
+    task: asyncio.Task[Any]
+
+
+class RunRegistry:
+    """Minimal transport cancellation registry.
+
+    The registry only knows how to locate the currently running asyncio task in
+    this process. Durable recovery is provided by LangGraph checkpointing.
     """
 
     def __init__(self) -> None:
-        self._runs: dict[tuple[str, str], asyncio.Task[Any]] = {}
+        self._runs: dict[tuple[str, str], RunHandle] = {}
 
-    def register(self, user_id: str, run_id: str, task: asyncio.Task[Any]) -> None:
-        self._runs[(user_id, run_id)] = task
+    def register(
+        self,
+        user_id: str,
+        thread_id: str,
+        run_id: str,
+        task: asyncio.Task[Any],
+    ) -> None:
+        self._runs[(user_id, run_id)] = RunHandle(thread_id=thread_id, task=task)
 
-    def get(self, user_id: str, run_id: str) -> asyncio.Task[Any] | None:
+    def get(
+        self,
+        user_id: str,
+        run_id: str,
+    ) -> RunHandle | None:
         return self._runs.get((user_id, run_id))
 
     def remove(self, user_id: str, run_id: str) -> None:
