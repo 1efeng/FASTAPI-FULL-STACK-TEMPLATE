@@ -1,10 +1,16 @@
+from __future__ import annotations
+
+import asyncio
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import StreamingResponse
 
+from app.agent.agent import get_agent
+from app.chat.protocol.adapter import AgentEventAdapter, input_messages, serialize_state
 from app.chat.protocol.schema import CommandRequest, StreamRequest
-from app.chat.protocol.session import ThreadSession, get_thread_session
+from app.chat.protocol.session import get_stream_session
 from app.core.deps import CurrentUser
 
 router = APIRouter(prefix="/threads", tags=["chat"])
@@ -15,9 +21,32 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+_runs: dict[tuple[str, str], asyncio.Task[Any]] = {}
 
-def _session(current_user: CurrentUser, thread_id: str) -> ThreadSession:
-    return get_thread_session(str(current_user.id), thread_id)
+
+def _session(current_user: CurrentUser, thread_id: str):
+    return get_stream_session(str(current_user.id), thread_id)
+
+
+def _config(thread_id: str):
+    return {"configurable": {"thread_id": thread_id}}
+
+
+async def _run_agent(owner_id: str, thread_id: str, run_id: str, payload: dict[str, Any]):
+    session = _session(type("User", (), {"id": owner_id})(), thread_id)
+    adapter = AgentEventAdapter()
+
+    await session.publish({"type": "run.started", "run_id": run_id})
+
+    async for event in get_agent().astream_events(
+        {"messages": input_messages(payload.get("input"))},
+        config=_config(thread_id),
+        version="v2",
+    ):
+        for protocol_event in adapter.adapt(event):
+            await session.publish(protocol_event.data)
+
+    await session.publish({"type": "run.completed", "run_id": run_id})
 
 
 @router.post("/{thread_id}/commands")
@@ -26,10 +55,18 @@ async def command(
     command: CommandRequest,
     current_user: CurrentUser,
 ) -> dict[str, Any]:
-    """Handle Agent Streaming Protocol commands for one thread."""
-    return await _session(current_user, thread_id).handle_command(
-        command.model_dump(exclude_none=True)
+    data = command.model_dump(exclude_none=True)
+
+    if data.get("method") != "run.start":
+        return {"type": "error", "message": "unsupported command"}
+
+    run_id = str(uuid4())
+    task = asyncio.create_task(
+        _run_agent(str(current_user.id), thread_id, run_id, data.get("params", {}))
     )
+    _runs[(str(current_user.id), run_id)] = task
+
+    return {"type": "success", "result": {"run_id": run_id}}
 
 
 @router.post("/{thread_id}/stream")
@@ -38,22 +75,17 @@ async def stream_events(
     request: StreamRequest,
     current_user: CurrentUser,
 ) -> StreamingResponse:
-    """Subscribe to buffered + live protocol events without owning the Run."""
-    session = _session(current_user, thread_id)
     return StreamingResponse(
-        session.event_stream(request.model_dump(exclude_none=True)),
+        _session(current_user, thread_id).subscribe(),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
 
 
 @router.get("/{thread_id}/state")
-async def thread_state(
-    thread_id: str,
-    current_user: CurrentUser,
-) -> dict[str, Any]:
-    """Return checkpointed LangGraph state for frontend hydration."""
-    return await _session(current_user, thread_id).state()
+async def thread_state(thread_id: str, current_user: CurrentUser):
+    snapshot = await get_agent().aget_state(_config(thread_id))
+    return serialize_state(snapshot, thread_id=thread_id)
 
 
 @router.post("/{thread_id}/runs/{run_id}/cancel", status_code=204)
@@ -61,17 +93,14 @@ async def cancel_run(
     thread_id: str,
     run_id: str,
     current_user: CurrentUser,
-    wait: int = 0,
     action: str = "interrupt",
-) -> Response:
-    """Cancel the actual server-side Run; disconnecting SSE never calls this."""
+):
     if action != "interrupt":
-        raise HTTPException(status_code=400, detail="Only action=interrupt is supported")
+        raise HTTPException(status_code=400, detail="unsupported action")
 
-    cancelled = await _session(current_user, thread_id).cancel_run(
-        run_id,
-        wait=bool(wait),
-    )
-    if not cancelled:
-        raise HTTPException(status_code=404, detail="No active run with this id")
+    task = _runs.get((str(current_user.id), run_id))
+    if not task:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    task.cancel()
     return Response(status_code=204)
