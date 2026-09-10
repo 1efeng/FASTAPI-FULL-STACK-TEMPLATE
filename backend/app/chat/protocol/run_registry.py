@@ -9,42 +9,53 @@ from typing import Any
 class RunHandle:
     """Process-local transport handle.
 
-    This is intentionally not a runtime state store. LangGraph owns checkpoints,
-    messages and execution state.
+    LangGraph owns checkpoints, messages and execution state. This registry only
+    prevents duplicate transport runs and locates active asyncio tasks.
     """
 
     thread_id: str
+    command_id: int
     task: asyncio.Task[Any]
 
 
 class RunRegistry:
-    """Minimal transport cancellation registry.
-
-    The registry only knows how to locate the currently running asyncio task in
-    this process. Durable recovery is provided by LangGraph checkpointing.
-    """
-
     def __init__(self) -> None:
         self._runs: dict[tuple[str, str], RunHandle] = {}
+        self._commands: dict[tuple[str, str, int], str] = {}
 
     def register(
         self,
         user_id: str,
         thread_id: str,
         run_id: str,
+        command_id: int,
         task: asyncio.Task[Any],
     ) -> None:
-        self._runs[(user_id, run_id)] = RunHandle(thread_id=thread_id, task=task)
+        self._runs[(user_id, run_id)] = RunHandle(
+            thread_id=thread_id,
+            command_id=command_id,
+            task=task,
+        )
+        self._commands[(user_id, thread_id, command_id)] = run_id
 
-    def get(
+    def find_command(
         self,
         user_id: str,
-        run_id: str,
-    ) -> RunHandle | None:
+        thread_id: str,
+        command_id: int,
+    ) -> str | None:
+        return self._commands.get((user_id, thread_id, command_id))
+
+    def get(self, user_id: str, run_id: str) -> RunHandle | None:
         return self._runs.get((user_id, run_id))
 
     def remove(self, user_id: str, run_id: str) -> None:
-        self._runs.pop((user_id, run_id), None)
+        handle = self._runs.pop((user_id, run_id), None)
+        if handle:
+            self._commands.pop(
+                (user_id, handle.thread_id, handle.command_id),
+                None,
+            )
 
 
 run_registry = RunRegistry()
