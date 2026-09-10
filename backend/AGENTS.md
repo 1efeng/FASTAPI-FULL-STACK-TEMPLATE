@@ -17,7 +17,7 @@ backend/
 │   ├── auth/          # 认证业务
 │   ├── user/          # 用户业务
 │   ├── agent/         # Agent 执行能力
-│   ├── chat/          # Chat HTTP / AI SDK 协议
+│   ├── chat/          # Chat HTTP / LangGraph stream 协议
 │   ├── system/        # health/ops endpoints
 │   ├── integrations/  # 第三方集成
 │   └── main.py
@@ -45,7 +45,7 @@ backend/
 - request validation
 - auth dependency
 - HTTP status / response
-- AI SDK UI Message Stream / SSE boundary
+- LangGraph stream protocol / SSE boundary
 - client disconnect / cancellation
 
 不要在 `api.py` 内堆模型初始化、LangGraph node、业务数据访问等执行细节。
@@ -83,11 +83,11 @@ app/chat/
 职责：
 
 - `api.py`: FastAPI/auth/StreamingResponse
-- `schema.py`: AI SDK transport request boundary
+- `schema.py`: LangGraph SDK transport request boundary
 - `agent/agent.py`: LangChain ChatModel + create_agent + server-owned system instructions
 - `agent/middleware.py`: Skill catalog and read-only skill file middleware
-- `protocol/messages.py`: AI SDK `UIMessage[]` → LangChain messages
-- `protocol/stream.py`: LangChain/LangGraph output → AI SDK UI Message Stream
+- `protocol/messages.py`: LangGraph SDK `UIMessage[]` → LangChain messages
+- `protocol/stream.py`: LangChain/LangGraph output → LangGraph stream protocol SSE
 - `agent/skills/`: 产品运行时 Skill
 
 后续文件只在真实需求出现时新增：
@@ -104,39 +104,13 @@ app/chat/
 
 ## Chat Streaming Protocol
 
-前端使用 Vercel AI SDK `useChat + DefaultChatTransport`。请求保持 AI SDK 原生 `UIMessage[]`，后端在 `protocol/messages.py` 转为 LangChain messages。
+前端使用 assistant-ui 作为 Chat UI 组件层，`@langchain/langgraph-sdk/react` 的 `useStream` 作为 Agent Runtime 连接层。
 
-`/chat/stream` 返回 **AI SDK UI Message Stream**，而不是应用自定义 SSE event names。
+请求保持 LangGraph SDK 原生形状（`messages`、`thread_id`、`stream_mode`），后端在 `protocol/messages.py` 转为 LangChain messages。
 
-响应至少遵循当前 AI SDK wire contract：
+`/chat/stream` 返回 **LangGraph stream protocol** SSE，而不是应用自定义 event names，也不是 AI SDK UI Message Stream。
 
-```text
-Content-Type: text/event-stream
-x-vercel-ai-ui-message-stream: v1
-```
-
-文本 SSE frame：
-
-```text
-data: {"type":"start"}
-
-data: {"type":"start-step"}
-
-data: {"type":"text-start","id":"..."}
-
-data: {"type":"text-delta","id":"...","delta":"..."}
-
-data: {"type":"text-end","id":"..."}
-
-data: {"type":"finish-step"}
-
-data: {"type":"finish"}
-
-data: [DONE]
-
-```
-
-同一个文本 part 必须先 `text-start`，再零个或多个 `text-delta`，最后 `text-end`，并保持相同 part id。
+响应遵循 LangGraph stream 的 SSE 格式，`useStream` 直接消费 `messages` / `updates` / `custom` 等 stream mode 事件。
 
 LangChain/LangGraph 原始 chunk 不直接透传给浏览器。边界必须是：
 
@@ -145,14 +119,14 @@ LangChain / LangGraph stream
   ↓
 chat/protocol/
   ↓
-AI SDK UIMessageChunk
+LangGraph stream protocol SSE
   ↓
-SSE
+useStream / assistant-ui
 ```
 
-Chapter 1 只实现完整文本 Chat subset。Tool、Approval、Reasoning、Sources 等在对应章节出现时，再在同一个 `protocol/` 目录扩展 AI SDK 已定义的 part；产品特有 progress/activity 使用 typed `data-*` part，不再维护平行 `run.started/message.delta/tool.started` 协议。
+Chapter 1 只实现完整文本 Chat subset。Tool、Approval、Reasoning、Sources 等在对应章节出现时，再在同一个 `protocol/` 目录扩展 LangGraph stream 已定义的事件类型；产品特有 progress/activity 使用 `custom` stream mode event 或 `ui_message` generative UI，不再维护平行协议。
 
-AI SDK 仅是前后端 Chat UI 协议，不参与后端 Agent Runtime。
+AI SDK（`@ai-sdk/react`、`ai`）仅是历史遗留的普通 REST 表单和 OpenAPI client 类型来源，不参与 Agent Chat 协议。
 
 ## Tool Governance
 

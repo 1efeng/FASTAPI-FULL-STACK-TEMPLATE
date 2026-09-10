@@ -8,8 +8,9 @@
 
 - Backend: Python + FastAPI + SQLAlchemy 2 Async + PostgreSQL
 - Agent: LangChain + LangGraph
-- Frontend: React + TypeScript + TanStack Router/Query + Vercel AI SDK UI
-- Transport: REST + AI SDK UI Message Stream over SSE
+- Frontend: React + TypeScript + TanStack Router/Query + assistant-ui + shadcn/ui
+- Agent Runtime (frontend): @langchain/langgraph-sdk/react useStream
+- Transport: LangGraph stream protocol over SSE
 
 第一阶段只做一个可运行、可演示的 Chat Agent，`travel-planning` 作为首个业务 Skill。不要把旅行场景扩展成复杂旅游 SaaS。
 
@@ -41,7 +42,8 @@
 - unknown outcome handling
 - reconciliation
 - audit
-- AI SDK UI protocol adaptation
+- LangGraph stream protocol adaptation
+- assistant-ui runtime integration
 - product-specific business rules
 
 不要因为课程中存在手写实现，就同时维护“课程 Runtime + LangGraph Runtime”两套实现。
@@ -222,8 +224,8 @@ chat/
 ├── schema.py
 ├── protocol/
 │   ├── __init__.py
-│   ├── messages.py   # AI SDK UIMessage[] → LangChain messages
-│   └── stream.py     # LangChain stream → AI SDK UI Message Stream
+│   ├── messages.py   # LangGraph SDK UIMessage[] → LangChain messages
+│   └── stream.py     # LangChain/LangGraph stream → LangGraph stream protocol
 
 Ch2
 + agent/tools.py       # 少量工具时
@@ -234,7 +236,7 @@ Ch3
 + agent/state.py
 ```
 
-`protocol/` 只解决前后端协议边界，不是 Agent Runtime。进入 Chapter 2/3 后在同一目录扩展 tool / reasoning / approval chunk，不再另建第二套事件协议。
+`protocol/` 只解决前后端协议边界（LangGraph stream protocol），不是 Agent Runtime。进入 Chapter 2/3 后在同一目录扩展 tool / reasoning / approval 事件，不再另建第二套事件协议。
 
 Tool 数量明显增长后，`tools.py` 才拆成 `tools/`。
 
@@ -305,58 +307,38 @@ Repository 不负责 commit；业务 service / transaction boundary 决定 commi
 
 普通 REST 继续使用 OpenAPI generated client。
 
-Agent Chat 前端统一使用：
+Agent Chat 前端统一使用 assistant-ui 作为 Chat UI 层，LangGraph SDK `useStream` 作为 Agent Runtime 连接层，shadcn/ui 作为通用 UI 组件库：
 
 ```text
-@ai-sdk/react useChat
+assistant-ui Thread / ThreadList（styled elements）
   ↓
-DefaultChatTransport
+useLangGraphRuntime（@assistant-ui/react-langgraph）
   ↓
-HTTP POST + SSE
+useStream（@langchain/langgraph-sdk/react）
   ↓
-FastAPI
+HTTP POST + LangGraph stream SSE
+  ↓
+FastAPI + LangGraph
 ```
 
-前端保持 AI SDK 原生请求形状，发送 `UIMessage[]`；不要为了 Python 后端在 React 中额外压缩成自定义 `message + thread_id` 协议。
+前端技术选型约束：
+
+- **assistant-ui**：Chat UI 的唯一组件来源。使用 `npx assistant-ui@latest add thread thread-list` 安装 styled elements 到 `components/assistant-ui/elements/`，通过 primitives 定制。不要手写 `ChatMessages`/`ChatComposer`/`ChatThreadSidebar` 等平行组件。
+- **@langchain/langgraph-sdk/react `useStream`**：Agent Runtime 连接的唯一方式。它管理 messages、thread state、streaming、interrupt/resume。不要用 `useChat`/`DefaultChatTransport` 或自研 SSE parser。
+- **shadcn/ui**：通用 UI（Button、Dialog、Input、Select 等）。assistant-ui elements 已经内建在 shadcn/ui 约定上，项目自己的非 Chat 组件也统一用 shadcn/ui。
 
 后端协议边界固定在：
 
 ```text
-chat/protocol/messages.py
-AI SDK UIMessage[] → LangChain messages
-
-chat/protocol/stream.py
-LangChain/LangGraph output → AI SDK UI Message Stream
-```
-
-网络协议使用 **AI SDK UI Message Stream**，后端响应必须遵循当前 AI SDK 协议，例如：
-
-- `Content-Type: text/event-stream`
-- `x-vercel-ai-ui-message-stream: v1`
-- SSE `data: {JSON}\n\n`
-- 最后 `data: [DONE]\n\n`
-
-文本流遵循 `text-start → text-delta → text-end`，同一文本 part 使用稳定 id。
-
-前端使用 AI SDK 的 `UIMessage` / message parts / `ChatStatus`，不要再维护一套自研 `ChatMessage + useChatStream + SSE parser` 状态机。
-
-AI SDK 只承担 **Frontend Chat Protocol / UI abstraction**，不得成为第二套 Agent Runtime。后端仍然只有 FastAPI + LangChain/LangGraph。
-
-前端不得直接依赖 LangChain/LangGraph 原始 stream chunk：
-
-```text
-LangChain / LangGraph internal stream
-  ↓
 chat/protocol/
-  ↓
-AI SDK UI Message Stream
-  ↓
-useChat / UIMessage
-  ↓
-React UI
+  LangGraph stream events → LangGraph server compatible SSE response
 ```
 
-业务特有的 activity、progress、approval 等信息优先通过 AI SDK typed `data-*` parts 或标准 tool/approval parts 表达，不另造平行事件协议。
+网络协议使用 **LangGraph stream protocol**。FastAPI 通过 LangGraph 的 streaming 接口（`astream` / `astream_events`）将 Agent 执行结果以 LangGraph 兼容的 SSE 格式返回，`useStream` 直接消费。
+
+业务特有的 activity、progress、approval 等信息通过 LangGraph stream 的 `custom` mode events 或 `ui_message` generative UI 传递，不另造平行事件协议。
+
+AI SDK（`@ai-sdk/react`、`ai`、`@ai-sdk/*`）不再用于 Agent Chat 前端。仅在普通 REST 表单和 OpenAPI client 中保留 TypeScript 类型。
 
 ---
 
@@ -374,6 +356,7 @@ React UI
 - Kubernetes
 - 第二套 durable runtime
 - 传统 RAG / 向量数据库（第一阶段）
+- Vercel AI SDK（@ai-sdk/react / ai）作为 Agent Chat 前端协议
 
 不要为了简历关键词增加基础设施。
 
@@ -381,7 +364,7 @@ React UI
 
 ## 官方 API 与文档
 
-LangChain / LangGraph / Vercel AI SDK API 变化较快。
+LangChain / LangGraph / assistant-ui / LangGraph SDK API 变化较快。
 
 实现新能力前必须优先检查 **当前官方文档和当前安装版本**，不要仅凭旧课程、旧示例或模型记忆猜 API。
 
