@@ -93,14 +93,40 @@ CREATE INDEX IF NOT EXISTS ix_guides_trgm
 
 ## 4. 导入流程
 
-`agent-runtime/scripts/import_guides.py`：
+**一条命令处理全部变更（新增 / 更新 / 删除 / 改名）**：
 
-- 读取 `rag/guides/`（默认，或 `--dir` 指向现有攻略仓库）下 markdown，解析 frontmatter
-- 校验必填字段 + `themes/audiences/seasons` 枚举合法性，不合法报错并统计
-- `INSERT ... ON CONFLICT (slug) DO UPDATE` 幂等 upsert，可重跑
-- 输出统计：总数 / 新增 / 更新 / 校验失败
+```bash
+python agent-runtime/scripts/import_guides.py --dir rag/guides --prune
+```
 
-部署时机：手动执行或作为一次性容器任务；不依赖 Alembic（runtime 自管表，同 `tool_invocations` 模式）。
+脚本每次运行做两步：
+
+1. **逐个文件 upsert**：解析 frontmatter → 校验必填字段与 `themes/audiences/seasons` 枚举 → `INSERT ... ON CONFLICT (slug) DO UPDATE`（新增插入、已有原地更新）
+2. **`--prune` 对齐**：删除"库中存在但目录里已无对应文件"的行（默认开启，`rag/guides/` 是唯一事实源；`--no-prune` 留给部分导入场景）
+
+| 你对文件做了什么 | 脚本行为 | 库里结果 |
+| --- | --- | --- |
+| 新增 `paris-5days.md` | slug 不在库 → INSERT | 多 1 行 |
+| 修改某篇内容 | slug 在库 → 原地 UPDATE | 行数不变，内容更新 |
+| 删除某篇文件 | 文件不存在 → DELETE（`--prune`） | 少 1 行 |
+| 改名（slug 变化） | 新 slug INSERT + 旧 slug 被 prune | 只剩新 slug 一行 |
+
+每次输出统计：`新增 N / 更新 M / 删除 K / 校验失败 L`。SQL 骨架：
+
+```sql
+-- 步骤 1：逐个文件
+INSERT INTO travel_guides (slug, title, content, ...)
+VALUES (:slug, ...)
+ON CONFLICT (slug) DO UPDATE SET
+  title = EXCLUDED.title, content = EXCLUDED.content, ...,
+  updated_at = now();
+
+-- 步骤 2：--prune 时
+DELETE FROM travel_guides
+WHERE slug NOT IN (:当前目录所有文件的 slug);
+```
+
+部署时机：手动执行或作为一次性容器任务；多实例并发导入用 advisory lock 防锁竞争；不依赖 Alembic（runtime 自管表，同 `tool_invocations` 模式）。
 
 范本目录已建立：`rag/guides/`（攻略 3 篇）与 `rag/spots/`（景点 3 篇，frontmatter 含 `routes` 结构化路线）。景点为后续扩展实体，P1 只做 `rag/guides/`。
 
