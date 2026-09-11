@@ -95,12 +95,14 @@ CREATE INDEX IF NOT EXISTS ix_guides_trgm
 
 `agent-runtime/scripts/import_guides.py`：
 
-- 读取 `guides/`（或 `--dir` 指向现有攻略仓库）下 markdown，解析 frontmatter
+- 读取 `rag/guides/`（默认，或 `--dir` 指向现有攻略仓库）下 markdown，解析 frontmatter
 - 校验必填字段 + `themes/audiences/seasons` 枚举合法性，不合法报错并统计
 - `INSERT ... ON CONFLICT (slug) DO UPDATE` 幂等 upsert，可重跑
 - 输出统计：总数 / 新增 / 更新 / 校验失败
 
 部署时机：手动执行或作为一次性容器任务；不依赖 Alembic（runtime 自管表，同 `tool_invocations` 模式）。
+
+范本目录已建立：`rag/guides/`（攻略 3 篇）与 `rag/spots/`（景点 3 篇，frontmatter 含 `routes` 结构化路线）。景点为后续扩展实体，P1 只做 `rag/guides/`。
 
 ## 5. 检索工具
 
