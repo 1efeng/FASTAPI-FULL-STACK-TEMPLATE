@@ -1,0 +1,123 @@
+# Single-host production stack for the 10k-DAU target.
+#
+# Compose this file together with compose.yml.  FastAPI and Aegra stay in
+# separate containers, but share the same PostgreSQL and Redis instances.
+# Start with one Aegra instance; scale that service only after measuring the
+# queue depth and concurrent SSE connections.
+
+x-aegra-environment: &aegra-environment
+  POSTGRES_HOST: db
+  POSTGRES_SERVER: db
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB?Variable not set}
+  POSTGRES_USER: ${POSTGRES_USER?Variable not set}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD?Variable not set}
+  REDIS_URL: redis://redis:6379/0
+  REDIS_BROKER_ENABLED: "true"
+  SECRET_KEY: ${SECRET_KEY?Variable not set}
+  AUTH_TYPE: custom
+  AEGRA_CONFIG: /app/aegra.json
+  RUN_MIGRATIONS_ON_STARTUP: "false"
+  PROJECT_NAME: ${PROJECT_NAME:-Travel Agent Runtime}
+  ENV_MODE: production
+  HOST: 0.0.0.0
+  PORT: "2026"
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LLM_MODEL: ${LLM_MODEL?Variable not set}
+  LLM_API_KEY: ${LLM_API_KEY?Variable not set}
+  LLM_BASE_URL: ${LLM_BASE_URL:-}
+  WORKER_COUNT: ${AEGRA_WORKER_COUNT:-2}
+  N_JOBS_PER_WORKER: ${AEGRA_N_JOBS_PER_WORKER:-4}
+  WORKER_DRAIN_TIMEOUT: ${WORKER_DRAIN_TIMEOUT:-30}
+  BG_JOB_TIMEOUT_SECS: ${BG_JOB_TIMEOUT_SECS:-3600}
+  BG_JOB_MAX_RETRIES: ${BG_JOB_MAX_RETRIES:-3}
+  LEASE_DURATION_SECONDS: ${LEASE_DURATION_SECONDS:-30}
+  HEARTBEAT_INTERVAL_SECONDS: ${HEARTBEAT_INTERVAL_SECONDS:-10}
+  REAPER_INTERVAL_SECONDS: ${REAPER_INTERVAL_SECONDS:-15}
+  FF_V2_EVENT_STREAMING: "true"
+
+services:
+  # The frontend bundle needs the public Aegra origin at build time.
+  backend:
+    command: ["fastapi", "run", "--workers", "${FASTAPI_WORKERS:-2}"]
+    build:
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+        VITE_AEGRA_URL: ${VITE_AEGRA_URL?Variable not set}
+
+  prestart:
+    build:
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+        VITE_AEGRA_URL: ${VITE_AEGRA_URL?Variable not set}
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - aegra-redis-data:/data
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  aegra-migrate:
+    image: '${DOCKER_IMAGE_AEGRA:-travel-agent-runtime}:${TAG:-latest}'
+    build:
+      context: ./agent-runtime
+      dockerfile: Dockerfile
+    restart: "no"
+    command: ["aegra", "db", "upgrade"]
+    env_file:
+      - .env
+    environment: *aegra-environment
+    depends_on:
+      db:
+        condition: service_healthy
+
+  aegra:
+    image: '${DOCKER_IMAGE_AEGRA:-travel-agent-runtime}:${TAG:-latest}'
+    build:
+      context: ./agent-runtime
+      dockerfile: Dockerfile
+    restart: always
+    stop_grace_period: 45s
+    command: ["aegra", "serve", "--host", "0.0.0.0", "--port", "2026"]
+    env_file:
+      - .env
+    environment: *aegra-environment
+    networks:
+      - default
+      - traefik-public
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      aegra-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:2026/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-public
+      - traefik.constraint-label=traefik-public
+      - traefik.http.services.${STACK_NAME?Variable not set}-aegra.loadbalancer.server.port=2026
+      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-http.rule=Host(`${AGENT_DOMAIN?Variable not set}`)
+      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-http.entrypoints=http
+      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-http.middlewares=https-redirect
+      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-https.rule=Host(`${AGENT_DOMAIN?Variable not set}`)
+      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-https.entrypoints=https
+      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-https.tls=true
+      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-https.tls.certresolver=le
+
+volumes:
+  aegra-redis-data:

@@ -3,8 +3,9 @@ name = "travel-agent-runtime"
 version = "0.1.0"
 description = "Aegra runtime graphs for travel-agent (travel-planning skill agent)"
 requires-python = ">=3.12"
+
 dependencies = [
-    "aegra-cli>=0.10.4",
+    "aegra-cli==0.10.4",
     "langchain>=1.4.0",
     "langchain-openai>=1.6.2",
     "langgraph>=1.2.11",

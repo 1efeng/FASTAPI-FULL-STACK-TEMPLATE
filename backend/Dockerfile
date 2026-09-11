@@ -12,8 +12,9 @@ RUN bun install --frozen-lockfile
 COPY ./frontend /app/frontend
 
 ARG VITE_API_URL=
+ARG VITE_AEGRA_URL=
 
-RUN bun run build
+RUN VITE_API_URL="$VITE_API_URL" VITE_AEGRA_URL="$VITE_AEGRA_URL" bun run build
 
 
 FROM python:3.14.6
