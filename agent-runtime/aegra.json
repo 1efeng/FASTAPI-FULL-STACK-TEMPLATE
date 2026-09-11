@@ -1,0 +1,10 @@
+{
+  "name": "travel-agent-runtime",
+  "dependencies": ["./src"],
+  "graphs": {
+    "travel_planning": "./src/travel_runtime/graph.py:graph"
+  },
+  "auth": {
+    "path": "./src/travel_runtime/auth.py:auth"
+  }
+}
