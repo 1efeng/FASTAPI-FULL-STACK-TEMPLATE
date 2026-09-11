@@ -45,7 +45,7 @@
 ## 3. 分层架构
 
 ```text
-Browser（React + assistant-ui）
+Browser（React，当前手写 Chat 组件，无 assistant-ui）
   └─ @langchain/react useStream + HttpAgentServerAdapter（v2 协议）
        ├─ POST /threads/{id}/commands          run.start / input.respond / run.resume
        ├─ POST /threads/{id}/stream/events      SSE（seq 游标 / event_id 去重）
@@ -197,11 +197,11 @@ Nginx / SLB
 
 ## 10. 实施顺序
 
-1. **迁移 graph**：把 `travel-planning` 等 graph 迁到 Aegra `aegra.json` 注册（`assistant_id` 映射）。
-2. **删自研层**：移除 `backend/app/chat/runs/`（P1–P5）与 `protocol/db_stream.py`；保留 auth、工具幂等、业务治理。
-3. **前端接线**：`HttpAgentServerAdapter` 指向 Aegra；适配 v2 custom 信封（`payload` 包装）；移除 auto-resume 状态机。
-4. **部署**：docker-compose（PG + Redis + 多实例 aegra serve），配置 drain 参数。
-5. **验收**：按 §9 Case 1–6 用真实 LLM 重跑；同步 `AGENTS.md` 与本文。
+1. ✅ **迁移 graph**：`travel-planning` graph 已迁到 `agent-runtime/` 并在 `aegra.json` 注册（`assistant_id="travel_planning"`）。
+2. ✅ **删自研层**：`backend/app/chat/`、`backend/app/agent/` 已移除；auth 保留在 FastAPI，工具幂等台账保留在 `agent-runtime/src/travel_runtime/db.py`。
+3. ✅ **前端接线**：`HttpAgentServerAdapter` 直连 Aegra v2；刷新复用同 thread；auto-resume 状态机未引入（Aegra 后台 run + SDK 重连已替代）。
+4. 🔲 **部署**：补 `agent-runtime/docker-compose.yml`（PG + Redis + 多实例 aegra serve），配置 drain 参数。
+5. 🔲 **验收**：按 §9 Case 1–6 用真实 LLM 重跑；浏览器端到端验证刷新恢复。
 
 ## 11. 面试口径
 

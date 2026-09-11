@@ -2,6 +2,18 @@
 
 本文件补充根目录 `AGENTS.md`，仅约束 `backend/`。
 
+## 定位
+
+`backend/` 是 **FastAPI 应用服务**（认证、用户、普通 REST、静态前端托管），不再承载 Agent 执行。
+
+Agent Runtime 与 LangGraph graph 已迁出到独立项目 `agent-runtime/`（Aegra 运行时包，`aegra serve` 启动）。根目录 `AGENTS.md` 的「前后端 Chat 协议」是跨项目协议约束；本文件只管 FastAPI 自身。
+
+不要重新在 `backend/` 里引入：
+
+- `app/chat/`、`app/agent/`、`protocol/`、`db_stream.py`
+- Agent 执行状态、checkpoint、run 生命周期表
+- 应用层 job 队列 / lease / reaper / drain
+
 ## 目录组织
 
 采用 **业务模块优先 + 模块内轻分层**。
@@ -13,13 +25,13 @@ backend/
 ├── app/
 │   ├── core/          # config/security/deps/global response
 │   ├── db/            # SQLAlchemy base/session/model registry
-│   ├── common/        # 真正共享且稳定的少量代码
-│   ├── auth/          # 认证业务
+│   ├── auth/          # 认证业务（JWT 与 Aegra 共用 SECRET_KEY）
 │   ├── user/          # 用户业务
-│   ├── agent/         # Agent 执行能力
-│   ├── chat/          # Chat HTTP / LangGraph stream 协议
+│   ├── item/          # 模板示例业务
+│   ├── demo/          # 模板示例业务
 │   ├── system/        # health/ops endpoints
 │   ├── integrations/  # 第三方集成
+│   ├── frontend/      # 前端构建产物静态托管（构建时生成）
 │   └── main.py
 ├── alembic/
 ├── scripts/
@@ -45,12 +57,16 @@ backend/
 - request validation
 - auth dependency
 - HTTP status / response
-- LangGraph stream protocol / SSE boundary
-- client disconnect / cancellation
 
-不要在 `api.py` 内堆模型初始化、LangGraph node、业务数据访问等执行细节。
+普通 REST 继续由 FastAPI 提供；Agent Chat 的流式边界由 Aegra v2（`/threads/{id}/commands` + `/stream/events` + `/state`）承担，`HttpAgentServerAdapter` 直连 Aegra，**不经过 FastAPI**。
 
-但也不要为了“薄 API”创建只有一行转发的 Service/Facade。
+不要在 `api.py` 内堆模型初始化、Agent node、业务数据访问等执行细节，但也不要为了“薄 API”创建只有一行转发的 Service/Facade。
+
+## 与 Aegra 的认证边界
+
+- 前端向 Aegra 透传 JWT（`Authorization: Bearer`），Aegra 侧 `agent-runtime/src/travel_runtime/auth.py` 用同一 `SECRET_KEY` 校验，`sub` 为 thread owner。
+- FastAPI 是 JWT 的签发方（登录/注册）；`SECRET_KEY` 由根环境变量注入，两端保持一致。
+- 不在 FastAPI 里复制 Aegra 的 token 校验逻辑；需要跨服务身份时复用同一 JWT，不引入第二套会话。
 
 ## SQLAlchemy
 
@@ -59,104 +75,13 @@ backend/
 - transaction boundary 由业务 service / use case 决定。
 - 复用现有 `AsyncSession` dependency。
 - 新 application model 必须注册到当前 model registry，确保 mapper/Alembic 可见。
-- 不为 LangGraph checkpoint table 建 ORM model。
+- 不为 LangGraph checkpoint table 建 ORM model（checkpoint 表由 Aegra/AsyncPostgresSaver 管理）。
 
-## Chat / Agent
+## 业务数据与 Agent 数据的归属
 
-当前结构为（P1–P5 过渡形态，目标设计见 `docs/architecture.md`）：
-
-```text
-app/agent/
-├── __init__.py
-├── agent.py
-├── middleware.py        # Skill 目录 + 工具幂等（P4）
-└── skills/
-app/chat/
-├── api.py
-├── runs/
-│   ├── model.py         # agent_runs / agent_events / tool_invocations（过渡实现，目标收敛移除）
-│   ├── repository.py
-│   └── service.py       # 租约、跨 worker 恢复（过渡实现）
-└── protocol/
-    ├── __init__.py
-    ├── adapter.py       # LangGraph state/message 序列化边界
-    ├── db_stream.py     # SSE 事件回放 + 轮询（过渡；将被 Aegra SSE broker 取代）
-    └── schema.py        # LangGraph SDK 传输请求边界
-```
-
-职责：
-
-- `api.py`: FastAPI/auth/StreamingResponse
-- `chat/runs/`: P1–P5 过渡实现（agent_runs / agent_events / 租约 / tool_invocations），目标收敛移除
-- `protocol/adapter.py`: LangGraph state/message 序列化边界
-- `protocol/db_stream.py`: SSE 事件回放 + 轮询（过渡；将被 Aegra SSE broker 取代）
-- `protocol/schema.py`: LangGraph SDK 传输请求边界
-- `agent/agent.py`: LangChain ChatModel + create_agent + server-owned system instructions
-- `agent/middleware.py`: Skill catalog + read-only skill file middleware + tool idempotency
-- `agent/skills/`: 产品运行时 Skill
-
-后续文件只在真实需求出现时新增：
-
-- `agent/tools.py`: 有 Tool 时
-- `agent/graph.py`: 开始低层 StateGraph orchestration 时
-- `agent/state.py`: Graph state 独立后
-- `agent/runtime.py`: Agent lifecycle 已被 checkpoint/thread/resume/stream 明显撑大时
-
-`protocol/` 是协议适配，不是第二套 Runtime。事件回放（`db_stream.py`）是过渡实现，收敛目标见 `docs/architecture.md`，不要在此基础上另建平行事件协议。
-
-不要创建空目录或占位抽象预测未来复杂度。
-
-## Chat Streaming Protocol
-
-前端使用 `@langchain/react`（`StreamProvider` / `useStreamContext` / `HttpAgentServerAdapter`）作为 Agent Runtime 连接层，当前无 assistant-ui。
-
-请求保持 LangGraph SDK 原生形状（`messages`、`thread_id`、`stream_mode`），后端在 `protocol/adapter.py` 转为 LangChain messages。
-
-`/chat/stream` 返回 **LangGraph stream protocol** SSE，而不是应用自定义 event names，也不是 AI SDK UI Message Stream。
-
-响应遵循 LangGraph stream 的 SSE 格式，`useStream` 直接消费 `messages` / `updates` / `custom` 等 stream mode 事件。
-
-LangChain/LangGraph 原始 chunk 不直接透传给浏览器。边界必须是：
-
-```text
-LangChain / LangGraph stream
-  ↓
-chat/protocol/
-  ↓
-LangGraph stream protocol SSE
-  ↓
-useStream（@langchain/react）
-```
-
-Chapter 1 只实现完整文本 Chat subset。Tool、Approval、Reasoning、Sources 等在对应章节出现时，再在同一个 `protocol/` 目录扩展 LangGraph stream 已定义的事件类型；产品特有 progress/activity 使用 `custom` stream mode event 或 `ui_message` generative UI，不再维护平行协议。
-
-AI SDK（`@ai-sdk/react`、`ai`）仅是历史遗留的普通 REST 表单和 OpenAPI client 类型来源，不参与 Agent Chat 协议。
-
-## Tool Governance
-
-Tool 的注册、参数 schema、ToolMessage、通用执行优先交给 LangChain/LangGraph。
-
-应用必须在业务边界处理：
-
-- trusted user context
-- final resource authorization
-- risk classification
-- side-effect idempotency
-- unknown outcome
-- reconciliation
-- audit
-
-写 Tool 不能因为 timeout 就默认安全重试。
-
-`user_id` 等可信身份必须来自 FastAPI `CurrentUser` / Agent runtime context，不能由 LLM 或请求 payload 自由指定。
-
-## LangGraph Persistence
-
-需要持久化后，优先使用官方 Postgres checkpointer。
-
-同一个执行状态只保留一个 source of truth。
-
-除非出现明确产品需求，不复制保存完整 LangGraph messages/state 到额外 application tables。
+- 业务数据（用户、会话元数据等真实产品数据出现时）→ FastAPI + SQLAlchemy。
+- Agent 执行状态（messages / checkpoint / run 生命周期）→ Aegra + LangGraph AsyncPostgresSaver。
+- 工具幂等台账 `tool_invocations` → `agent-runtime/src/travel_runtime/db.py`（Aegra 不提供，应用补治理），不在 backend 重复建表。
 
 ## Testing
 
@@ -171,12 +96,4 @@ mypy app
 
 若仓库当前命令不同，以现有 `pyproject.toml` / CI 为准。
 
-新增 Agent 能力时优先补：
-
-- protocol contract tests
-- unit tests for policy/business boundaries
-- tool side-effect/idempotency tests
-- interrupt/resume tests
-- recovery tests
-
-不要依赖真实付费模型才能跑完核心测试；模型调用使用 fake/mock。
+Agent 能力（graph / tool / 恢复语义）的测试在 `agent-runtime/` 内维护，不依赖 backend 测试库。

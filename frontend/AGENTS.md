@@ -6,15 +6,14 @@
 
 保持当前 React + TypeScript + TanStack Router/Query + generated OpenAPI client 架构。
 
-Chat 前端采用 Vercel AI SDK UI：
+Agent Chat 前端使用 **`@langchain/react`**（LangGraph 官方统一 React SDK），直接消费 Aegra v2 的 Agent Protocol：
 
-- `@ai-sdk/react` 的 `useChat`
-- `ai` 的 `DefaultChatTransport`
-- `UIMessage` / message parts / `ChatStatus`
+- `StreamProvider` / `useStreamContext` / `HttpAgentServerAdapter`
+- messages、thread state、streaming、interrupt/resume 均由 SDK 管理
 
-不要为了 Agent 功能引入新的前端架构体系。
+不要为了 Agent 功能引入新的前端架构体系，也不要重建 `useChat`/DefaultChatTransport/自研 SSE parser。
 
-当前项目不采用重型 Feature-Sliced / DDD 前端目录。
+当前不采用重型 Feature-Sliced / DDD 前端目录。
 
 ## 目录职责
 
@@ -22,9 +21,9 @@ Chat 前端采用 Vercel AI SDK UI：
 
 ```text
 src/
-├── client/       # OpenAPI 自动生成代码
+├── client/       # OpenAPI 自动生成代码（普通 REST）
 ├── components/   # 可复用 UI/业务组件
-├── hooks/        # 非 AI SDK 已覆盖的 React hooks / client effects
+├── hooks/        # 非 SDK 已覆盖的 React hooks / client effects
 ├── lib/          # 纯工具与稳定 helper
 ├── routes/       # 页面与路由组件
 └── main.tsx
@@ -33,30 +32,23 @@ src/
 规则：
 
 - 页面放 `routes/`。
-- 可复用 Chat UI 放 `components/Chat/`。
-- Chat 消息状态、发送、stop、error、streaming status 优先交给 AI SDK `useChat`。
+- Chat UI 放 `components/Chat/`。
+- 聊天状态、发送、stop、error、streaming、thread 恢复优先交给 `@langchain/react`（`useStreamContext`）。
 - 不再维护自研 `useChatStream.ts` / `ChatMessage` / SSE parser。
 - 不新增 `features/`、`entities/`、`widgets/`、`services/`、`stores/` 等目录，除非未来项目规模真实需要。
 
-## Chat 第一阶段
-
-保持最小结构：
+## Chat 当前结构
 
 ```text
-src/
-├── components/
-│   └── Chat/
-│       ├── ChatPage.tsx
-│       ├── ChatMessages.tsx
-│       ├── ChatComposer.tsx
-│       ├── ChatActivity.tsx
-│       └── ChatThreadSidebar.tsx
-└── routes/
-    └── _layout/
-        └── index.tsx
+src/components/Chat/
+├── ChatPage.tsx          # StreamProvider + HttpAgentServerAdapter（Aegra v2 路径）
+├── ChatMessages.tsx      # BaseMessage[] 渲染
+├── ChatComposer.tsx      # 发送框（stream.isLoading 驱动）
+├── ChatActivity.tsx      # 工具/思考进度展示
+└── ChatThreadSidebar.tsx # 会话列表（当前静态）
 ```
 
-Tool / HITL 出现后再增加 Tool/Approval UI；优先复用 AI SDK `UIMessage.parts` 与 AI Elements，不先自研第二套 message-part schema。
+Tool / HITL 出现后再增加 Tool/Approval UI；优先复用 LangGraph SDK 提供的事件/values 快照，不先自研第二套 message-part schema。
 
 不要提前创建空目录和占位组件。
 
@@ -67,40 +59,37 @@ Tool / HITL 出现后再增加 Tool/Approval UI；优先复用 AI SDK `UIMessage
 Agent Chat：
 
 ```text
-useChat
+Chat 页面
   ↓
-DefaultChatTransport
+StreamProvider / useStreamContext / HttpAgentServerAdapter（@langchain/react）
   ↓
-POST /api/v1/chat/stream
-  ↓
-AI SDK UI Message Stream over SSE
+Aegra v2（POST /threads/{id}/commands · POST /threads/{id}/stream/events · GET /threads/{id}/state）
 ```
+
+关键接线（`ChatPage.tsx`）：
+
+- `assistantId = "travel_planning"`（Aegra graph id，解析为确定性 UUID）。
+- Aegra base URL 由 `VITE_AEGRA_URL` 提供，默认 `http://localhost:2026`。
+- JWT 经 `authenticatedFetch` 透传（`Authorization: Bearer <access_token>`），Aegra 与 FastAPI 共用 `SECRET_KEY` 校验。
+- thread_id 用 `sessionStorage` 持久化（`agent101.chat.threadId`），刷新复用同一 thread，由 Aegra 后台 run 继续执行。
 
 不要修改 generated client 来硬塞 streaming 能力。
 
-认证 Header 通过 `DefaultChatTransport` 的动态 `headers` 获取当前 access token。
+## 刷新 / 断线恢复
 
-`useChat` 的 `id` 作为 chat/thread identity；后端按当前 AI SDK request contract 接收 `id + messages + trigger + messageId` 等字段，不再设计平行的前端消息协议。
+浏览器刷新 / SSE 断线重连的能力由 Aegra 后台 run + `@langchain/react` 的自动重连与 `since`/`event_id` 去重提供：
 
-前端不得直接解析 LangChain/LangGraph 原始事件；FastAPI 必须先转换为 AI SDK UI message stream chunks。
+- 刷新不创建新 run：复用 `sessionStorage` 中的 thread_id，SDK 从 Aegra values 快照恢复消息。
+- 切新对话时若正在执行，仅 `stream.disconnect()` 断开客户端连接，不取消服务端 run。
+- 前端不需要自研「恢复状态机」；服务端执行生命周期（lease/reaper/drain）由 Aegra Runtime 负责。
 
 ## AI SDK 边界
 
-AI SDK 在本项目只负责：
-
-- frontend chat transport
-- UI message state
-- streaming message parts
-- stop / error / chat status
-- tool / approval / data part 的 UI 协议
-
-AI SDK 不负责后端 Agent orchestration，不引入 AI SDK Agent Runtime 替代 LangGraph。
-
-后端唯一 Runtime 仍然是 LangChain/LangGraph。
+`@ai-sdk/react` / `ai` 已从依赖移除，不参与 Agent Chat 协议。普通 REST 表单若仍使用相关类型，仅作为类型来源。
 
 ## State
 
-第一阶段优先 React local state + AI SDK `useChat`。
+优先 React local state + `@langchain/react` 的流状态。
 
 不要为了 Chat 提前引入：
 
@@ -124,15 +113,13 @@ TanStack Router 的 `routes/` 是页面入口，不把页面再套一层 feature
 
 不要在 Agent 主线开发中顺手重构整套登录认证。
 
-需要访问流式接口时，复用当前 access token 获取方式，并保证 401/403 行为与现有应用一致。
+Agent Chat 需要访问 Aegra 流式接口时，复用当前 access token 获取方式（`authenticatedFetch` 透传），并保证 401/403 行为与现有应用一致。
 
 ## UI
 
-复用现有 Radix/shadcn 风格 `components/ui` 和已经迁移的 Mastra Chat 视觉/交互。
-
-后续 Tool、Approval、Reasoning 等复杂 message part 优先评估 AI Elements 现成组件；不要一次性把整套 AI Elements 组件库复制进来。
-
-需要哪个组件再按需加入哪个组件，避免把源项目的 Workspace、Artifact、Speech、Mastra Durable UI 一起迁入。
+- assistant-ui：**当前未引入**。若未来引入，必须是明确的产品决策并同步更新根 `AGENTS.md`；不得为了“规范”同时维护两套 Chat 组件。
+- shadcn/ui（`components/ui`）：通用 UI（Button、Dialog、Input、Select 等）的唯一组件来源。
+- 后续 Tool、Approval、Reasoning 等复杂 message part 优先评估 LangGraph SDK / Aegra 提供的展示能力；需要哪个组件再按需加入，避免一次性复制整库。
 
 ## Testing
 
@@ -145,10 +132,9 @@ TanStack Router 的 `routes/` 是页面入口，不把页面再套一层 feature
 新增 Chat 时优先覆盖：
 
 - send message
-- streaming text
-- abort/cancel
+- 刷新后同 thread 消息恢复
 - tool activity rendering
-- approval flow（出现后）
+- abort/disconnect（不取消服务端 run）
 - error/reconnect UX（出现后）
 
-AI SDK 相关 API 变化较快，修改 transport/message-parts 前先对照当前安装版本和官方文档。
+`@langchain/react` / Aegra 协议变化较快，修改 transport / message 渲染前先对照当前安装版本与官方文档。

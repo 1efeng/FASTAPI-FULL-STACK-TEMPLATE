@@ -6,21 +6,23 @@
 
 ## 最终技术主线
 
+> 状态：随 `docs/architecture.md` 定稿为 Aegra 版（2026-09-11）。下方各章节的「建议代码形态」是课程适配的历史指引，当前实际形态以根 `AGENTS.md` 与 `docs/architecture.md` 为准。
+
 ```text
-React Chat UI
+React Chat UI（frontend/src/components/Chat/）
+    ↓ @langchain/react HttpAgentServerAdapter
+Aegra v2（/threads/{id}/commands + /stream/events + /state）
     ↓
-FastAPI
+Aegra Runtime（agent-runtime，aegra serve：worker / lease / reaper / drain / SSE broker）
     ↓
-app/chat
+LangGraph graph（agent-runtime/src/travel_runtime/graph.py）
     ↓
-LangChain / LangGraph
-    ↓
-PostgreSQL
+AsyncPostgresSaver checkpoint（PostgreSQL）
 ```
 
 核心原则：
 
-> LangChain 提供成熟的模型、Tool、Agent 高层能力；LangGraph 是唯一 Agent Runtime；Agent101 用于补充框架没有替应用解决的副作用安全、恢复策略、审计、幂等和必要的分布式执行治理。
+> LangChain 提供成熟的模型、Tool、Agent 高层能力；LangGraph 是唯一 Agent Runtime；Aegra 复用成熟 Runtime（队列/租约/回放/排水），应用只补框架没替业务解决的副作用安全、审计、幂等和必要的治理。
 
 ---
 
@@ -318,7 +320,7 @@ same PostgreSQL
 
 - LangChain model integration
 - Travel Skill
-- FastAPI SSE
+- Aegra v2 SSE（Agent Protocol，`@langchain/react` 直连）
 - React streaming Chat
 - structured output / error / usage / logging
 

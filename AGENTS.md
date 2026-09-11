@@ -14,7 +14,7 @@
 
 定位：以面试为主线、按生产形态收敛的 **Resumable Agent Application**；目标设计与验收口径见 `docs/architecture.md`（Aegra 版定稿）。`travel-planning` 是首个业务 Skill，不要扩展成复杂旅游 SaaS。
 
-当前状态：架构已定稿为 **Aegra 自托管 Runtime + 应用补治理**（`docs/architecture.md`）；代码仍处于 P1–P5 过渡实现（`agent_runs` / `agent_events` / 租约 / DB 事件回放 / `tool_invocations`），将按定稿文档收敛移除。本文"约定"与现状冲突时，以"定稿架构 + 收敛顺序"为准：先同步代码/文档，再扩展新机制。
+当前状态：架构已定稿为 **Aegra 自托管 Runtime + 应用补治理**（`docs/architecture.md`），代码已按定稿收敛：P1–P5 自研层（`agent_runs` / `agent_events` / 租约 / `db_stream`）已移除，graph 已迁移到 `agent-runtime/`（Aegra 运行时包），前端经 `@langchain/react` 直连 Aegra v2。工具幂等台账 `tool_invocations` 保留在 `agent-runtime/src/travel_runtime/db.py`，不在 backend 重复维护。本文"约定"与现状冲突时，以"定稿架构 + 收敛顺序"为准。
 
 ---
 
@@ -64,13 +64,13 @@
 正确方向：
 
 ```text
-FastAPI
+Browser（@langchain/react useStream + HttpAgentServerAdapter）
+  ↓ Agent Protocol v2（/threads/{id}/commands + /stream/events + /state）
+Aegra Runtime（agent-runtime，aegra serve：API + worker + lease/reaper + SSE broker）
   ↓
-LangChain / LangGraph Agent
+LangGraph graph（agent-runtime/src/travel_runtime/graph.py）
   ↓
-LangGraph Runtime
-  ↓
-Postgres Checkpointer
+AsyncPostgresSaver checkpoint
 ```
 
 Agent101 的 durable 内容用于补充副作用安全、恢复策略、审计、幂等和必要的分布式执行治理，而不是再造第二套 Runtime。
@@ -218,27 +218,24 @@ Chat、Agent、Tool、Graph 属于同一个业务 feature；Chat 负责交互协
 结构按需求自然增长，当前实际形态：
 
 ```text
-agent/
-├── agent.py
-├── middleware.py        # Skill 目录 + 工具幂等（P4）等横切治理
-└── skills/
-chat/
-├── api.py
-├── runs/                # P1–P5 过渡：agent_runs/agent_events/租约/tool_invocations（目标：按 docs/architecture.md 收敛移除）
-└── protocol/
-    ├── __init__.py
-    ├── adapter.py       # LangGraph state/message 序列化边界
-    ├── db_stream.py     # SSE 事件回放 + 轮询（过渡；将被 Aegra SSE broker 取代）
-    └── schema.py        # LangGraph SDK 传输请求边界
+agent-runtime/                       # Aegra 运行时项目（自包含，aegra dev/serve 可直接跑）
+├── aegra.json                       # graph + auth 注册
+├── Dockerfile / pyproject.toml
+└── src/travel_runtime/
+    ├── graph.py                     # LangGraph agent（导出无 checkpointer，Aegra 每请求注入）
+    ├── middleware.py                # Skills / Filesystem / ToolIdempotency
+    ├── auth.py                      # FastAPI JWT 桥（同一 SECRET_KEY，HS256，sub = thread owner）
+    ├── db.py                        # 幂等台账（tool_invocations）
+    └── skills/travel-planning/      # 产品运行时 Skill
+
+frontend/src/components/Chat/        # Chat UI（手写，非 assistant-ui）
+├── ChatPage.tsx                     # StreamProvider + HttpAgentServerAdapter（Aegra v2 路径）
+└── ChatMessages / ChatComposer / ChatActivity / ChatThreadSidebar
 ```
 
-后续文件只在真实需求出现时新增：`agent/tools.py`（Tool 明显增多）、`agent/graph.py` / `agent/state.py`（进入低层 orchestration）。
+后续文件只在真实需求出现时新增：`travel_runtime/tools.py`（Tool 明显增多）、`travel_runtime/graph.py` 内部拆 state 等（进入低层 orchestration）。
 
-`protocol/` 只解决前后端协议边界（LangGraph stream protocol），不是 Agent Runtime。进入 Chapter 2/3 后在同一目录扩展 tool / reasoning / approval 事件，不再另建第二套事件协议。
-
-Tool 数量明显增长后，`tools.py` 才拆成 `tools/`。
-
-只有当 API 同时承担 graph lifecycle、thread、checkpoint、stream、interrupt/resume 等明显膨胀时，才考虑 `runtime.py`。
+Agent Protocol v2 只解决前后端协议边界（`/threads/{id}/commands` + `/stream/events` + `/state`），不是 Agent Runtime；Runtime 是 Aegra。进入 Chapter 2/3 后在 Aegra custom 事件/`values` 快照上扩展 tool / reasoning / approval 展示，不再另建第二套事件协议。
 
 只有出现真实会话产品数据需求（会话列表、标题、owner、搜索、归档）时，才增加 Chat SQLAlchemy model/repository/service（`chat_messages` 读模型已延后，见 `docs/architecture.md` §6.3）。
 
@@ -249,8 +246,9 @@ Tool 数量明显增长后，`tools.py` 才拆成 `tools/`。
 - chat_steps
 - custom checkpoints
 - 第二套执行状态 / 事件状态机
+- 应用层 job 队列 / lease / reaper / drain（Aegra 已提供）
 
-现有 `chat/runs/`（`agent_runs` / `agent_events` / 租约 / `tool_invocations`）是 P1–P5 过渡实现，**不是最终形态**：目标是在 Aegra Runtime 落地后收敛移除（`docs/architecture.md`）。收敛完成前不得扩展其语义或叠加新机制。
+P1–P5 过渡实现（`agent_runs` / `agent_events` / 租约 / `db_stream`）**已移除**；工具幂等台账 `tool_invocations` 保留在 `agent-runtime/src/travel_runtime/db.py`（Aegra 不提供，应用补治理）。
 
 恢复与并发约定（**Aegra 版定稿**，详见 `docs/architecture.md`）：
 
@@ -265,16 +263,16 @@ Tool 数量明显增长后，`tools.py` 才拆成 `tools/`。
 
 ## Skill 约束
 
-产品运行时 Skill 放在 Agent 模块：
+产品运行时 Skill 放在 Aegra 运行时包内：
 
 ```text
-backend/app/agent/skills/
+agent-runtime/src/travel_runtime/skills/
 ```
 
 例如：
 
 ```text
-backend/app/agent/skills/travel-planning/SKILL.md
+agent-runtime/src/travel_runtime/skills/travel-planning/SKILL.md
 ```
 
 `.agents/skills/` 仅用于开发 Agent / Codex 的工作流 Skill，不属于产品运行时。
@@ -315,16 +313,16 @@ Repository 不负责 commit；业务 service / transaction boundary 决定 commi
 
 普通 REST 继续使用 OpenAPI generated client。
 
-Agent Chat 前端使用 `@langchain/react`（LangGraph 官方统一 React SDK）作为 Agent Runtime 连接层，shadcn/ui 作为通用 UI 组件库：
+Agent Chat 前端使用 `@langchain/react`（LangGraph 官方统一 React SDK）作为 Agent Runtime 连接层，shadcn/ui 作为通用 UI 组件库，直连 Aegra v2：
 
 ```text
-Chat 页面（frontend/src/components/Chat/，当前为手写组件）
+Chat 页面（frontend/src/components/Chat/，手写组件）
   ↓
 StreamProvider / useStreamContext / HttpAgentServerAdapter（@langchain/react）
   ↓
-HTTP POST + LangGraph stream SSE
+Aegra v2（POST /threads/{id}/commands · POST /threads/{id}/stream/events · GET /threads/{id}/state）
   ↓
-FastAPI + LangGraph
+Aegra Runtime → LangGraph graph → AsyncPostgresSaver
 ```
 
 前端技术选型约束：
@@ -333,18 +331,18 @@ FastAPI + LangGraph
 - **assistant-ui**：当前未引入。若未来引入，必须是明确的产品决策并同步更新本文件；不得为了"规范"同时维护两套 Chat 组件。
 - **shadcn/ui**：通用 UI（Button、Dialog、Input、Select 等）的唯一组件来源，项目自己的非 Chat 组件统一用它。
 
-后端协议边界固定在：
+协议边界：
 
 ```text
-chat/protocol/
-  LangGraph stream events → LangGraph server compatible SSE response
+Aegra v2 SSE
+  （event 信封含 seq/event_id；SDK 用 since 续流 + event_id 去重）
+  ↓
+useStream（@langchain/react）直接消费
 ```
 
-网络协议使用 **LangGraph stream protocol**。FastAPI 通过 LangGraph 的 streaming 接口（`astream` / `astream_events`）将 Agent 执行结果以 LangGraph 兼容的 SSE 格式返回，`useStream` 直接消费。
+网络协议使用 **Agent Protocol v2**（LangGraph SDK 原生支持）。`HttpAgentServerAdapter` 直连 Aegra，`assistantId` 用 Aegra graph id（`travel_planning`），FastAPI 不再承担 chat 流式边界。业务特有 activity / progress 通过 Aegra custom 事件或 `values` 快照展示，不另造平行事件协议。
 
-业务特有的 activity、progress、approval 等信息通过 LangGraph stream 的 `custom` mode events 或 `ui_message` generative UI 传递，不另造平行事件协议。
-
-AI SDK（`@ai-sdk/react`、`ai`、`@ai-sdk/*`）不再用于 Agent Chat 前端。仅在普通 REST 表单和 OpenAPI client 中保留 TypeScript 类型。
+AI SDK（`@ai-sdk/react`、`ai`）已从依赖中移除；OpenAPI client 仅由 backend 生成的 `openapi.json` 生成（普通 REST 用）。
 
 ---
 
