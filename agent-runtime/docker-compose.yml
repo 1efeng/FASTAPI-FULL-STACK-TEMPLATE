@@ -1,0 +1,120 @@
+# Docker Compose - PostgreSQL + Redis + 多实例 Aegra Runtime
+# 用法：
+#   cd agent-runtime
+#   cp .env.example .env        # 填 POSTGRES_* / REDIS_URL / LLM_* / SECRET_KEY
+#   docker compose up --build   # 启动 migrate 一次性任务 + aegra-a + aegra-b
+# 架构依据：docs/architecture.md §8（Nginx/SLB 摘流 → SIGTERM drain → requeue → 新实例续跑）。
+# 迁移只在 migrate 服务执行一次（RUN_MIGRATIONS_ON_STARTUP=false），避免多实例 Alembic 锁竞争。
+
+x-aegra-env: &aegra-env
+  env_file:
+    - .env
+  environment:
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    REDIS_URL: redis://redis:6379/0
+    REDIS_BROKER_ENABLED: "true"
+    PORT: "2026"
+    RUN_MIGRATIONS_ON_STARTUP: "false"
+    AEGRA_CONFIG: aegra.json
+    AUTH_TYPE: custom
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: travel-runtime-pg-compose
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+    ports:
+      - "${POSTGRES_HOST_PORT:-15433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: travel-runtime-redis-compose
+    restart: unless-stopped
+    ports:
+      - "${REDIS_HOST_PORT:-16380}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # 一次性迁移任务：多实例场景下只在发布/初始化执行一次 aegra db upgrade。
+  migrate:
+    build: .
+    command: ["aegra", "db", "upgrade"]
+    <<: *aegra-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  aegra-a:
+    build: .
+    image: travel-agent-runtime:local
+    container_name: travel-runtime-a
+    restart: unless-stopped
+    command: ["aegra", "serve", "--host", "0.0.0.0", "--port", "2026"]
+    ports:
+      - "2026:2026"
+    <<: *aegra-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:2026/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - ./src:/app/src:ro
+      - ./aegra.json:/app/aegra.json:ro
+
+  # 多实例演示：同一镜像第二个实例，容器内同端口，宿主机映射 2027。
+  # 生产 Nginx/SLB 场景两个实例都不暴露宿主机端口，只走负载均衡。
+  aegra-b:
+    image: travel-agent-runtime:local
+    container_name: travel-runtime-b
+    restart: unless-stopped
+    command: ["aegra", "serve", "--host", "0.0.0.0", "--port", "2026"]
+    ports:
+      - "2027:2026"
+    <<: *aegra-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:2026/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - ./src:/app/src:ro
+      - ./aegra.json:/app/aegra.json:ro
+
+volumes:
+  postgres_data:
+  redis_data:
