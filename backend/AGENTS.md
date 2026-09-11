@@ -63,50 +63,54 @@ backend/
 
 ## Chat / Agent
 
-Chapter 1 当前结构为：
+当前结构为（P1–P5 过渡形态，目标设计见 `docs/architecture.md`）：
 
 ```text
 app/agent/
 ├── __init__.py
 ├── agent.py
-├── middleware.py
+├── middleware.py        # Skill 目录 + 工具幂等（P4）
 └── skills/
 app/chat/
 ├── api.py
-├── schema.py
-├── protocol/
-│   ├── __init__.py
-│   ├── messages.py
-│   └── stream.py
+├── runs/
+│   ├── model.py         # agent_runs / agent_events / tool_invocations（过渡实现，目标收敛移除）
+│   ├── repository.py
+│   └── service.py       # 租约、跨 worker 恢复（过渡实现）
+└── protocol/
+    ├── __init__.py
+    ├── adapter.py       # LangGraph state/message 序列化边界
+    ├── db_stream.py     # SSE 事件回放 + 轮询（过渡；将被 Aegra SSE broker 取代）
+    └── schema.py        # LangGraph SDK 传输请求边界
 ```
 
 职责：
 
 - `api.py`: FastAPI/auth/StreamingResponse
-- `schema.py`: LangGraph SDK transport request boundary
+- `chat/runs/`: P1–P5 过渡实现（agent_runs / agent_events / 租约 / tool_invocations），目标收敛移除
+- `protocol/adapter.py`: LangGraph state/message 序列化边界
+- `protocol/db_stream.py`: SSE 事件回放 + 轮询（过渡；将被 Aegra SSE broker 取代）
+- `protocol/schema.py`: LangGraph SDK 传输请求边界
 - `agent/agent.py`: LangChain ChatModel + create_agent + server-owned system instructions
-- `agent/middleware.py`: Skill catalog and read-only skill file middleware
-- `protocol/messages.py`: LangGraph SDK `UIMessage[]` → LangChain messages
-- `protocol/stream.py`: LangChain/LangGraph output → LangGraph stream protocol SSE
+- `agent/middleware.py`: Skill catalog + read-only skill file middleware + tool idempotency
 - `agent/skills/`: 产品运行时 Skill
 
 后续文件只在真实需求出现时新增：
 
 - `agent/tools.py`: 有 Tool 时
-- `agent/middleware.py`: 有 Tool/Agent 横切治理时
 - `agent/graph.py`: 开始低层 StateGraph orchestration 时
 - `agent/state.py`: Graph state 独立后
 - `agent/runtime.py`: Agent lifecycle 已被 checkpoint/thread/resume/stream 明显撑大时
 
-`protocol/` 是协议适配，不是第二套 Runtime。不要另建 `events.py` 再维护平行事件协议。
+`protocol/` 是协议适配，不是第二套 Runtime。事件回放（`db_stream.py`）是过渡实现，收敛目标见 `docs/architecture.md`，不要在此基础上另建平行事件协议。
 
 不要创建空目录或占位抽象预测未来复杂度。
 
 ## Chat Streaming Protocol
 
-前端使用 assistant-ui 作为 Chat UI 组件层，`@langchain/langgraph-sdk/react` 的 `useStream` 作为 Agent Runtime 连接层。
+前端使用 `@langchain/react`（`StreamProvider` / `useStreamContext` / `HttpAgentServerAdapter`）作为 Agent Runtime 连接层，当前无 assistant-ui。
 
-请求保持 LangGraph SDK 原生形状（`messages`、`thread_id`、`stream_mode`），后端在 `protocol/messages.py` 转为 LangChain messages。
+请求保持 LangGraph SDK 原生形状（`messages`、`thread_id`、`stream_mode`），后端在 `protocol/adapter.py` 转为 LangChain messages。
 
 `/chat/stream` 返回 **LangGraph stream protocol** SSE，而不是应用自定义 event names，也不是 AI SDK UI Message Stream。
 
@@ -121,7 +125,7 @@ chat/protocol/
   ↓
 LangGraph stream protocol SSE
   ↓
-useStream / assistant-ui
+useStream（@langchain/react）
 ```
 
 Chapter 1 只实现完整文本 Chat subset。Tool、Approval、Reasoning、Sources 等在对应章节出现时，再在同一个 `protocol/` 目录扩展 LangGraph stream 已定义的事件类型；产品特有 progress/activity 使用 `custom` stream mode event 或 `ui_message` generative UI，不再维护平行协议。

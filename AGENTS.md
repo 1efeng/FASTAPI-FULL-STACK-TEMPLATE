@@ -2,17 +2,19 @@
 
 ## 项目目标
 
-本仓库正在从通用 FastAPI Full Stack Template 演进为一个用于学习、演示和面试的 **Agent Engineering Platform**。
+本仓库正在从通用 FastAPI Full Stack Template 演进为一个以面试为主线、按生产形态收敛的 **Resumable Agent Application**（也是 Agent Engineering Platform 的学习载体）。
 
 主技术路线：
 
 - Backend: Python + FastAPI + SQLAlchemy 2 Async + PostgreSQL
 - Agent: LangChain + LangGraph
-- Frontend: React + TypeScript + TanStack Router/Query + assistant-ui + shadcn/ui
-- Agent Runtime (frontend): @langchain/langgraph-sdk/react useStream
+- Frontend: React + TypeScript + TanStack Router/Query + shadcn/ui
+- Agent Runtime (frontend): @langchain/react（LangGraph 官方 React SDK：useStream / StreamProvider / HttpAgentServerAdapter）
 - Transport: LangGraph stream protocol over SSE
 
-第一阶段只做一个可运行、可演示的 Chat Agent，`travel-planning` 作为首个业务 Skill。不要把旅行场景扩展成复杂旅游 SaaS。
+定位：以面试为主线、按生产形态收敛的 **Resumable Agent Application**；目标设计与验收口径见 `docs/architecture.md`（Aegra 版定稿）。`travel-planning` 是首个业务 Skill，不要扩展成复杂旅游 SaaS。
+
+当前状态：架构已定稿为 **Aegra 自托管 Runtime + 应用补治理**（`docs/architecture.md`）；代码仍处于 P1–P5 过渡实现（`agent_runs` / `agent_events` / 租约 / DB 事件回放 / `tool_invocations`），将按定稿文档收敛移除。本文"约定"与现状冲突时，以"定稿架构 + 收敛顺序"为准：先同步代码/文档，再扩展新机制。
 
 ---
 
@@ -43,7 +45,7 @@
 - reconciliation
 - audit
 - LangGraph stream protocol adaptation
-- assistant-ui runtime integration
+- Agent Chat runtime integration（当前为 @langchain/react）
 - product-specific business rules
 
 不要因为课程中存在手写实现，就同时维护“课程 Runtime + LangGraph Runtime”两套实现。
@@ -157,6 +159,8 @@ LangGraph
 
 Tool 执行机制交给框架，Tool 治理由应用负责。
 
+工具副作用幂等是应用责任：`ToolIdempotencyMiddleware` + `tool_invocations` 台账是最小实现，Aegra 不提供，**保留**（`docs/architecture.md` §6.4）。不得无声删除该治理能力。
+
 必须理解并在需要时实现：
 
 - final resource authorization
@@ -203,7 +207,7 @@ route
 - budget / convergence
 - recovery semantics
 
-Lease / heartbeat / fencing 只有出现真实多 Worker 竞争接管问题时才实现。
+Lease / heartbeat / fencing 已由 Aegra Runtime 提供（PG 原子 lease + 10s heartbeat + reaper），应用不再实现。
 
 ---
 
@@ -211,30 +215,24 @@ Lease / heartbeat / fencing 只有出现真实多 Worker 竞争接管问题时�
 
 Chat、Agent、Tool、Graph 属于同一个业务 feature；Chat 负责交互协议，Agent 负责执行能力。不额外创建全局 `agents/`、`runtime/`、`orchestration/` 层。
 
-结构按需求自然增长：
+结构按需求自然增长，当前实际形态：
 
 ```text
-Ch1
 agent/
 ├── agent.py
-├── middleware.py
+├── middleware.py        # Skill 目录 + 工具幂等（P4）等横切治理
 └── skills/
 chat/
 ├── api.py
-├── schema.py
-├── protocol/
-│   ├── __init__.py
-│   ├── messages.py   # LangGraph SDK UIMessage[] → LangChain messages
-│   └── stream.py     # LangChain/LangGraph stream → LangGraph stream protocol
-
-Ch2
-+ agent/tools.py       # 少量工具时
-+ agent/middleware.py  # Agent 横切治理
-
-Ch3
-+ agent/graph.py
-+ agent/state.py
+├── runs/                # P1–P5 过渡：agent_runs/agent_events/租约/tool_invocations（目标：按 docs/architecture.md 收敛移除）
+└── protocol/
+    ├── __init__.py
+    ├── adapter.py       # LangGraph state/message 序列化边界
+    ├── db_stream.py     # SSE 事件回放 + 轮询（过渡；将被 Aegra SSE broker 取代）
+    └── schema.py        # LangGraph SDK 传输请求边界
 ```
+
+后续文件只在真实需求出现时新增：`agent/tools.py`（Tool 明显增多）、`agent/graph.py` / `agent/state.py`（进入低层 orchestration）。
 
 `protocol/` 只解决前后端协议边界（LangGraph stream protocol），不是 Agent Runtime。进入 Chapter 2/3 后在同一目录扩展 tool / reasoning / approval 事件，不再另建第二套事件协议。
 
@@ -242,16 +240,26 @@ Tool 数量明显增长后，`tools.py` 才拆成 `tools/`。
 
 只有当 API 同时承担 graph lifecycle、thread、checkpoint、stream、interrupt/resume 等明显膨胀时，才考虑 `runtime.py`。
 
-只有出现真实会话产品数据需求（会话列表、标题、owner、搜索、归档）时，才增加 Chat SQLAlchemy model/repository/service。
+只有出现真实会话产品数据需求（会话列表、标题、owner、搜索、归档）时，才增加 Chat SQLAlchemy model/repository/service（`chat_messages` 读模型已延后，见 `docs/architecture.md` §6.3）。
 
-不要提前创建：
+规划中的例外：`chat_messages`（UI 展示读模型）已**延后**（Aegra values 快照可渲染消息）。**尚未建表/迁移**，若落地按 `message_id` 幂等写入；LangGraph execution/message state 仍由 checkpointer 管理，它只是展示投影，不参与执行判断，不是第二套执行状态。
 
-- chat_messages
-- chat_runs
+不要新增：
+
 - chat_steps
 - custom checkpoints
+- 第二套执行状态 / 事件状态机
 
-LangGraph execution/message state 优先由 LangGraph checkpointer 管理。
+现有 `chat/runs/`（`agent_runs` / `agent_events` / 租约 / `tool_invocations`）是 P1–P5 过渡实现，**不是最终形态**：目标是在 Aegra Runtime 落地后收敛移除（`docs/architecture.md`）。收敛完成前不得扩展其语义或叠加新机制。
+
+恢复与并发约定（**Aegra 版定稿**，详见 `docs/architecture.md`）：
+
+- 执行状态唯一事实源 = LangGraph checkpoint（AsyncPostgresSaver）。
+- PostgreSQL = 数据层（LangGraph checkpoint + Aegra 表 + 业务表）；Redis = Aegra Runtime 依赖（job 队列 + SSE 广播/回放 + cancel），非自研协调层。
+- 恢复语义 = 同一 `thread_id` 从 checkpoint 继续执行，绝不重发用户消息。
+- 多实例并发推进由 Aegra PG 原子 lease 互斥；重复副作用由幂等工具台账防住。
+- 滚动部署 = SIGTERM → `WORKER_DRAIN_TIMEOUT` 排水 → 未完成 run 自动 requeue → 新实例从 checkpoint 续跑。
+- 验收口径 = 文字内容完整 + 事件进度展示完整；不要求逐 token 流式。
 
 ---
 
@@ -307,14 +315,12 @@ Repository 不负责 commit；业务 service / transaction boundary 决定 commi
 
 普通 REST 继续使用 OpenAPI generated client。
 
-Agent Chat 前端统一使用 assistant-ui 作为 Chat UI 层，LangGraph SDK `useStream` 作为 Agent Runtime 连接层，shadcn/ui 作为通用 UI 组件库：
+Agent Chat 前端使用 `@langchain/react`（LangGraph 官方统一 React SDK）作为 Agent Runtime 连接层，shadcn/ui 作为通用 UI 组件库：
 
 ```text
-assistant-ui Thread / ThreadList（styled elements）
+Chat 页面（frontend/src/components/Chat/，当前为手写组件）
   ↓
-useLangGraphRuntime（@assistant-ui/react-langgraph）
-  ↓
-useStream（@langchain/langgraph-sdk/react）
+StreamProvider / useStreamContext / HttpAgentServerAdapter（@langchain/react）
   ↓
 HTTP POST + LangGraph stream SSE
   ↓
@@ -323,9 +329,9 @@ FastAPI + LangGraph
 
 前端技术选型约束：
 
-- **assistant-ui**：Chat UI 的唯一组件来源。使用 `npx assistant-ui@latest add thread thread-list` 安装 styled elements 到 `components/assistant-ui/elements/`，通过 primitives 定制。不要手写 `ChatMessages`/`ChatComposer`/`ChatThreadSidebar` 等平行组件。
-- **@langchain/langgraph-sdk/react `useStream`**：Agent Runtime 连接的唯一方式。它管理 messages、thread state、streaming、interrupt/resume。不要用 `useChat`/`DefaultChatTransport` 或自研 SSE parser。
-- **shadcn/ui**：通用 UI（Button、Dialog、Input、Select 等）。assistant-ui elements 已经内建在 shadcn/ui 约定上，项目自己的非 Chat 组件也统一用 shadcn/ui。
+- **@langchain/react**：Agent Runtime 连接层（`useStream` / `useStreamContext` / `StreamProvider` / `HttpAgentServerAdapter`），管理 messages、thread state、streaming、interrupt/resume。不要用 `@ai-sdk/react` 的 `useChat`、DefaultChatTransport 或自研 SSE parser 重建这套连接。
+- **assistant-ui**：当前未引入。若未来引入，必须是明确的产品决策并同步更新本文件；不得为了"规范"同时维护两套 Chat 组件。
+- **shadcn/ui**：通用 UI（Button、Dialog、Input、Select 等）的唯一组件来源，项目自己的非 Chat 组件统一用它。
 
 后端协议边界固定在：
 
@@ -342,29 +348,31 @@ AI SDK（`@ai-sdk/react`、`ai`、`@ai-sdk/*`）不再用于 Agent Chat 前端�
 
 ---
 
-## 当前明确不引入
+## 基础设施决策原则
 
-除非出现可验证的真实需求，不引入：
+任何基础设施由可验证需求驱动，选择当前需求下最简方案，并把决策写入 `docs/architecture.md`；不要为了简历关键词增加基础设施。
 
-- LiteLLM
-- LangSmith
-- Redis
-- Celery
-- Kafka
-- Temporal
-- Inngest
-- Kubernetes
-- 第二套 durable runtime
+已引入 / 已定稿：
+
+- PostgreSQL（数据层：LangGraph checkpoint + Aegra 表 + 业务表）
+- Redis（**Aegra Runtime 依赖**：job 队列 + SSE 广播/回放 + cancel；非自研协调层）
+- Aegra（自托管 Agent Runtime，实测 0.10.4：worker / lease / reaper / drain / SSE 回放，`docs/aegra-evaluation.md`）
+
+当前未引入（出现真实需求时先评估最小方案，再决定是否引入）：
+
+- LiteLLM / LLM Gateway（自研 provider 框架同样禁止）
+- LangSmith（可观测性先用应用内结构化日志 + run 级事件顶住）
+- Celery / Kafka / Temporal / DBOS / Inngest / 自研 durable runtime
 - 传统 RAG / 向量数据库（第一阶段）
 - Vercel AI SDK（@ai-sdk/react / ai）作为 Agent Chat 前端协议
 
-不要为了简历关键词增加基础设施。
+部署形态：不依赖 K8s 平台 API 才能保证正确性；兼容普通服务器与 K8s 滚动发布（draining + 健康检查，见 `docs/architecture.md`）。
 
 ---
 
 ## 官方 API 与文档
 
-LangChain / LangGraph / assistant-ui / LangGraph SDK API 变化较快。
+LangChain / LangGraph / @langchain/react API 变化较快。
 
 实现新能力前必须优先检查 **当前官方文档和当前安装版本**，不要仅凭旧课程、旧示例或模型记忆猜 API。
 
@@ -377,9 +385,15 @@ LangChain / LangGraph / assistant-ui / LangGraph SDK API 变化较快。
 一个修改只有在产生可验证产出时才算完成：
 
 - 代码可运行
-- 对应测试通过
+- 对应测试通过；Agent 行为改动（prompt / graph / tool / 恢复语义）要有回归验证（e2e 或验收清单）
 - lint/type-check 不因本次改动新增错误
 - 架构没有增加重复 source of truth
 - 能说明为什么使用框架能力、为什么某些治理需要应用自己实现
+- 文档同步：涉及架构/协议/数据模型的改动，`AGENTS.md` / `docs/architecture.md` 必须与代码一致，不得出现"文档说已落地但代码没有"
+
+Agent 项目特有的验收口径（目标，见 `docs/architecture.md`）：
+
+- 浏览器刷新恢复、SSE 断线重连补事件、多 worker 执行状态一致、滚动部署不丢内容
+- 验收 = 文字内容完整 + 事件进度展示完整；不把逐 token 动画当承诺
 
 优先可运行的面试项目，而不是追求覆盖所有课程章节。
