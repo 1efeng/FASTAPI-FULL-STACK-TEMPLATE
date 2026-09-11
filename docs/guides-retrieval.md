@@ -173,6 +173,152 @@ SQL 逻辑：
 - 只读工具，无副作用；`ToolIdempotencyMiddleware` 照常记录，无特殊处理
 - `get_guide` 返回内容即"回答依据"，来源 = `title`，可追溯
 
+### 5.4 get_guide 完整实现
+
+先新增 `agent-runtime/src/travel_runtime/guides.py`（表 DDL + `GuideStore`，复用 `db.py` 的 `get_engine`）：
+
+```python
+# agent-runtime/src/travel_runtime/guides.py
+"""内部攻略索引 store：travel_guides 表，runtime 自管（同 db.py 模式）。"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from sqlalchemy import text
+
+from travel_runtime.db import get_engine  # 复用同一 asyncpg 连接池
+
+# 每条语句单独执行：asyncpg 拒绝一条语句里多个命令
+_CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS travel_guides (
+    id          BIGSERIAL PRIMARY KEY,
+    slug        VARCHAR(120) UNIQUE NOT NULL,
+    title       VARCHAR(255) NOT NULL,
+    city        VARCHAR(80),
+    country     VARCHAR(80),
+    region      VARCHAR(80),
+    themes      TEXT[] NOT NULL DEFAULT '{}',
+    audiences   TEXT[] NOT NULL DEFAULT '{}',
+    days_min    INT,
+    days_max    INT,
+    budget_min  INT,
+    budget_max  INT,
+    seasons     TEXT[] NOT NULL DEFAULT '{}',
+    summary     TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    source_path VARCHAR(255),
+    verified_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+_CREATE_INDEX_CITY = """CREATE INDEX IF NOT EXISTS ix_guides_city ON travel_guides (city)"""
+_CREATE_INDEX_THEMES = """CREATE INDEX IF NOT EXISTS ix_guides_themes ON travel_guides USING GIN (themes)"""
+_CREATE_INDEX_AUDIENCES = """CREATE INDEX IF NOT EXISTS ix_guides_audiences ON travel_guides USING GIN (audiences)"""
+_CREATE_EXT_TRGM = "CREATE EXTENSION IF NOT EXISTS pg_trgm"
+_CREATE_INDEX_TRGM = """
+CREATE INDEX IF NOT EXISTS ix_guides_trgm
+    ON travel_guides USING GIN (title gin_trgm_ops, summary gin_trgm_ops)
+"""
+
+_GET_BY_SLUG = text(
+    """
+    SELECT slug, title, city, themes, days_min, days_max, summary, content
+    FROM travel_guides
+    WHERE slug = :slug
+    LIMIT 1
+    """
+)
+
+_schema_ready = asyncio.Lock()
+_schema_done = False
+
+
+async def ensure_guides_schema() -> None:
+    """幂等建表 + 索引（advisory lock 防多实例并发）。"""
+    global _schema_done
+    if _schema_done:
+        return
+    async with _schema_ready:
+        if _schema_done:
+            return
+        engine = get_engine()
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('travel_runtime_travel_guides'))")
+            )
+            await conn.execute(text(_CREATE_TABLE))
+            await conn.execute(text(_CREATE_INDEX_CITY))
+            await conn.execute(text(_CREATE_INDEX_THEMES))
+            await conn.execute(text(_CREATE_INDEX_AUDIENCES))
+            await conn.execute(text(_CREATE_EXT_TRGM))
+            await conn.execute(text(_CREATE_INDEX_TRGM))
+        _schema_done = True
+
+
+class GuideStore:
+    """攻略索引读写（目前只有读取；写入走导入脚本 import_guides.py）。"""
+
+    async def get_by_slug(self, slug: str) -> dict[str, Any] | None:
+        await ensure_guides_schema()
+        async with get_engine().connect() as conn:
+            row = (await conn.execute(_GET_BY_SLUG, {"slug": slug})).first()
+        if row is None:
+            return None
+        return {
+            "slug": row[0],
+            "title": row[1],
+            "city": row[2],
+            "themes": row[3],
+            "days_min": row[4],
+            "days_max": row[5],
+            "summary": row[6],
+            "content": row[7],
+        }
+```
+
+再在 `middleware.py` 追加 `GuidesMiddleware`（工具是 async，直接查库返回格式化文本）：
+
+```python
+# agent-runtime/src/travel_runtime/middleware.py：追加
+from travel_runtime.guides import GuideStore
+
+
+def _format_guide(guide: dict[str, Any]) -> str:
+    themes = "、".join(guide["themes"] or [])
+    days = "未标注"
+    if guide["days_min"] and guide["days_max"]:
+        days = f"{guide['days_min']}-{guide['days_max']} 天"
+    return (
+        f"# {guide['title']}\n"
+        f"城市：{guide['city'] or '未知'} ｜ 主题：{themes or '未知'} ｜ 天数：{days}\n"
+        f"摘要：{guide['summary']}\n\n"
+        f"{guide['content']}"
+    )
+
+
+class GuidesMiddleware(AgentMiddleware):
+    """把内部攻略检索能力暴露给 agent（只读）。"""
+
+    def __init__(self) -> None:
+        @tool("get_guide")
+        async def get_guide(slug: str) -> str:
+            """按 slug 读取一篇内部攻略的完整内容（标题 + 元数据 + 正文）。
+            返回内容即回答依据，可引用其中的标题；slug 需先由 search_guides 得到。"""
+            guide = await GuideStore().get_by_slug(slug=slug)
+            if guide is None:
+                return f"未找到攻略 {slug}；请先用 search_guides 确认可用的 slug。"
+            return _format_guide(guide)
+
+        # search_guides 按 §5.2 契约加入同一 self.tools（P1 补齐）
+        self.tools = [get_guide]
+```
+
+`search_guides` 在 P1 与 `get_guide` 一起加入 `self.tools`；它的 SQL（结构化过滤 + trgm 排序）见 §5.2。
+
 ## 6. Agent 行为约束
 
 更新 `agent-runtime/src/travel_runtime/skills/travel-planning/SKILL.md`，新增规则（工具使用由模型判断，不做流程化强制）：
