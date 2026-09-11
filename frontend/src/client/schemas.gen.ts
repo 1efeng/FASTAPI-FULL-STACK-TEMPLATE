@@ -57,28 +57,6 @@ export const Body_login_login_access_tokenSchema = {
     title: 'Body_login-login_access_token'
 } as const;
 
-export const ChatRequestSchema = {
-    properties: {
-        messages: {
-            items: {
-                additionalProperties: true,
-                type: 'object'
-            },
-            type: 'array',
-            minItems: 1,
-            title: 'Messages'
-        }
-    },
-    type: 'object',
-    required: ['messages'],
-    title: 'ChatRequest',
-    description: `Request shape emitted by AI SDK \`DefaultChatTransport\`.
-
-AI SDK may include additional top-level fields such as \`id\` or \`trigger\`;
-Pydantic ignores them. The backend keeps the native \`messages\` array so the
-protocol adapter, not the React client, owns the LangChain conversion.`
-} as const;
-
 export const DemoCreateSchema = {
     properties: {
         title: {

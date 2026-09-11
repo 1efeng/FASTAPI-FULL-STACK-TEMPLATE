@@ -6,7 +6,6 @@ from fastapi.routing import APIRoute
 from starlette.middleware.cors import CORSMiddleware
 
 from app.auth.api import router as auth_router
-from app.chat.api import router as chat_router
 from app.core.config import settings
 from app.db import models as _models  # noqa: F401
 from app.demo.api import router as demo_router
@@ -42,7 +41,6 @@ if settings.all_cors_origins:
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(user_router, prefix=settings.API_V1_STR)
 app.include_router(demo_router, prefix=settings.API_V1_STR)
-app.include_router(chat_router, prefix=settings.API_V1_STR)
 app.include_router(system_router, prefix=settings.API_V1_STR)
 
 if settings.ENVIRONMENT == "local":

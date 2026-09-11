@@ -3,32 +3,7 @@
 import type { CancelablePromise } from './core/CancelablePromise';
 import { OpenAPI } from './core/OpenAPI';
 import { request as __request } from './core/request';
-import type { ChatStreamChatData, ChatStreamChatResponse, DemosReadDemosData, DemosReadDemosResponse, DemosCreateDemoData, DemosCreateDemoResponse, DemosReadDemoData, DemosReadDemoResponse, DemosUpdateDemoData, DemosUpdateDemoResponse, DemosDeleteDemoData, DemosDeleteDemoResponse, LoginLoginAccessTokenData, LoginLoginAccessTokenResponse, LoginTestTokenResponse, LoginRecoverPasswordData, LoginRecoverPasswordResponse, LoginResetPasswordData, LoginResetPasswordResponse, LoginRecoverPasswordHtmlContentData, LoginRecoverPasswordHtmlContentResponse, PrivateCreateUserData, PrivateCreateUserResponse, SystemTestEmailData, SystemTestEmailResponse, SystemHealthLiveResponse, SystemHealthReadyResponse, UsersReadUsersData, UsersReadUsersResponse, UsersCreateUserData, UsersCreateUserResponse, UsersReadUserMeResponse, UsersDeleteUserMeResponse, UsersUpdateUserMeData, UsersUpdateUserMeResponse, UsersUpdatePasswordMeData, UsersUpdatePasswordMeResponse, UsersRegisterUserData, UsersRegisterUserResponse, UsersReadUserByIdData, UsersReadUserByIdResponse, UsersUpdateUserData, UsersUpdateUserResponse, UsersDeleteUserData, UsersDeleteUserResponse } from './types.gen';
-
-export class ChatService {
-    /**
-     * Stream Chat
-     * Stream one AI SDK chat turn through LangChain.
-     *
-     * Authentication stays in FastAPI. The frontend sends AI SDK `UIMessage[]`;
-     * the protocol package translates that request and the LangChain output.
-     * @param data The data for the request.
-     * @param data.requestBody
-     * @returns unknown Successful Response
-     * @throws ApiError
-     */
-    public static streamChat(data: ChatStreamChatData): CancelablePromise<ChatStreamChatResponse> {
-        return __request(OpenAPI, {
-            method: 'POST',
-            url: '/api/v1/chat/stream',
-            body: data.requestBody,
-            mediaType: 'application/json',
-            errors: {
-                422: 'Validation Error'
-            }
-        });
-    }
-}
+import type { DemosReadDemosData, DemosReadDemosResponse, DemosCreateDemoData, DemosCreateDemoResponse, DemosReadDemoData, DemosReadDemoResponse, DemosUpdateDemoData, DemosUpdateDemoResponse, DemosDeleteDemoData, DemosDeleteDemoResponse, LoginLoginAccessTokenData, LoginLoginAccessTokenResponse, LoginTestTokenResponse, LoginRecoverPasswordData, LoginRecoverPasswordResponse, LoginResetPasswordData, LoginResetPasswordResponse, LoginRecoverPasswordHtmlContentData, LoginRecoverPasswordHtmlContentResponse, PrivateCreateUserData, PrivateCreateUserResponse, SystemTestEmailData, SystemTestEmailResponse, SystemHealthLiveResponse, SystemHealthReadyResponse, UsersReadUsersData, UsersReadUsersResponse, UsersCreateUserData, UsersCreateUserResponse, UsersReadUserMeResponse, UsersDeleteUserMeResponse, UsersUpdateUserMeData, UsersUpdateUserMeResponse, UsersUpdatePasswordMeData, UsersUpdatePasswordMeResponse, UsersRegisterUserData, UsersRegisterUserResponse, UsersReadUserByIdData, UsersReadUserByIdResponse, UsersUpdateUserData, UsersUpdateUserResponse, UsersDeleteUserData, UsersDeleteUserResponse } from './types.gen';
 
 export class DemosService {
     /**
