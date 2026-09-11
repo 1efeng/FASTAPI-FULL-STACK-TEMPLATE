@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = ""
 
+    # Keep the per-process pool small enough that multiple FastAPI workers do
+    # not exhaust PostgreSQL connections.  Deployment can tune these without
+    # changing application code.
+    DB_POOL_SIZE: int = Field(default=5, ge=1, le=100)
+    DB_MAX_OVERFLOW: int = Field(default=5, ge=0, le=100)
+    DB_POOL_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=300)
+    DB_POOL_RECYCLE_SECONDS: int = Field(default=1800, ge=60, le=86400)
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> PostgresDsn:

@@ -26,6 +26,10 @@ x-aegra-environment: &aegra-environment
   LLM_MODEL: ${LLM_MODEL?Variable not set}
   LLM_API_KEY: ${LLM_API_KEY?Variable not set}
   LLM_BASE_URL: ${LLM_BASE_URL:-}
+  SQLALCHEMY_POOL_SIZE: ${AEGRA_SQLALCHEMY_POOL_SIZE:-5}
+  SQLALCHEMY_MAX_OVERFLOW: ${AEGRA_SQLALCHEMY_MAX_OVERFLOW:-5}
+  LANGGRAPH_MIN_POOL_SIZE: ${AEGRA_LANGGRAPH_MIN_POOL_SIZE:-2}
+  LANGGRAPH_MAX_POOL_SIZE: ${AEGRA_LANGGRAPH_MAX_POOL_SIZE:-5}
   WORKER_COUNT: ${AEGRA_WORKER_COUNT:-2}
   N_JOBS_PER_WORKER: ${AEGRA_N_JOBS_PER_WORKER:-4}
   WORKER_DRAIN_TIMEOUT: ${WORKER_DRAIN_TIMEOUT:-30}
@@ -43,13 +47,13 @@ services:
     build:
       args:
         VITE_API_URL: ${VITE_API_URL:-}
-        VITE_AEGRA_URL: ${VITE_AEGRA_URL?Variable not set}
+        VITE_AEGRA_URL: ${VITE_AEGRA_URL:-https://agent.${DOMAIN}}
 
   prestart:
     build:
       args:
         VITE_API_URL: ${VITE_API_URL:-}
-        VITE_AEGRA_URL: ${VITE_AEGRA_URL?Variable not set}
+        VITE_AEGRA_URL: ${VITE_AEGRA_URL:-https://agent.${DOMAIN}}
 
   redis:
     image: redis:7-alpine
@@ -111,10 +115,10 @@ services:
       - traefik.docker.network=traefik-public
       - traefik.constraint-label=traefik-public
       - traefik.http.services.${STACK_NAME?Variable not set}-aegra.loadbalancer.server.port=2026
-      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-http.rule=Host(`${AGENT_DOMAIN?Variable not set}`)
+      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-http.rule=Host(`${AGENT_DOMAIN:-agent.${DOMAIN}}`)
       - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-http.entrypoints=http
       - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-http.middlewares=https-redirect
-      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-https.rule=Host(`${AGENT_DOMAIN?Variable not set}`)
+      - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-https.rule=Host(`${AGENT_DOMAIN:-agent.${DOMAIN}}`)
       - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-https.entrypoints=https
       - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-https.tls=true
       - traefik.http.routers.${STACK_NAME?Variable not set}-aegra-https.tls.certresolver=le

@@ -106,6 +106,24 @@ docker compose -f compose.traefik.yml up -d
 
 Traefik 就绪后,你就可以用 Docker Compose 部署 FastAPI 项目了。
 
+本项目的 Agent Chat 由同一套生产 Compose 中的 Aegra 容器提供。请额外
+为 `AGENT_DOMAIN` 配置 DNS（例如 `agent.fastapi-project.example.com`），
+并让它与应用域名指向同一台服务器。生产部署命令使用根目录的
+`compose.production.yml`，不要使用 `compose.override.yml`：
+
+```bash
+cp .env.example .env
+# 至少填写 DOMAIN、AGENT_DOMAIN、VITE_AEGRA_URL、SECRET_KEY、
+# POSTGRES_PASSWORD、LLM_MODEL、LLM_API_KEY、LLM_BASE_URL
+docker compose -f compose.yml -f compose.production.yml up -d --build
+```
+
+`VITE_AEGRA_URL` 必须是浏览器可访问的 HTTPS 地址，例如
+`https://agent.fastapi-project.example.com`；FastAPI 与 Aegra 使用同一个
+`SECRET_KEY`。Compose 会先执行一次 Aegra migration，再启动 FastAPI 和
+单实例 Aegra。默认容量基线为 FastAPI 2 workers、Aegra 2×4 执行槽；扩容
+前先压测并观察 PostgreSQL 连接数、Agent 队列深度和 SSE 长连接数。
+
 **注意**:你可能想先跳到关于使用 GitHub Actions 进行持续部署的部分。
 
 ## 复制代码
@@ -201,11 +219,12 @@ export FRONTEND_HOST="https://${DOMAIN?Variable not set}"
 
 ```bash
 cd /root/code/app/
-docker compose -f compose.yml build
-docker compose -f compose.yml up -d
+docker compose -f compose.yml -f compose.production.yml build
+docker compose -f compose.yml -f compose.production.yml up -d
 ```
 
-生产环境不需要 `compose.override.yml` 中的覆盖配置,这就是为什么我们显式指定使用 `compose.yml`。
+生产环境不需要 `compose.override.yml` 中的覆盖配置；生产 Agent Chat 还需要
+合并 `compose.production.yml`，它会启动共享数据库/Redis 连接的 Aegra。
 
 ## 持续部署(CD)
 

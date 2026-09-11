@@ -124,7 +124,7 @@ Browser（React，当前手写 Chat 组件，无 assistant-ui）
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `REDIS_BROKER_ENABLED` | false | 生产多实例必须 true |
-| `WORKER_COUNT` / `N_JOBS_PER_WORKER` | 3 / 10 | 单实例并发容量 = 乘积 |
+| `WORKER_COUNT` / `N_JOBS_PER_WORKER` | 2 / 4（1w DAU 基线） | 单实例并发容量 = 乘积；压测后再扩容 |
 | `LEASE_DURATION_SECONDS` | 30 | 租约 TTL |
 | `HEARTBEAT_INTERVAL_SECONDS` | 10 | 续租频率 |
 | `REAPER_INTERVAL_SECONDS` | 15 | 过期 lease 扫描 |
@@ -171,6 +171,22 @@ Browser（React，当前手写 Chat 组件，无 assistant-ui）
 
 ## 8. 部署与优雅退出
 
+### 8.1 1w DAU 单机基线
+
+默认生产入口是仓库根目录的 `compose.production.yml`：FastAPI、Aegra、
+PostgreSQL、Redis 由同一套 Compose 管理，Aegra 先运行单实例
+（`WORKER_COUNT=2`、`N_JOBS_PER_WORKER=4`）。Aegra migration 由一次性
+`aegra-migrate` 服务执行，应用和 Aegra 共用同一个 PostgreSQL。
+
+```bash
+docker compose -f compose.yml -f compose.production.yml up -d --build
+```
+
+React 构建时通过 `VITE_AEGRA_URL` 指向 HTTPS 的 `AGENT_DOMAIN`；Agent
+Protocol/SSE 不经过 FastAPI 中转。
+
+### 8.2 扩容形态
+
 ```text
 Nginx / SLB
   ├── Aegra Instance A（aegra serve --port 2026，容器内 RUN_MIGRATIONS_ON_STARTUP 可选）
@@ -200,8 +216,8 @@ Nginx / SLB
 1. ✅ **迁移 graph**：`travel-planning` graph 已迁到 `agent-runtime/` 并在 `aegra.json` 注册（`assistant_id="travel_planning"`）。
 2. ✅ **删自研层**：`backend/app/chat/`、`backend/app/agent/` 已移除；auth 保留在 FastAPI，工具幂等台账保留在 `agent-runtime/src/travel_runtime/db.py`。
 3. ✅ **前端接线**：`HttpAgentServerAdapter` 直连 Aegra v2；刷新复用同 thread；auto-resume 状态机未引入（Aegra 后台 run + SDK 重连已替代）。
-4. 🔲 **部署**：补 `agent-runtime/docker-compose.yml`（PG + Redis + 多实例 aegra serve），配置 drain 参数。
-5. 🔲 **验收**：按 §9 Case 1–6 用真实 LLM 重跑；浏览器端到端验证刷新恢复。
+4. ✅ **部署**：补 `compose.production.yml`（共享 PG/Redis、单实例 Aegra、一次性 migration、Traefik HTTPS 路由）；`agent-runtime/docker-compose.yml` 保留为多实例验证栈。
+5. 🟡 **验收**：Case 1（普通执行）/ Case 2（执行中刷新恢复）已用真实 LLM 浏览器端到端验证（`AEGRA_E2E=1 bunx playwright test chat-recovery.verify`，登录→发送→流式完成→刷新→同 thread 恢复，2 passed）；Case 3–6（SSE 断线重连、滚动部署 drain、worker 崩溃 reaper、工具幂等回归）待真实部署验收。
 
 ## 11. 面试口径
 
