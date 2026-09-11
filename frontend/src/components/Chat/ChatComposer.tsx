@@ -1,19 +1,21 @@
-import type { ChatStatus } from "ai"
 import { ArrowUp, Square } from "lucide-react"
 import { useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 
 interface ChatComposerProps {
+  isGenerating: boolean
   onStop: () => void
   onSubmit: (text: string) => void
-  status: ChatStatus
 }
 
-export function ChatComposer({ onStop, onSubmit, status }: ChatComposerProps) {
+export function ChatComposer({
+  isGenerating,
+  onStop,
+  onSubmit,
+}: ChatComposerProps) {
   const [value, setValue] = useState("")
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
-  const isGenerating = status === "submitted" || status === "streaming"
   const canSubmit = value.trim().length > 0 && !isGenerating
 
   const submit = () => {
